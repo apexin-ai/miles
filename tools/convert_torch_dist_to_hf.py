@@ -15,38 +15,16 @@ from typing_extensions import override
 
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf, remove_padding
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LINEAR_ATTN_LAYOUT_KEY
+from miles.backends.megatron_utils.torch_dist_checkpoint import (
+    UnpicklerWrapper,
+    WrappedStorageReader,
+    load_checkpoint_args,
+)
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace
 from miles.utils.hf_utils.config import load_hf_config
 
-
-class UnpicklerWrapper(pickle.Unpickler):
-    @override
-    def find_class(self, mod_name, name):
-        class DummyClass:
-            def __init__(self, *args, **kwargs):
-                pass
-
-        if mod_name.startswith("megatron") or mod_name.startswith("glm"):
-            return DummyClass
-        return super().find_class(mod_name, name)
-
-
 pickle.Unpickler = UnpicklerWrapper
-
-
-class WrappedStorageReader(dist_cp.FileSystemReader):
-    @override
-    def read_metadata(self):
-        path = self.fs.concat_path(self.path, ".metadata")
-        with self.fs.create_stream(path, "rb") as metadata_file:
-            metadata = UnpicklerWrapper(metadata_file).load()
-        if getattr(metadata, "storage_meta", None) is None:
-            metadata.storage_meta = dist_cp.StorageMeta()
-        metadata.storage_meta.load_id = self.load_id
-        if metadata.planner_data is None:
-            metadata.planner_data = {}
-        return metadata
 
 
 class EmptyStateDictLoadPlanner(dist_cp.default_planner.DefaultLoadPlanner):
@@ -182,7 +160,7 @@ if __name__ == "__main__":
         "--chunk-size",
         type=int,
         default=5 * 1024**3,
-        help="Chunk size for saving tensors, default is 2GB.",
+        help="Chunk size for saving tensors, default is 5GB.",
     )
     parser.add_argument(
         "--vocab-size",
@@ -207,7 +185,7 @@ if __name__ == "__main__":
     state_dict = {}
     print(f"loading model from {args.input_dir}")
     t = time.time()
-    megatron_args = torch.load(os.path.join(args.input_dir, "common.pt"), weights_only=False)["args"]
+    megatron_args = load_checkpoint_args(args.input_dir)
     if args.origin_hf_dir:
         with (
             megatron_args.force_all_mutable()
