@@ -1,5 +1,8 @@
 """Tiled QSA indexer on GPU: same selection as the untiled scorer, bounded peak memory.
 
+The packed path's producer (``qsa_selected_blocks``) writes ``[T, K]`` int32 block ids for
+``build_qsa_block_index``; peaks are reported for the scorer + producer and for the index build.
+
 Uses the real TELinear projection and the Qwen3.8 indexer shape (4 heads x 128,
 budget 2048, ratio 4). Run with ``-s`` to see the measured peaks.
 """
@@ -13,13 +16,13 @@ register_cuda_ci(
 import pytest
 import torch
 
-from miles.kernels.attention.qsa.block_sparse_attention import unpack_block_bitmap
 from tests.fast.test_qsa_indexer_tiled import (
     _packed_positions,
-    _reference_block_form,
     _reference_forward,
+    _reference_selected_blocks,
     check_block_selection,
     classify_differences,
+    dense_blocks,
 )
 
 GiB = 1 << 30
@@ -72,7 +75,7 @@ def _peak(fn):
 
 
 def _row_mismatch(got_bitmap, want_bitmap, logits, k):
-    """Rows whose bitmap differs from the untiled one, split into exact k-th-score tie swaps and
+    """Rows whose block set differs from the untiled one, split into exact k-th-score tie swaps and
     fp near swaps by the scores of the blocks actually swapped. ``check_block_selection`` fails
     on anything else (missing strictly-better block, wrong count, block below the band,
     difference outside the candidates)."""
@@ -87,52 +90,63 @@ def _row_mismatch(got_bitmap, want_bitmap, logits, k):
     [[4096], [32768], [1, 3, 5000, 1, 7, 27756], [65536]],
     ids=["T4096", "T32768", "T32768-packed", "T65536"],
 )
-def test_tiled_block_form_matches_untiled_and_stays_small(lens):
-    from miles_plugins.models.qwen3_8_next.ops.attention import qsa_block_form
+def test_tiled_selected_blocks_match_untiled_and_stay_small(lens):
+    from miles_plugins.models.qwen3_8_next.ops.attention import qsa_selected_blocks
 
     indexer = _indexer(GiB)
     hidden, positions, rope, cu = _inputs(lens)
     with torch.no_grad():
-        got, tiled_peak = _peak(lambda: qsa_block_form(indexer, hidden, positions, rope, cu))
-        (want, logits), ref_peak = _peak(lambda: _reference_block_form_cuda(indexer, hidden, positions, rope, cu))
-    for a, b in zip(got[1:7], want[1:7], strict=True):
-        assert torch.equal(a, b)
+        (blocks, _), tiled_peak = _peak(lambda: qsa_selected_blocks(indexer, hidden, positions, rope, cu))
+        (want, logits), ref_peak = _peak(lambda: _reference_selected_blocks_cuda(indexer, hidden, positions, rope, cu))
     k = min(indexer.block_topk, logits.shape[-1])
-    ties, near, bad = _row_mismatch(unpack_block_bitmap(got[0], want[0].shape[1]), want[0], logits, k)
-    bitmap = got[0].numel() / GiB
+    assert blocks.dtype == torch.int32 and blocks.shape == (len(positions), k)
+    got = dense_blocks(blocks, want.shape[1])
+    assert torch.equal(got.sum(-1), (blocks >= 0).sum(-1)), "a row repeats a block id"
+    ties, near, bad = _row_mismatch(got, want, logits, k)
+    ids = blocks.numel() * blocks.element_size() / GiB
     print(
-        f"\nT={sum(lens)} rows={len(positions)} tiled_peak={tiled_peak:.2f}GiB (bitmap {bitmap:.2f}) "
+        f"\nT={sum(lens)} rows={len(positions)} tiled_peak={tiled_peak:.2f}GiB (block ids {ids:.2f}) "
         f"untiled_peak={ref_peak:.2f}GiB tie_rows={ties} near_tie_rows={near} mismatch_rows={bad}"
     )
     assert bad == 0
     assert near <= max(1, len(positions) // 1000)
-    assert tiled_peak <= bitmap + 1.5
+    assert tiled_peak <= ids + 1.5
 
 
-def _reference_block_form_cuda(indexer, hidden, positions, rope, cu):
+def _reference_selected_blocks_cuda(indexer, hidden, positions, rope, cu):
     # the CPU reference builds index tensors on the default device
     with torch.device("cuda"):
-        return _reference_block_form(indexer, hidden, positions, rope, cu)
+        return _reference_selected_blocks(indexer, hidden, positions, rope, cu)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 @pytest.mark.parametrize("lens", [[131072], [262144], [247145, 14999]], ids=["T131072", "T262144", "T262144-packed"])
 def test_long_sequence_indexer_peak(lens):
-    """No untiled reference here (it would need 144 / 576 GiB): peak and runtime only.
+    """No untiled reference here (it would need 144 / 576 GiB): peaks and runtime only.
 
     The packed case is the one where a tile's rows span both documents, so its scored window
     is narrow while the batch's block count is the full grid.
     """
     import time
 
-    from miles_plugins.models.qwen3_8_next.ops.attention import qsa_block_form
+    from miles.kernels.attention.qsa import build_qsa_block_index
+    from miles_plugins.models.qwen3_8_next.ops.attention import qsa_selected_blocks
 
     indexer = _indexer(GiB)
     hidden, positions, rope, cu = _inputs(lens)
     with torch.no_grad():
         t0 = time.perf_counter()
-        got, peak = _peak(lambda: qsa_block_form(indexer, hidden, positions, rope, cu))
+        (blocks, cu_used), peak = _peak(lambda: qsa_selected_blocks(indexer, hidden, positions, rope, cu))
         elapsed = time.perf_counter() - t0
-    bitmap = got[0].numel() / GiB
-    print(f"\nT={sum(lens)} lens={lens} tiled_peak={peak:.2f}GiB (bitmap {bitmap:.2f}) time={elapsed:.2f}s")
-    assert peak <= bitmap + 2.5
+        # Qwen3.8-Flash-Next at TP 2: 12 query heads over 1 kv head
+        _, index_peak = _peak(
+            lambda: build_qsa_block_index(
+                blocks, cu_used, compress_ratio=indexer.compress_ratio, num_heads=12, num_kv_heads=1
+            )
+        )
+    ids = blocks.numel() * blocks.element_size() / GiB
+    print(
+        f"\nT={sum(lens)} lens={lens} tiled_peak={peak:.2f}GiB (block ids {ids:.2f}) time={elapsed:.2f}s "
+        f"index_build_peak={index_peak:.2f}GiB"
+    )
+    assert peak <= ids + 2.5

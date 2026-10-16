@@ -13,7 +13,6 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from miles.kernels.attention.qsa.block_sparse_attention import unpack_block_bitmap  # noqa: E402
 from miles_plugins.models.qwen3_8_next.ops import qsa_indexer  # noqa: E402
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import (  # noqa: E402
     PackedBlockLayout,
@@ -318,62 +317,44 @@ def test_plan_covers_every_row_once_within_budget(seed):
         assert e - s == 1 or (e - s) * max(1, hi[e - 1] - lo[s]) <= 64
 
 
-def _reference_block_form(indexer, hidden, positions, rope, cu):
-    """Selection merge + bitmap of ``Qwen38NextAttention`` at 65feb4a6 (thd path)."""
-    seq = positions.shape[0]
-    selection, logits, _ = _reference_forward(indexer, hidden, positions, rope, cu)
-    seq_start = torch.arange(seq) - positions
-    r = indexer.compress_ratio
-    tail_in_seq = (positions + 1) // r * r
-    offs = torch.arange(r)
-    tail_pos = tail_in_seq.unsqueeze(1) + offs.unsqueeze(0)
-    tail_idx = seq_start.unsqueeze(1) + tail_pos
-    tail_idx = torch.where(tail_pos <= positions.unsqueeze(1), tail_idx, torch.full_like(tail_idx, -1))
-    merged = torch.cat([selection, tail_idx.to(selection.dtype)], dim=1)
-    pack_pos = torch.arange(seq).unsqueeze(1)
-    ok = (merged >= seq_start.unsqueeze(1)) & (merged <= pack_pos) & (merged >= 0)
-    selection = torch.where(ok, merged, torch.full_like(merged, -1))
+def _reference_selected_blocks(indexer, hidden, positions, rope, cu):
+    """Whole blocks the untiled scorer at 65feb4a6 selects, ``[T, blocks]`` bool, and its logits.
 
-    cu_ = cu if cu is not None and cu.numel() > 2 else torch.tensor([0, seq])
-    layout = PackedBlockLayout(cu_, positions, r)
-    blk_base = layout.token_block_start.to(torch.int32)
-    tok_base = layout.token_start.to(torch.int32)
-    num_blocks = layout.num_blocks
-    sel_bitmap = torch.zeros(seq, num_blocks, dtype=torch.uint8)
-    valid = selection >= 0
-    if bool(valid.any()):
-        rows = torch.arange(seq).unsqueeze(1).expand_as(selection)
-        blk = blk_base.unsqueeze(1).long() + (selection - tok_base.unsqueeze(1)).div(r, rounding_mode="floor")
-        sel_bitmap[rows[valid], blk[valid].long().clamp_(0, num_blocks - 1)] = 1
-    hi = (positions + seq_start).to(torch.int32)
-    form = (
-        sel_bitmap,
-        tok_base,
-        hi,
-        blk_base,
-        tok_base,
-        layout.block_first_token.to(torch.int32),
-        layout.block_last_token.to(torch.int32),
-        r,
-    )
-    return form, logits
+    The query's own partial block is not part of it: the packed kernel's index adds that tail.
+    """
+    selection, logits, layout = _reference_forward(indexer, hidden, positions, rope, cu)
+    return _block_sets(selection, layout, logits.shape[-1]), logits
+
+
+def dense_blocks(blocks, num_blocks):
+    """``[T, K]`` block ids (``-1`` unused) -> ``[T, num_blocks]`` bool; test-side only."""
+    out = torch.zeros(blocks.shape[0], num_blocks, dtype=torch.bool, device=blocks.device)
+    used = blocks >= 0
+    rows = torch.arange(blocks.shape[0], device=blocks.device).unsqueeze(1).expand_as(blocks)
+    out[rows[used], blocks[used].long()] = True
+    return out
 
 
 @pytest.mark.parametrize("lens", CASES)
-def test_block_form_matches_untiled_attention(monkeypatch, lens):
-    from miles_plugins.models.qwen3_8_next.ops.attention import qsa_block_form
+def test_selected_blocks_match_untiled_attention(monkeypatch, lens):
+    """The ids the packed path hands to ``build_qsa_block_index`` are a valid untiled top-k, row by row."""
+    from miles_plugins.models.qwen3_8_next.ops.attention import qsa_selected_blocks
 
     indexer = _indexer(monkeypatch, 64 << 10)
     hidden, positions, rope, cu = _inputs(lens)
     with torch.no_grad():
-        want, logits = _reference_block_form(indexer, hidden, positions, rope, cu)
-        got = qsa_block_form(indexer, hidden, positions, rope, cu)
-    for a, b in zip(got[1:7], want[1:7], strict=True):
-        assert torch.equal(a, b)
-    assert got[7] == want[7]
-    got = (unpack_block_bitmap(got[0], want[0].shape[1]), *got[1:])
+        want, logits = _reference_selected_blocks(indexer, hidden, positions, rope, cu)
+        blocks, cu_out = qsa_selected_blocks(indexer, hidden, positions, rope, cu)
     k = min(indexer.block_topk, logits.shape[-1])
-    check_block_selection(got[0], want[0], logits, k)
+    assert blocks.dtype == torch.int32 and blocks.shape == (positions.shape[0], k)
+    if cu is None:
+        assert cu_out.tolist() == [0, positions.shape[0]]
+    else:
+        assert cu_out is cu
+    got = dense_blocks(blocks, logits.shape[-1])
+    # distinct ids: a repeated id would be lost in the dense set
+    assert torch.equal(got.sum(-1), (blocks >= 0).sum(-1))
+    check_block_selection(got, want, logits, k)
 
 
 @pytest.mark.parametrize("tile_bytes", [0, -1])

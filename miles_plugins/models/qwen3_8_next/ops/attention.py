@@ -12,9 +12,9 @@ from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
-from miles.kernels.attention.qsa import qsa_block_sparse_attention, qsa_sparse_attention
+from miles.kernels.attention.qsa import build_qsa_block_index, qsa_block_attention, qsa_sparse_attention
 from miles_plugins.models.qwen3_8_next.ops.indexer_monitor import get_monitor
-from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout, Qwen38NextQSAIndexer
+from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import Qwen38NextQSAIndexer
 
 
 class Qwen38NextQSACoreAttention(MegatronModule):
@@ -30,37 +30,40 @@ class Qwen38NextQSACoreAttention(MegatronModule):
         selection = getattr(
             self._owner, "_qsa_selection", None
         )  # config-access-exempt: the owner attaches sparse-attention state only during its forward
-        block_form = getattr(
-            self._owner, "_qsa_block_form", None
+        selected = getattr(
+            self._owner, "_qsa_blocks", None
         )  # config-access-exempt: the owner attaches sparse-attention state only during its forward
         if query.dim() == 3:
-            if block_form is None:
+            # thd reads only the selected block ids; there is no token selection on this path
+            if selected is None:
                 raise RuntimeError(
-                    "QSA core attention ran on a thd query with no block form published. "
-                    "Qwen38NextAttention.forward sets it before delegating; reaching here "
+                    "QSA core attention ran on a thd query with no selected blocks published. "
+                    "Qwen38NextAttention.forward sets them before delegating; reaching here "
                     "means core_attention was called out of band."
                 )
+            blocks, cu_seqlens = selected
+            ratio = self._owner.compress_ratio
             monitor = get_monitor()
             # the recompute pass would measure the same rows twice
             if monitor.enabled and not (is_checkpointing() and torch.is_grad_enabled()):
                 monitor.maybe_record(
-                    self.layer_number, query, key, block_form, self.softmax_scale, self._owner.indexer.block_topk
+                    self.layer_number,
+                    query,
+                    key,
+                    blocks,
+                    cu_seqlens,
+                    ratio,
+                    self.softmax_scale,
+                    self._owner.indexer.block_topk,
                 )
-            sel_bitmap, lo, hi, blk_base, tok_base, block_first, block_last, blk = block_form
-            return qsa_block_sparse_attention(
-                query,
-                key,
-                value,
-                sel_bitmap,
-                lo,
-                hi,
-                blk_base,
-                tok_base,
-                block_first,
-                block_last,
-                self.softmax_scale,
-                blk,
-            ).reshape(query.shape[0], -1)
+            index = build_qsa_block_index(
+                blocks,
+                cu_seqlens,
+                compress_ratio=ratio,
+                num_heads=query.shape[1],
+                num_kv_heads=key.shape[1],
+            )
+            return qsa_block_attention(query, key, value, index, self.softmax_scale).reshape(query.shape[0], -1)
 
         if query.dim() != 4:
             raise RuntimeError(f"QSA core attention expected a 3D (thd) or 4D (sbhd) query, got {tuple(query.shape)}")
@@ -95,7 +98,7 @@ class Qwen38NextAttention(SelfAttention):
         self.compress_ratio = config.qwen3_8_next_indexer_compress_ratio
         self.core_attention = Qwen38NextQSACoreAttention(config, layer_number, owner=self)
         self._qsa_selection = None
-        self._qsa_block_form = None
+        self._qsa_blocks = None
 
     @staticmethod
     def _packed_positions(cu_seqlens: Tensor, total: int) -> Tensor:
@@ -145,9 +148,9 @@ class Qwen38NextAttention(SelfAttention):
         )  # config-access-exempt: set only by the Qwen3.8 spec, absent on generic test configs
         with torch.no_grad():
             if packed is not None:
-                # thd: the kernel reads only the block bitmap, built tile by tile
+                # thd: the kernel reads only the selected block ids, written tile by tile
                 self._qsa_selection = None
-                self._qsa_block_form = qsa_block_form(
+                self._qsa_blocks = qsa_selected_blocks(
                     self.indexer,
                     indexer_states[:, 0],
                     positions,
@@ -159,13 +162,13 @@ class Qwen38NextAttention(SelfAttention):
                 self._qsa_selection = self._token_selection(
                     indexer_states[:, 0], positions, rotary_pos_emb, materialized_rope
                 )
-                self._qsa_block_form = None
+                self._qsa_blocks = None
         try:
             return super().forward(hidden_states, *args, **kwargs)
         finally:
             self._qsa_selection = None
             self._qsa_cu_seqlens = None
-            self._qsa_block_form = None
+            self._qsa_blocks = None
 
     def _token_selection(
         self, indexer_states: Tensor, positions: Tensor, rotary_pos_emb: Tensor, materialized_rope: bool
@@ -197,54 +200,37 @@ class Qwen38NextAttention(SelfAttention):
         return torch.where(ok, merged, torch.full_like(merged, -1))
 
 
-def qsa_block_form(
+def qsa_selected_blocks(
     indexer: Qwen38NextQSAIndexer,
     indexer_states: Tensor,
     positions: Tensor,
     rotary_pos_emb: Tensor,
     cu_seqlens: Tensor | None,
     materialized_rope: bool = False,
-):
-    """Indexer selection -> the block form the tensor-core kernel consumes.
+) -> tuple[Tensor, Tensor]:
+    """Indexer selection -> ``(blocks, cu_seqlens)``, the input of ``build_qsa_block_index``.
 
-    The bitmap (bit-packed, see ``pack_block_bitmap``) marks each query's indexer blocks plus
-    the block holding the query while that block is still partial (the indexer only ranks complete blocks). Block ids come
-    from the per-sequence grid (``PackedBlockLayout``); a ceil(seq_start / ratio) base
-    collides across sequences for some lengths.
+    ``blocks`` is ``[T, K]`` int32 with ``K = min(block_topk, blocks in the batch)``: per query the
+    distinct whole blocks the indexer picked, as ids on the per-sequence grid (``PackedBlockLayout``;
+    a ceil(seq_start / ratio) base collides across sequences for some lengths), ``-1`` where unused.
+    The query's own partial block is not listed: ``build_qsa_block_index`` adds every query's causal
+    tail itself, and a tail id here would be a block the kernel ignores. The ids are written tile by
+    tile into one buffer, so neither a ``[T, token_budget]`` token selection nor a ``[T, blocks]``
+    bitmap is built.
     """
-    ratio = indexer.compress_ratio
     seq = positions.shape[0]
     device = positions.device
     cu = cu_seqlens
     if cu is None or cu.numel() <= 2:
-        cu = torch.tensor([0, seq], device=device)
-    layout = PackedBlockLayout(cu, positions, ratio)
-    num_blocks = layout.num_blocks
-
-    # one bit per (query, block), set straight from the block ids: a row's blocks are
-    # distinct, so adding their bits into a byte is the same as OR-ing them, and no
-    # [rows, blocks] temporary is needed (a tile's rows can span a whole packed batch)
-    nbytes = -(-num_blocks // 8)
-    sel_bitmap = torch.zeros(seq, nbytes, dtype=torch.uint8, device=device)
-    flat = sel_bitmap.view(-1)
-
-    def set_bits(rows: Tensor, blocks: Tensor) -> None:
-        flat.index_put_((rows * nbytes + (blocks >> 3),), (1 << (blocks & 7)).to(torch.uint8), accumulate=True)
-
+        cu = torch.tensor([0, seq], dtype=torch.int32, device=device)
+    blocks = None
     for start, end, block_idx in indexer.iter_selected_blocks(
         indexer_states, positions, rotary_pos_emb, cu_seqlens, materialized_rope=materialized_rope
     ):
-        valid = block_idx >= 0
-        rows = torch.arange(start, end, device=device).unsqueeze(1).expand_as(block_idx)
-        set_bits(rows[valid], block_idx[valid])
-    # the query's own partial block is never an indexer candidate, so its bit is not set yet
-    partial = (positions + 1) % ratio != 0
-    set_bits(torch.arange(seq, device=device)[partial], layout.token_block[partial])
-
-    seq_start = torch.arange(seq, device=device) - positions
-    blk_base = layout.token_block_start.to(torch.int32)
-    tok_base = layout.token_start.to(torch.int32)
-    hi = (positions + seq_start).to(torch.int32)
-    block_first = layout.block_first_token.to(torch.int32)
-    block_last = layout.block_last_token.to(torch.int32)
-    return sel_bitmap, tok_base, hi, blk_base, tok_base, block_first, block_last, ratio
+        if blocks is None:
+            # every tile has the same width
+            blocks = torch.full((seq, block_idx.shape[1]), -1, dtype=torch.int32, device=device)
+        blocks[start:end] = block_idx
+    if blocks is None:
+        blocks = torch.full((seq, 0), -1, dtype=torch.int32, device=device)
+    return blocks, cu
