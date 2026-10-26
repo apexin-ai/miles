@@ -41,17 +41,27 @@ and HF name converter, exported as 266 native-name safetensors, and checked
 against the complete trained visual hash and an exact file readback. Native
 visual RMSNorm weights are FP32 at runtime; preserving that dtype is necessary
 for bitwise export even though the original source shard stores them as BF16.
-This check covers the visual export, not a complete language-plus-vision HF
-export or its subsequent inference load.
+The complete language-plus-vision native HF export also completed: 96,085 keys
+and 510,286,156,120 tensor bytes. All 266 visual tensors in that export exactly
+match the independent trained visual export, including the FP32 norms. The
+subsequent inference load of this complete export is not yet qualified.
 
 These GPU checks used a pinned official Miles runtime with the feature modules
 overlaid. They do not establish that a clean checkout of this feature branch
 passes the complete training lifecycle; that qualification is separate.
-Training resume, complete native HF export and held-out image-task improvement
+Training resume, complete native HF inference reload and held-out image-task improvement
 remain unqualified until the acceptance procedure below succeeds. CPU tests
 alone do not establish those results. The native visual forward and image
 preprocessing were also checked bitwise against the pinned DeepSeek reference
 on H20.
+
+The DeepSeek geometric baseline completed all 256 held-out scenes and the
+image-swap/removal controls with the archived exact scorer, greedy 4096 new
+tokens and context 8192. Strict correct counts are 51/256 with the real image,
+11/256 with a swapped image and 19/256 without an image. The real-image arm
+has 203 invalid final answers; always answering `1` scores 97/256. These are
+baseline results, not evidence of a training gain. The final causal vision-only
+and joint-training evaluations remain pending.
 
 ## Image Contract
 
