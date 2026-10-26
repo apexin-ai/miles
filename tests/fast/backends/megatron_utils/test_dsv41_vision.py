@@ -289,3 +289,54 @@ def test_native_reload_witness_checks_every_visual_tensor_and_restores_args(monk
             checkpoint_audit.verify_saved_model(args, 1, model)
         assert not (tmp_path / "checkpoint-reload/rank-000.json").exists()
     assert vars(args) == original
+
+
+def test_discarded_optimizer_step_does_not_nest_audit_wrappers(monkeypatch, tmp_path):
+    from miles_plugins.models.deepseek_v4_1 import audit
+
+    calls = []
+
+    def original():
+        calls.append(1)
+        return (True, 0, 0)
+
+    optimizer = SimpleNamespace(step=original)
+    model = [SimpleNamespace(named_parameters=lambda: iter([]))]
+    args = SimpleNamespace(dsv41_freeze_language=False)
+    monkeypatch.setenv("DSV41_AUDIT_DIR", str(tmp_path))
+    monkeypatch.delenv("DSV41_VISUAL_SNAPSHOT", raising=False)
+    monkeypatch.setattr(audit.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    audit.before_step(args, 0, 0, model, optimizer, None)
+    audit.before_step(args, 1, 0, model, optimizer, None)
+    assert optimizer.step._dsv41_original_step is original
+    optimizer.step()
+    assert calls == [1] and optimizer.step is original
+
+
+@pytest.mark.parametrize("agree", [True, False])
+def test_visual_snapshot_uses_only_its_stage_replica_group(monkeypatch, tmp_path, agree):
+    from miles_plugins.models.deepseek_v4_1 import checkpoint_audit
+
+    core = ModuleType("megatron.core")
+    group = SimpleNamespace(size=lambda: 2)
+    core.parallel_state = SimpleNamespace(get_tensor_and_data_parallel_group=lambda: group)
+    monkeypatch.setitem(sys.modules, core.__name__, core)
+    parameters = [(f"module.module.visual.tensor{i}", torch.nn.Parameter(torch.ones(2))) for i in range(266)]
+    model = [SimpleNamespace(named_parameters=lambda: iter(parameters))]
+
+    def gather(hashes, expected, **kwargs):
+        assert kwargs["group"] is group and len(hashes) == 2
+        hashes[:] = [expected, expected if agree else "different"]
+
+    monkeypatch.setattr(checkpoint_audit.dist, "all_gather_object", gather)
+    monkeypatch.setattr(checkpoint_audit.dist, "get_rank", lambda: 0)
+    root = tmp_path / "snapshot"
+    if agree:
+        checkpoint_audit.save_visual_snapshot(model, root)
+        assert (root / "visual.safetensors").is_file()
+        assert (root / "visual.json").is_file()
+    else:
+        with pytest.raises(ValueError, match="disagree"):
+            checkpoint_audit.save_visual_snapshot(model, root)
+        assert not root.exists()

@@ -31,10 +31,15 @@ had the same complete final visual hash. Language router, attention and expert
 probes also changed. This establishes a real full-model image optimizer step,
 not convergence or held-out improvement.
 
-Native checkpoint resume and held-out image-task improvement remain unqualified
-until the acceptance procedure below succeeds. CPU tests alone do not establish
-those results. The native visual forward and image preprocessing were also
-checked bitwise against the pinned DeepSeek reference on H20.
+A separate two-update run saved a complete native `torch_dist` model checkpoint.
+All 192 ranks passed in-memory parameter corruption followed by model-only
+reload; every visual tensor was included, with a complete visual hash check on
+each of the 32 replicas. This does not test optimizer or data-cursor resume.
+
+Training resume, native HF export and held-out image-task improvement remain
+unqualified until the acceptance procedure below succeeds. CPU tests alone do
+not establish those results. The native visual forward and image preprocessing
+were also checked bitwise against the pinned DeepSeek reference on H20.
 
 ## Image Contract
 
