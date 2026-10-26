@@ -210,6 +210,32 @@ variation must be isolated before attributing the entire score difference to
 changed visual representations; the small net no-image score difference does
 not resolve this per-example drift.
 
+## Recorded Curves
+
+![Raw joint and vision-only training loss](/assets/images/deepseek-v4-1-1017/training_curves.png)
+
+Both training curves contain all 32 logged `train/loss` values, steps 0 through
+31, without smoothing or missing-step interpolation. The linear and log panels
+show the same raw points. Each step uses a different batch; these are training
+losses, not held-out losses or evidence of validation convergence.
+
+![Baseline and final held-out image/control scores](/assets/images/deepseek-v4-1-1017/eval_gain.png)
+
+The evaluation chart contains only the measured baseline and final-checkpoint
+scores. No intermediate checkpoint evaluations or interpolated eval curve are
+implied. The majority-answer baseline is included for context.
+
+The [recorded plot data](/assets/images/deepseek-v4-1-1017/curve_data.json)
+contains the exact per-step losses, source log SHA256/line references and final
+evaluation receipt identities. Raw training logs are not committed. Regenerate
+both figures from this JSON without model weights or GPUs:
+
+```bash
+python tools/plot_deepseek_v41_vision_results.py \
+  --data docs/assets/images/deepseek-v4-1-1017/curve_data.json \
+  --output-dir docs/assets/images/deepseek-v4-1-1017
+```
+
 ## Image Contract
 
 Use one JSONL record per conversation, a `messages` field and an `images` list
