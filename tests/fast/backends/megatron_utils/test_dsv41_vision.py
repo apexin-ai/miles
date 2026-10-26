@@ -210,9 +210,15 @@ def test_hf_export_includes_all_visual_tensors_and_vl_bias(small_config):
     scope = {"re": re}
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), scope)
     convert = scope["convert_deepseekv4_1_to_hf"]
-    visual = DeepSeekV41Visual(small_config, 16)
+    visual = DeepSeekV41Visual(small_config, 16).bfloat16()
+    with torch.no_grad():
+        visual.vision.norm.weight.add_(1e-6)
     for name, param in visual.state_dict().items():
-        assert convert(SimpleNamespace(), "module.module.visual." + name, param)[0][0] == name
+        target, exported = convert(SimpleNamespace(), "module.module.visual." + name, param)[0]
+        assert target == name and exported.dtype == param.dtype
+        assert torch.equal(exported, param)
+    assert visual.vision.norm.weight.dtype == torch.float32
+    assert not torch.equal(visual.vision.norm.weight, visual.vision.norm.weight.bfloat16().float())
     assert (
         convert(None, "module.module.decoder.layers.0.mlp.router.expert_bias_vl", torch.ones(4))[0][0]
         == "layers.0.ffn.gate.bias_vl"
