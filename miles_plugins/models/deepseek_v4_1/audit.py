@@ -84,6 +84,9 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler):
         if match is not None:
             selected.append(match)
     original = optimizer.step
+    # A discarded/nonfinite step may never call the previous witness wrapper.
+    # Do not nest stale wrappers (and stale before-update hashes) on retry.
+    original = getattr(original, "_dsv41_original_step", original)
 
     def step(*positional, **keywords):
         probes = []
@@ -147,4 +150,5 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler):
         )
         return result
 
+    step._dsv41_original_step = original
     optimizer.step = step
