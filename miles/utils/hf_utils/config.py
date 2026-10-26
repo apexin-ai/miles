@@ -12,6 +12,7 @@ The default behavior is exactly the same as `AutoConfig.from_pretrained`.
 """
 
 import importlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,7 +38,7 @@ def _normalize_deepseek_v41_kwargs(kwargs: dict) -> dict:
     DeepseekV3Config's first_k_dense_replace=3 default does not apply."""
     kwargs = dict(kwargs)
     text = kwargs.pop("text_config", None)
-    kwargs.pop("vision_config", None)
+    # Flatten only the decoder; the multimodal provider still needs the vision spec.
     if isinstance(text, dict):
         text = dict(text)
         text.pop("model_type", None)
@@ -68,14 +69,25 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
 _REGISTERED_ALIASES: set[str] = set()
 
 
-def register_hf_config_aliases() -> None:
+def register_hf_config_aliases(checkpoint_path: str | None = None) -> None:
     """Register miles model_type aliases with transformers. Idempotent.
 
     Already called inside `load_hf_config` and `load_tokenizer`. Only call
     directly before a third-party entry point that won't go through either
     (e.g. megatron's `_build_tokenizer`).
     """
+    model_types = None
+    if checkpoint_path is not None:
+        path = Path(checkpoint_path) / "config.json"
+        if path.is_file():
+            values = json.loads(path.read_text())
+            model_types = {values.get("model_type")}
+            model_types.update(value.get("model_type") for value in values.values() if isinstance(value, dict))
     for alias in _CONFIG_ALIASES:
+        # A local checkpoint needs only its own aliases. An unrelated new native
+        # model in transformers must not prevent the 1017 runtime from loading.
+        if model_types is not None and alias.model_type not in model_types:
+            continue
         if alias.model_type in _REGISTERED_ALIASES:
             continue
         if alias.model_type in CONFIG_MAPPING_NAMES and not alias.override_hf_native:
@@ -128,7 +140,7 @@ def load_hf_config(
     overrides: optional dict of attributes to setattr on the returned config
         after loading. Lets callers patch fields without mutating the checkpoint.
     """
-    register_hf_config_aliases()
+    register_hf_config_aliases(checkpoint_path)
     config = AutoConfig.from_pretrained(checkpoint_path, trust_remote_code=trust_remote_code, **autoconfig_kwargs)
 
     if overrides:

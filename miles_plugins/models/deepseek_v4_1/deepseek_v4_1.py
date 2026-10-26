@@ -122,8 +122,8 @@ def v41_pipeline_bounds(config, vp_stage):
     if pp == 1:
         return None
     assert config.virtual_pipeline_model_parallel_size in (None, 1), "DeepSeek-V4.1 plugin: no virtual pipeline"
-    assert config.pipeline_model_parallel_layout is None and config.num_layers_in_first_pipeline_stage is None
-    assert config.num_layers_in_last_pipeline_stage is None and config.num_layers % pp == 0
+    assert config.pipeline_model_parallel_layout is None
+    # Use Megatron's contiguous partition, including uneven first/last stages.
     offset = get_transformer_layer_offset(config, vp_stage)
     return offset + 1, offset + get_num_layers_to_build(config, vp_stage)
 
@@ -174,7 +174,9 @@ class V41CarryPlan:
         cand = config.v41_candidate_source_layer_id
         self.candidates = 0 <= cand <= layer_id and any(cand < layer and ratios[layer] for layer in later)
         self.candidate_block_size = config.v41_candidate_block_size
-        self.input_ids = bool(config.v41_engram_layer_ids) and layer_id < max(config.v41_engram_layer_ids)
+        self.input_ids = getattr(config, "v41_vision_enabled", False) or (
+            bool(config.v41_engram_layer_ids) and layer_id < max(config.v41_engram_layer_ids)
+        )
 
 
 def v41_pack_carry(hidden: torch.Tensor, rt, plan: V41CarryPlan) -> torch.Tensor:
@@ -631,6 +633,9 @@ def get_dsv41_spec(args, config, vp_stage):
     assert args.dsv4_impl == "miles", "DeepSeek-V4.1 is only supported with --dsv4-impl miles"
     hf_config = load_hf_config(args.hf_checkpoint)
     apply_v41_config(config, hf_config)
+    config.v41_vision_enabled = getattr(args, "dsv41_image_sft", False)
+    if config.v41_vision_enabled:
+        config.v41_image_token_id = hf_config.image_token_id
     config.v41_stage_bounds = v41_pipeline_bounds(config, vp_stage)
     config.v41_carry_state = config.pipeline_model_parallel_size > 1 or config.recompute_granularity == "full"
     config.v41_hf_checkpoint = args.hf_checkpoint
@@ -655,4 +660,8 @@ def get_dsv41_spec(args, config, vp_stage):
         layer_spec.module = V41TransformerLayer
         layer_spec.submodules.self_attention_hyper_connection = V41HyperConnection
         layer_spec.submodules.mlp_hyper_connection = V41HyperConnection
+        if getattr(config, "v41_vision_enabled", False):
+            from miles_plugins.models.deepseek_v4_1.router import DeepSeekV41VisionRouter
+
+            layer_spec.submodules.mlp.keywords["submodules"].router = DeepSeekV41VisionRouter
     return block_spec

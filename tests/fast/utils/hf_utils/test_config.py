@@ -14,6 +14,21 @@ def _write_config_json(directory: str, config_dict: dict) -> None:
 
 
 class TestLoadHfConfig:
+    def test_local_checkpoint_ignores_unrelated_native_alias(self, tmp_path):
+        from miles.utils.hf_utils import config as hf_config_module
+
+        _write_config_json(str(tmp_path), {"model_type": "llama"})
+        alias = hf_config_module._HFConfigAlias(
+            model_type="unrelated_native", base_module="unused", base_class="Unused", compat_class_name="Unused"
+        )
+        with (
+            patch.object(hf_config_module, "_CONFIG_ALIASES", (alias,)),
+            patch.object(hf_config_module, "_REGISTERED_ALIASES", set()),
+            patch.object(hf_config_module, "CONFIG_MAPPING_NAMES", {"unrelated_native": "Unused"}),
+            patch("transformers.AutoConfig.from_pretrained", return_value=SimpleNamespace()),
+        ):
+            hf_config_module.load_hf_config(str(tmp_path))
+
     def test_overrides_apply_to_returned_config(self, tmp_path):
         from miles.utils.hf_utils.config import load_hf_config
 

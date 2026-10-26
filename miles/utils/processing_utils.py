@@ -82,7 +82,7 @@ def load_tokenizer(name_or_path: str, chat_template_path: str | None = None, **k
     if cache_key is not None and cache_key in _TOKENIZER_CACHE:
         return _TOKENIZER_CACHE[cache_key]
 
-    register_hf_config_aliases()
+    register_hf_config_aliases(name_or_path)
     tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
     _fix_v5_tokenizer_components(tokenizer, name_or_path)
     if chat_template_path:
@@ -149,6 +149,16 @@ def extract_multimodal_train_inputs(processor_output: Mapping[str, Any]) -> dict
 
 
 def load_processor(name_or_path: str, **kwargs):
+    config_path = Path(name_or_path) / "config.json"
+    if config_path.is_file():
+        import json
+
+        config = json.loads(config_path.read_text())
+        if config.get("model_type") == "deepseek_v41" and config.get("vision_config"):
+            from miles_plugins.models.deepseek_v4_1.processor import DeepSeekV41Processor
+
+            return DeepSeekV41Processor(name_or_path)
+
     from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
 
     if is_inkling_checkpoint(name_or_path):

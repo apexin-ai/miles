@@ -5,6 +5,8 @@ from .deepseekv4 import _packed_alphas
 
 
 def convert_deepseekv4_1_to_hf(args, name, param):
+    if name.startswith("module.module.visual."):
+        return [(name.removeprefix("module.module.visual."), param)]
     if name == "module.module.embedding.word_embeddings.weight":
         return [("embed.weight", param)]
     if name == "module.module.output_layer.weight":
@@ -86,6 +88,7 @@ def convert_deepseekv4_1_to_hf(args, name, param):
         "pre_mlp_layernorm.weight": "ffn_norm.weight",
         "mlp.router.weight": "ffn.gate.weight",
         "mlp.router.expert_bias": "ffn.gate.bias",
+        "mlp.router.expert_bias_vl": "ffn.gate.bias_vl",
     }
     if rest in direct_names:
         return [(f"{prefix}.{direct_names[rest]}", param)]

@@ -1,0 +1,136 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --disable-bias-linear
+  --num-layers 40
+  --hidden-size 5120
+  --ffn-hidden-size 2304
+  --num-attention-heads 64
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --norm-epsilon 1e-20
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 129280
+  --make-vocab-size-divisible-by 64
+  --hidden-dropout 0.0
+  --attention-dropout 0.0
+  --multi-latent-attention
+  --q-lora-rank 1280
+  --kv-lora-rank 512
+  --qk-head-dim 512
+  --qk-pos-emb-head-dim 64
+  --v-head-dim 512
+  --qk-layernorm
+  --rotary-scaling-factor 16
+  --rotary-base 10000
+  --original-max-position-embeddings 65536
+  --beta-fast 32
+  --beta-slow 1
+  --attention-softmax-in-fp32
+  --no-rope-fusion
+  --num-experts 384
+  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --moe-ffn-hidden-size 2304
+  --moe-router-topk 6
+  --moe-shared-expert-intermediate-size 2304
+  --moe-router-pre-softmax
+  --moe-router-score-function sqrtsoftplus
+  --moe-router-enable-expert-bias
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-aux-loss-coeff 0
+  --moe-grouped-gemm
+  --moe-router-topk-scaling-factor 1.5
+  --num-residual-streams 4
+  --mhc-sinkhorn-iterations 20
+  --csa-compress-ratios '[0,0,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --csa-compress-rotary-base 160000
+  --o-groups 8
+  --o-lora-rank 1024
+  --moe-n-hash-layers 0
+  --csa-window-size 128
+  --dsa-indexer-n-heads 32
+  --dsa-indexer-head-dim 128
+  --dsa-indexer-topk 512
+  --spec miles_plugins.models.deepseek_v4_1.deepseek_v4_1 get_dsv41_spec
+  --activation-func-clamp-value 10
+  --no-bias-swiglu-fusion
+  --hf-checkpoint /root/models/DeepSeek-V4.1-Flash-1017
+  --ref-load /root/models/DeepSeek-V4.1-Flash-1017
+  --save /root/shared_data/260101-000000-000/checkpoints
+  --save-interval 32
+  --prompt-data /root/datasets/image-sft/train.jsonl
+  --input-key messages
+  --multimodal-keys '{"image":"images"}'
+  --rollout-shuffle
+  --rollout-seed 42
+  --num-rollout 32
+  --rollout-batch-size 32
+  --n-samples-per-prompt 1
+  --global-batch-size 32
+  --rollout-function-path miles_plugins.models.deepseek_v4_1.sft.generate_rollout
+  --tensor-model-parallel-size 8
+  --pipeline-model-parallel-size 6
+  --expert-model-parallel-size 32
+  --expert-tensor-parallel-size 1
+  --context-parallel-size 1
+  --sequence-parallel
+  --qkv-format bshd
+  --micro-batch-size 1
+  --seq-length 4096
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --transformer-impl transformer_engine
+  --dsv4-impl miles
+  --decoder-first-pipeline-num-layers 6
+  --decoder-last-pipeline-num-layers 6
+  --debug-train-only
+  --loss-type sft_loss
+  --bf16
+  --calculate-per-token-loss
+  --disable-compute-advantages-and-returns
+  --actor-num-nodes 24
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --model-name deepseekv41
+  --custom-model-provider-path miles_plugins.models.deepseek_v4_1.multimodal.deepseek_v41_vlm_model_provider
+  --dsv41-vision-trainable full
+  --dsv41-vision-recompute
+  --moe-router-bias-update-rate 0
+  --moe-aux-loss-coeff 0
+  --optimizer adam
+  --lr 1e-06
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --clip-grad 1.0
+  --grad-reduce-in-bf16
+  --main-grads-dtype bf16
+  --optimizer-cpu-offload
+  --optimizer-offload-fraction 1.0
+  --use-precision-aware-optimizer
+  --use-wandb
+  --wandb-project miles-run_deepseek_v4_1_vision_sft
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --deploy-component all

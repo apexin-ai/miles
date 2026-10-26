@@ -92,7 +92,8 @@
          {
           "group": "DeepSeek-V4.1",
           "pages": [
-           "models/deepseek/deepseek-v4-1-flash"
+           "models/deepseek/deepseek-v4-1-flash",
+           "models/deepseek/deepseek-v4-1-1017-vision-sft"
           ],
           "expanded": false
          },
