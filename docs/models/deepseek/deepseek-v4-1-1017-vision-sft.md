@@ -36,10 +36,22 @@ All 192 ranks passed in-memory parameter corruption followed by model-only
 reload; every visual tensor was included, with a complete visual hash check on
 each of the 32 replicas. This does not test optimizer or data-cursor resume.
 
-Training resume, native HF export and held-out image-task improvement remain
-unqualified until the acceptance procedure below succeeds. CPU tests alone do
-not establish those results. The native visual forward and image preprocessing
-were also checked bitwise against the pinned DeepSeek reference on H20.
+The saved visual state was reconstructed through the native checkpoint reader
+and HF name converter, exported as 266 native-name safetensors, and checked
+against the complete trained visual hash and an exact file readback. Native
+visual RMSNorm weights are FP32 at runtime; preserving that dtype is necessary
+for bitwise export even though the original source shard stores them as BF16.
+This check covers the visual export, not a complete language-plus-vision HF
+export or its subsequent inference load.
+
+These GPU checks used a pinned official Miles runtime with the feature modules
+overlaid. They do not establish that a clean checkout of this feature branch
+passes the complete training lifecycle; that qualification is separate.
+Training resume, complete native HF export and held-out image-task improvement
+remain unqualified until the acceptance procedure below succeeds. CPU tests
+alone do not establish those results. The native visual forward and image
+preprocessing were also checked bitwise against the pinned DeepSeek reference
+on H20.
 
 ## Image Contract
 
