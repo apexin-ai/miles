@@ -48,11 +48,10 @@ subsequent inference load of this complete export is not yet qualified.
 
 The earlier joint smoke and model-only reload checks used a pinned official
 Miles runtime with the feature modules overlaid. Their provenance is distinct
-from the completed exact-fork vision-only run described below; joint training
-on the exact fork remains a separate qualification.
-Training resume, complete native HF inference reload and held-out image-task improvement
-remain unqualified until the acceptance procedure below succeeds. CPU tests
-alone do not establish those results. The native visual forward and image
+from the completed exact-fork vision-only and joint runs described below.
+Training resume, complete jointly updated native HF inference reload and
+joint-training held-out improvement remain unqualified. CPU tests alone do
+not establish those results. The native visual forward and image
 preprocessing were also checked bitwise against the pinned DeepSeek reference
 on H20.
 
@@ -61,8 +60,33 @@ image-swap/removal controls with the archived exact scorer, greedy 4096 new
 tokens and context 8192. Strict correct counts are 51/256 with the real image,
 11/256 with a swapped image and 19/256 without an image. The real-image arm
 has 203 invalid final answers; always answering `1` scores 97/256. These are
-baseline results. The final causal vision-only comparison is recorded below;
+baseline results. The final vision-only comparison is recorded below;
 joint-training evaluation remains pending.
+
+For engineering acceptance, the completed vision-only run establishes actual
+visual gradient flow, parameter updates, export/inference loading and an
+observed held-out strict-score increase. This is the requested acceptance scope;
+additional regression-case analysis and causal-isolation experiments are not
+required for it. It does not remove the inference-control limitation below.
+
+## Completed Exact-Fork Joint Run
+
+`joint-geometric-fork-v9` completed the same fixed 32-update, 1024-image recipe
+from the original base at fork `98ec6854`, with language training enabled.
+All 6144 rank/update records passed finite-gradient/weight and successful-step
+checks. All 266 visual tensors have nonzero gradient and weight-change witnesses;
+the 32 visual replicas agree at every update. Their final complete hash is
+`925382e6d008d8028fce2ec7347b514d1f37a04ae45cc24173f99444ffed9111`.
+
+Of 576 sampled language parameter probes, 552 show changes over the run:
+192 router probes, 192 attention probes and 168 expert probes. The remaining
+24 expert probes show no change at their sampled positions; this is not a
+complete language-tensor delta audit. All 192 ranks passed the final model-only
+corruption/reload check at iteration 31, including full visual hash equality.
+The checkpoint has 192 native DCP shards totaling 1,104,937,017,684 bytes.
+The independent receipt is `data/joint-geometric-fork-v9-proof.json` under the
+run project. No joint held-out score or optimizer-resume qualification is
+claimed from these training and reload checks.
 
 ## Completed Exact-Fork Vision-Only Run
 
