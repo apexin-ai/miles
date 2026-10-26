@@ -1,0 +1,404 @@
+{
+  "schema": "deepseek-v41-1017-recorded-curves-v1",
+  "model": "DeepSeek-V4.1-Flash-1017",
+  "model_revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+  "training_source_commit": "98ec6854",
+  "recipe": {
+    "updates": 32,
+    "global_batch_size": 32,
+    "learning_rate": 1e-06,
+    "weight_decay": 0,
+    "seed": 42
+  },
+  "training": [
+    {
+      "attempt": "vision-control-fork-v9",
+      "label": "Vision-only",
+      "color": "#d97706",
+      "source_log": "logs/vision-control-fork-v9/train.log",
+      "source_log_sha256": "971c276fc93f2e685bb61191e26e1df7f53c821ae1011ecc0f39658ae94ac771",
+      "source_log_bytes": 32227644,
+      "metric": "train/loss",
+      "duplicate_log_entries_per_step": 2,
+      "points": [
+        {
+          "step": 0,
+          "loss": 12.782811482747396,
+          "source_line": 2275
+        },
+        {
+          "step": 1,
+          "loss": 12.373472849527994,
+          "source_line": 2327
+        },
+        {
+          "step": 2,
+          "loss": 12.659793853759766,
+          "source_line": 2370
+        },
+        {
+          "step": 3,
+          "loss": 12.258336385091146,
+          "source_line": 2428
+        },
+        {
+          "step": 4,
+          "loss": 12.117538452148438,
+          "source_line": 2477
+        },
+        {
+          "step": 5,
+          "loss": 12.462570190429688,
+          "source_line": 2516
+        },
+        {
+          "step": 6,
+          "loss": 12.040481567382812,
+          "source_line": 2555
+        },
+        {
+          "step": 7,
+          "loss": 11.952648162841797,
+          "source_line": 2594
+        },
+        {
+          "step": 8,
+          "loss": 11.587285359700521,
+          "source_line": 2633
+        },
+        {
+          "step": 9,
+          "loss": 11.994374593098959,
+          "source_line": 2672
+        },
+        {
+          "step": 10,
+          "loss": 12.062492370605469,
+          "source_line": 2712
+        },
+        {
+          "step": 11,
+          "loss": 11.352714538574219,
+          "source_line": 2751
+        },
+        {
+          "step": 12,
+          "loss": 11.711774190266928,
+          "source_line": 2790
+        },
+        {
+          "step": 13,
+          "loss": 11.865486145019531,
+          "source_line": 2829
+        },
+        {
+          "step": 14,
+          "loss": 11.809153238932291,
+          "source_line": 2868
+        },
+        {
+          "step": 15,
+          "loss": 11.683052062988281,
+          "source_line": 2907
+        },
+        {
+          "step": 16,
+          "loss": 11.299812316894531,
+          "source_line": 2946
+        },
+        {
+          "step": 17,
+          "loss": 11.026845296223959,
+          "source_line": 2986
+        },
+        {
+          "step": 18,
+          "loss": 10.724750518798828,
+          "source_line": 3025
+        },
+        {
+          "step": 19,
+          "loss": 10.578559875488281,
+          "source_line": 3065
+        },
+        {
+          "step": 20,
+          "loss": 10.759760538736979,
+          "source_line": 3104
+        },
+        {
+          "step": 21,
+          "loss": 10.732224782307943,
+          "source_line": 3144
+        },
+        {
+          "step": 22,
+          "loss": 10.322069803873697,
+          "source_line": 3183
+        },
+        {
+          "step": 23,
+          "loss": 10.609180450439453,
+          "source_line": 3222
+        },
+        {
+          "step": 24,
+          "loss": 10.694325764973959,
+          "source_line": 3261
+        },
+        {
+          "step": 25,
+          "loss": 10.339988072713217,
+          "source_line": 3300
+        },
+        {
+          "step": 26,
+          "loss": 10.426883061726889,
+          "source_line": 3339
+        },
+        {
+          "step": 27,
+          "loss": 10.782231648763021,
+          "source_line": 3378
+        },
+        {
+          "step": 28,
+          "loss": 9.994413375854492,
+          "source_line": 3417
+        },
+        {
+          "step": 29,
+          "loss": 10.473048528035482,
+          "source_line": 3456
+        },
+        {
+          "step": 30,
+          "loss": 10.693314870198568,
+          "source_line": 3495
+        },
+        {
+          "step": 31,
+          "loss": 10.013474782307943,
+          "source_line": 3534
+        }
+      ]
+    },
+    {
+      "attempt": "joint-geometric-fork-v9",
+      "label": "Joint language + vision",
+      "color": "#0369a1",
+      "source_log": "logs/joint-geometric-fork-v9/train.log",
+      "source_log_sha256": "859395da36659c4ac1835f2dbc61cb1f27ccdb4d6c5f8f7de23ef1cd2f192b9d",
+      "source_log_bytes": 29954289,
+      "metric": "train/loss",
+      "duplicate_log_entries_per_step": 2,
+      "points": [
+        {
+          "step": 0,
+          "loss": 12.735922495524088,
+          "source_line": 2274
+        },
+        {
+          "step": 1,
+          "loss": 10.469843546549479,
+          "source_line": 2343
+        },
+        {
+          "step": 2,
+          "loss": 8.822275161743164,
+          "source_line": 2408
+        },
+        {
+          "step": 3,
+          "loss": 7.547901153564453,
+          "source_line": 2448
+        },
+        {
+          "step": 4,
+          "loss": 5.202460606892903,
+          "source_line": 2503
+        },
+        {
+          "step": 5,
+          "loss": 4.534574508666992,
+          "source_line": 2547
+        },
+        {
+          "step": 6,
+          "loss": 3.346498489379883,
+          "source_line": 2587
+        },
+        {
+          "step": 7,
+          "loss": 2.673903783162435,
+          "source_line": 2627
+        },
+        {
+          "step": 8,
+          "loss": 0.7032877604166666,
+          "source_line": 2667
+        },
+        {
+          "step": 9,
+          "loss": 0.4742984374364217,
+          "source_line": 2718
+        },
+        {
+          "step": 10,
+          "loss": 0.5135303338368734,
+          "source_line": 2763
+        },
+        {
+          "step": 11,
+          "loss": 0.40933950742085773,
+          "source_line": 2803
+        },
+        {
+          "step": 12,
+          "loss": 0.49343013763427734,
+          "source_line": 2843
+        },
+        {
+          "step": 13,
+          "loss": 0.43341724077860516,
+          "source_line": 2884
+        },
+        {
+          "step": 14,
+          "loss": 0.4510457515716553,
+          "source_line": 2924
+        },
+        {
+          "step": 15,
+          "loss": 0.35799479484558105,
+          "source_line": 2964
+        },
+        {
+          "step": 16,
+          "loss": 0.3547520637512207,
+          "source_line": 3014
+        },
+        {
+          "step": 17,
+          "loss": 0.31951196988423664,
+          "source_line": 3058
+        },
+        {
+          "step": 18,
+          "loss": 0.22889751195907593,
+          "source_line": 3099
+        },
+        {
+          "step": 19,
+          "loss": 0.31615424156188965,
+          "source_line": 3149
+        },
+        {
+          "step": 20,
+          "loss": 0.21320706605911255,
+          "source_line": 3193
+        },
+        {
+          "step": 21,
+          "loss": 0.1688177982966105,
+          "source_line": 3233
+        },
+        {
+          "step": 22,
+          "loss": 0.21867855389912924,
+          "source_line": 3273
+        },
+        {
+          "step": 23,
+          "loss": 0.2154531478881836,
+          "source_line": 3313
+        },
+        {
+          "step": 24,
+          "loss": 0.16297139724095663,
+          "source_line": 3353
+        },
+        {
+          "step": 25,
+          "loss": 0.22467923164367676,
+          "source_line": 3393
+        },
+        {
+          "step": 26,
+          "loss": 0.34369611740112305,
+          "source_line": 3433
+        },
+        {
+          "step": 27,
+          "loss": 0.19830437501271567,
+          "source_line": 3473
+        },
+        {
+          "step": 28,
+          "loss": 0.22800050179163614,
+          "source_line": 3513
+        },
+        {
+          "step": 29,
+          "loss": 0.17646499474843344,
+          "source_line": 3553
+        },
+        {
+          "step": 30,
+          "loss": 0.09701176484425862,
+          "source_line": 3593
+        },
+        {
+          "step": 31,
+          "loss": 0.17383867502212524,
+          "source_line": 3633
+        }
+      ]
+    }
+  ],
+  "evaluation": {
+    "n": 256,
+    "majority_correct": 97,
+    "scorer_sha256": "0f400ddea5be7cb5c24a6b3571bd7276bd30f76f6f6684540a501da2b095b13f",
+    "protocol": "integer_first_final_line_v1",
+    "sources": [
+      {
+        "file": "data/vision-control-geometric-v9-qualified.json",
+        "sha256": "1f73a9812676ed71e395602c19520d0b754db34a66a2e3a8667a36844ded2e92"
+      },
+      {
+        "file": "data/joint-geometric-v11-qualified.json",
+        "sha256": "783f747e6d9763e85456b421bd845cf5bd32307ed89c2c150c7515e90d4c2909"
+      }
+    ],
+    "runs": [
+      {
+        "label": "Original base",
+        "color": "#94a3b8",
+        "correct": {
+          "image": 51,
+          "swap": 11,
+          "none": 19
+        }
+      },
+      {
+        "label": "Vision-only",
+        "color": "#d97706",
+        "correct": {
+          "image": 62,
+          "swap": 16,
+          "none": 20
+        }
+      },
+      {
+        "label": "Joint language + vision",
+        "color": "#0369a1",
+        "correct": {
+          "image": 68,
+          "swap": 17,
+          "none": 19
+        }
+      }
+    ]
+  }
+}
