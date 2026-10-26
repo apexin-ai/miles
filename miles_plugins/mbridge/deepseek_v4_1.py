@@ -58,6 +58,7 @@ class DeepseekV41Bridge(DeepseekV4Bridge):
         "pre_mlp_layernorm.weight": ["layers.{layer_number}.ffn_norm.weight"],
         "mlp.router.weight": ["layers.{layer_number}.ffn.gate.weight"],
         "mlp.router.expert_bias": ["layers.{layer_number}.ffn.gate.bias"],
+        "mlp.router.expert_bias_vl": ["layers.{layer_number}.ffn.gate.bias_vl"],
         "mlp.shared_experts.linear_fc1.weight": [
             "layers.{layer_number}.ffn.shared_experts.w1.weight",
             "layers.{layer_number}.ffn.shared_experts.w3.weight",
@@ -71,11 +72,31 @@ class DeepseekV41Bridge(DeepseekV4Bridge):
     }
 
     def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
+        if mcore_weights_name.startswith("visual."):
+            return [mcore_weights_name.removeprefix("visual.")]
         if mcore_weights_name in self._DIRECT_MAPPING:
             return [self._DIRECT_MAPPING[mcore_weights_name]]
         if "hyper_connection" in mcore_weights_name or "v41_engram" in mcore_weights_name:
             return self._weight_name_mapping_other(mcore_weights_name)
         return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
+
+    def _get_safetensor_io(self, weights_path):
+        import torch
+        from mbridge.core.safetensor_io import SafeTensorIO
+
+        from miles_plugins.models.deepseek_v4_1.weights import decode_weight
+
+        class TrainingIO(SafeTensorIO):
+            def load_one_hf_weight(self, name):
+                value = super().load_one_hf_weight(name)
+                if value.dtype in (torch.bfloat16, torch.float32, torch.float16):
+                    return value
+                scale_name = name.removesuffix(".weight") + ".scale"
+                if not name.endswith(".weight") or scale_name not in self.index:
+                    raise ValueError(f"Missing native V4.1 quantization scale: {name}")
+                return decode_weight(value, super().load_one_hf_weight(scale_name), name=name)
+
+        return TrainingIO(self._get_actual_hf_path(weights_path))
 
     def _build_config(self):
         hf = self.hf_config

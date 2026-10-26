@@ -27,6 +27,14 @@ def normalize_dsv4_args(args: Namespace) -> None:
     which post-init contract Megatron enforces on the config.
     """
     _validate_impl(args)
+    if (
+        getattr(args, "dsv41_vision_trainable", "none") != "none"
+        or getattr(args, "dsv41_vision_recompute", False)
+        or getattr(args, "dsv41_freeze_language", False)
+    ) and getattr(args, "custom_model_provider_path", None) != (
+        "miles_plugins.models.deepseek_v4_1.multimodal.deepseek_v41_vlm_model_provider"
+    ):
+        raise ValueError("V4.1 visual flags require the V4.1 multimodal model provider")
     # Both implementations take their hyper-connections from Megatron's own module.
     args.enable_hyper_connections = True
     args.experimental_attention_variant = "dsv4_hybrid" if args.dsv4_impl == "megatron" else "dsv4"

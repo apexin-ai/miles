@@ -39,6 +39,18 @@ class Dsv4MegatronPluginsConfig(BaseConfig):
             ),
         ),
     ] = "megatron"
+    dsv41_vision_trainable: A[
+        str,
+        Arg(
+            choices=["none", "projector", "full"],
+            help="V4.1 visual scope; requires the multimodal model provider and an image SFT dataset.",
+        ),
+    ] = "none"
+    dsv41_vision_recompute: A[bool, Arg(help="Recompute trainable ViT blocks.")] = False
+    dsv41_freeze_language: A[
+        bool,
+        Arg(help="Freeze language parameters before DDP/optimizer construction for a vision-only control."),
+    ] = False
 
 
 class DsaMegatronPluginsConfig(BaseConfig):

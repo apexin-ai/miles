@@ -239,6 +239,7 @@ python scripts/run_deepseek_v4_1.py train --train-mode lora \
 
 ## 7. Pairs Well With
 
+- [1017 Image SFT](/models/deepseek/deepseek-v4-1-1017-vision-sft) - experimental native visual training and its separate acceptance requirements.
 - [DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash) - the parent architecture and the `torch_dist` conversion flow.
 - [Architecture Support](/advanced/architecture-support) - the plugin lives under `miles_plugins/models/deepseek_v4_1/` (`deepseek_v4_1.py`, `engram.py`, `ops/{compressor,indexer,kvnorm}.py`); its RoPE, fake-quant and hyper-connection kernels are in `miles/kernels/{position,quant,hyper_connection}`.
 - [Low Precision RL](/advanced/low-precision) - the fake-quantization points the plugin reproduces are the same ones an fp8/fp4 rollout would expose.
