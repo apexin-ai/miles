@@ -46,9 +46,10 @@ and 510,286,156,120 tensor bytes. All 266 visual tensors in that export exactly
 match the independent trained visual export, including the FP32 norms. The
 subsequent inference load of this complete export is not yet qualified.
 
-These GPU checks used a pinned official Miles runtime with the feature modules
-overlaid. They do not establish that a clean checkout of this feature branch
-passes the complete training lifecycle; that qualification is separate.
+The earlier joint smoke and model-only reload checks used a pinned official
+Miles runtime with the feature modules overlaid. Their provenance is distinct
+from the completed exact-fork vision-only run described below; joint training
+on the exact fork remains a separate qualification.
 Training resume, complete native HF inference reload and held-out image-task improvement
 remain unqualified until the acceptance procedure below succeeds. CPU tests
 alone do not establish those results. The native visual forward and image
@@ -62,6 +63,34 @@ tokens and context 8192. Strict correct counts are 51/256 with the real image,
 has 203 invalid final answers; always answering `1` scores 97/256. These are
 baseline results, not evidence of a training gain. The final causal vision-only
 and joint-training evaluations remain pending.
+
+## Completed Exact-Fork Vision-Only Run
+
+`vision-control-fork-v9` completed 32 updates of batch 32 on all 40 language
+layers at fork commit `98ec6854`, with TP8/PP6/DP4/EP32 and CP1. The fixed recipe
+uses 1024 exact-label training images, LR `1e-6`, zero weight decay and
+seed/shuffle seed 42. All 192 rank initialization receipts resolve loaded Miles
+and model modules to that committed fork, not the earlier overlay runtime.
+
+All 6144 rank/update receipts passed. Every rank's complete language-parameter
+hash remained unchanged before/after and across the 32 updates. The 32 visual
+replicas agree after every update, and all 266 visual tensors have finite
+reduced-gradient witnesses and actual weight changes over the run. The 160
+pipeline ranks without visual parameters also completed their empty-optimizer
+steps successfully. First/last batch losses are 12.782811/10.013475; they are
+different batches and do not establish a held-out accuracy improvement.
+
+The final nonresumable visual snapshot exactly matches the audited parameter
+hash `01c4097607d97f6be26c84624aa62252475ecd1a9236625cbc90d8606aa83120`.
+Its safetensors file SHA256 is
+`bc9a9928154de983eac329119eddb4f5609ccc7ab8c88cf4fcf6d524a60e4a7e`.
+The duplicate-free native HF staging path removes historical visual keys from
+mixed source shards, retains byte-identical language weights, and preserves
+the trained FP32 visual norms. All 24 inference replicas loaded this staged
+model and began the same-source held-out image/swap/removal evaluation. Its
+final paired scores remain pending; partial predictions are not scored as a
+completed experiment. This inference load qualifies the visual-only overlay,
+not the separate complete HF export of jointly updated language weights.
 
 ## Image Contract
 
