@@ -110,6 +110,23 @@ both arms. The run therefore supports the audited vision-training/export/eval
 path and a measured task-specific strict-score change, not general accuracy,
 multiple-seed reproducibility, or training resume.
 
+The validity decomposition is a scoring identity, not a causal attribution to
+format learning. Of the 30 invalid-to-correct transitions, 15 baseline answers
+exhausted 4096 tokens without closing thinking and 15 stopped with a noninteger
+first final line. Conversely, 19 correct baseline answers became unfinished
+thinking and one became a noninteger final line. Total unfinished-thinking
+counts actually rise from 140 to 165. The three supervised target tokens include
+the thinking-end token, the integer and EOS, so visual conditioning can affect
+both answer content and the frozen decoder's termination behavior.
+
+A further inference-control gap remains: all 256 no-image response strings
+differ between runs, including 147 extracted-answer differences, despite the
+byte-identical language state. The existing mixed dynamic-batch evaluations
+therefore do not establish deterministic inference parity. Numerical/batching
+variation must be isolated before attributing the entire score difference to
+changed visual representations; the small net no-image score difference does
+not resolve this per-example drift.
+
 ## Image Contract
 
 Use one JSONL record per conversation, a `messages` field and an `images` list
