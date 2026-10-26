@@ -1,6 +1,6 @@
 ---
 title: DeepSeek-V4.1 Flash 1017 Image SFT
-description: Experimental joint language/vision SFT and causal vision-only controls for the native 1017 checkpoint.
+description: Native 1017 joint language/vision SFT with audited updates, checkpoint reload, HF export and held-out image evaluation.
 ---
 
 ## Status And Scope
@@ -41,27 +41,23 @@ and HF name converter, exported as 266 native-name safetensors, and checked
 against the complete trained visual hash and an exact file readback. Native
 visual RMSNorm weights are FP32 at runtime; preserving that dtype is necessary
 for bitwise export even though the original source shard stores them as BF16.
-The complete language-plus-vision native HF export also completed: 96,085 keys
-and 510,286,156,120 tensor bytes. All 266 visual tensors in that export exactly
-match the independent trained visual export, including the FP32 norms. The
-subsequent inference load of this complete export is not yet qualified.
+The final exact-fork joint native HF export and complete-model inference
+qualification are recorded below.
 
 The earlier joint smoke and model-only reload checks used a pinned official
 Miles runtime with the feature modules overlaid. Their provenance is distinct
 from the completed exact-fork vision-only and joint runs described below.
-Training resume, complete jointly updated native HF inference reload and
-joint-training held-out improvement remain unqualified. CPU tests alone do
-not establish those results. The native visual forward and image
-preprocessing were also checked bitwise against the pinned DeepSeek reference
-on H20.
+Optimizer/data-cursor training resume remains unqualified. CPU tests alone do
+not establish full-model training or inference results. The native visual
+forward and image preprocessing were also checked bitwise against the pinned
+DeepSeek reference on H20.
 
 The DeepSeek geometric baseline completed all 256 held-out scenes and the
 image-swap/removal controls with the archived exact scorer, greedy 4096 new
 tokens and context 8192. Strict correct counts are 51/256 with the real image,
 11/256 with a swapped image and 19/256 without an image. The real-image arm
 has 203 invalid final answers; always answering `1` scores 97/256. These are
-baseline results. The final vision-only comparison is recorded below;
-joint-training evaluation remains pending.
+baseline results. The final joint and vision-only comparisons are recorded below.
 
 For engineering acceptance, the completed vision-only run establishes actual
 visual gradient flow, parameter updates, export/inference loading and an
@@ -70,6 +66,10 @@ additional regression-case analysis and causal-isolation experiments are not
 required for it. It does not remove the inference-control limitation below.
 
 ## Completed Exact-Fork Joint Run
+
+Recorded artifacts are under
+`/apdcephfs_hldy2/share_305110755/jlw/miles-dsv41-vision-20261026`
+on the run's shared project disk.
 
 `joint-geometric-fork-v9` completed the same fixed 32-update, 1024-image recipe
 from the original base at fork `98ec6854`, with language training enabled.
@@ -85,8 +85,67 @@ complete language-tensor delta audit. All 192 ranks passed the final model-only
 corruption/reload check at iteration 31, including full visual hash equality.
 The checkpoint has 192 native DCP shards totaling 1,104,937,017,684 bytes.
 The independent receipt is `data/joint-geometric-fork-v9-proof.json` under the
-run project. No joint held-out score or optimizer-resume qualification is
-claimed from these training and reload checks.
+run project. Optimizer/data-cursor resume is not qualified by these model-only
+reload checks.
+
+### Complete Native HF Export And Inference
+
+The final iteration-31 model was exported to `checkpoints/joint-native-export-v10`
+under the run project, with 96,085 native HF keys and 510,286,156,120 tensor bytes.
+The 2592 trained shards retain the native FP4/FP8 UE8M0 language representation
+and the FP32 visual norms. Only identified immutable source assets are retained;
+historical visual weights never replace the trained visual state. The independent
+receipt `checkpoints/joint-visual-export-proof-v10/result.json` verifies all 266
+exported visual tensors against the complete trained hash and the full HF export.
+The independent visual safetensors SHA256 is
+`ddf6f6021a0634a5eebeaabf117f3a912c598c9f88d0ecebd07b8415d81e0f1f`.
+
+All 20 physical inference replicas loaded the complete jointly updated model
+and generated image-evaluation responses. Each local `joint-stage.json` verifies
+every trained and frozen shard SHA256, duplicate-free tensor coverage, native
+shapes/dtypes and total tensor bytes before inference. This qualifies loading
+the joint language-plus-vision export, not merely a visual overlay on the base.
+
+Taiji terminated four original nodes at its runtime limit after the complete
+training checkpoint was saved. All 192 checkpoint shards remained intact on
+the project disk. The interrupted CPU export worker resumed its receipt-checked
+tasks, and the same 24 logical evaluation shards were reassigned to 20 surviving
+nodes, with four sequential second-wave shards. Neither the evaluation source
+nor the held-out inputs, scorer or decoding budget changed during recovery.
+
+### Final Joint Evaluation
+
+All 768 final responses completed, covering 256 held-out scenes with real,
+swapped and removed images. All 24 logical shards exited successfully, and the
+unchanged archived exact scorer and complete-coverage qualifier exited with
+code zero. Only the final fixed-recipe checkpoint was evaluated; there was no
+held-out checkpoint selection.
+
+| Input | Baseline Correct | Joint Correct |
+| --- | ---: | ---: |
+| Real image | 51/256 (19.921875%) | 68/256 (26.5625%) |
+| Swapped image | 11/256 | 17/256 |
+| No image | 19/256 | 19/256 |
+
+The real-image strict score increases by 6.640625 percentage points. Paired
+transitions are 39 wrong-to-right and 22 right-to-wrong, for a net gain of 17.
+Answer-macro accuracy rises from 19.300342% to 22.956311%; invalid final answers
+fall from 203 to 185. On the 31 examples valid in both outputs, each model gets
+30 correct, so final-answer validity transitions account for the net 17 gain.
+This is scoring accounting, not a causal explanation of what the visual tower
+learned. The majority-answer baseline remains 97/256; this is a measured
+task-specific strict-score gain, not a general benchmark improvement.
+
+The canonical paired result is `data/joint-geometric-v11-qualified.json` under
+the run project, SHA256
+`783f747e6d9763e85456b421bd845cf5bd32307ed89c2c150c7515e90d4c2909`.
+The evaluation source SHA256 is
+`a7ba5d02c73f7a7a4db49e7fff6e07d2a4c08e63c3ebefb1a18d8beb8d7ae999`;
+the scorer SHA256 is
+`0f400ddea5be7cb5c24a6b3571bd7276bd30f76f6f6684540a501da2b095b13f`.
+The joint model trains language as well as vision; the separately audited
+frozen-language vision-only comparison below supplies the visual-update
+acceptance evidence.
 
 ## Completed Exact-Fork Vision-Only Run
 
@@ -112,8 +171,8 @@ The duplicate-free native HF staging path removes historical visual keys from
 mixed source shards, retains byte-identical language weights, and preserves
 the trained FP32 visual norms. All 24 inference replicas loaded this staged
 model and completed the same-source held-out image/swap/removal evaluation.
-This inference load qualifies the visual-only overlay,
-not the separate complete HF export of jointly updated language weights.
+This inference load qualifies the visual-only overlay. The complete HF export
+of jointly updated language weights is separately qualified above.
 
 ### Final Vision-Only Evaluation
 
@@ -238,3 +297,15 @@ The focused CPU contracts are in
 inventory, spatial ordering, real visual weight updates, recompute parity,
 TP-slice gradient sums, image-mask offsets and native export names. These tests
 are not an end-to-end full-model or visual-quality qualification.
+
+The 31 focused CPU tests, including the live-GCS Ray-head discovery contracts
+in `tests/fast/utils/test_ray_utils.py`, passed during final qualification:
+
+```bash
+python -m pytest --noconftest \
+  tests/fast/backends/megatron_utils/test_dsv41_vision.py \
+  tests/fast/utils/test_ray_utils.py -q
+```
+
+`--noconftest` isolates these CPU contracts from the repository's SGLang-backed
+global test setup. This is not a full repository CI pass.
