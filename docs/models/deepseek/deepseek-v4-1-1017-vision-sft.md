@@ -61,8 +61,8 @@ image-swap/removal controls with the archived exact scorer, greedy 4096 new
 tokens and context 8192. Strict correct counts are 51/256 with the real image,
 11/256 with a swapped image and 19/256 without an image. The real-image arm
 has 203 invalid final answers; always answering `1` scores 97/256. These are
-baseline results, not evidence of a training gain. The final causal vision-only
-and joint-training evaluations remain pending.
+baseline results. The final causal vision-only comparison is recorded below;
+joint-training evaluation remains pending.
 
 ## Completed Exact-Fork Vision-Only Run
 
@@ -87,10 +87,28 @@ Its safetensors file SHA256 is
 The duplicate-free native HF staging path removes historical visual keys from
 mixed source shards, retains byte-identical language weights, and preserves
 the trained FP32 visual norms. All 24 inference replicas loaded this staged
-model and began the same-source held-out image/swap/removal evaluation. Its
-final paired scores remain pending; partial predictions are not scored as a
-completed experiment. This inference load qualifies the visual-only overlay,
+model and completed the same-source held-out image/swap/removal evaluation.
+This inference load qualifies the visual-only overlay,
 not the separate complete HF export of jointly updated language weights.
+
+### Final Vision-Only Evaluation
+
+All 768 baseline and 768 final responses completed, with all 24 replicas in
+each arm exiting successfully. The unchanged archived exact scorer gives
+51/256 (19.921875%) before training and 62/256 (24.21875%) after training,
+a gain of 4.296875 percentage points. Paired transitions are 31 wrong-to-right
+and 20 right-to-wrong. Answer-macro accuracy rises from 19.300342% to
+24.928592%. Final control counts are 16/256 for swapped images and 20/256
+without images, versus 11/256 and 19/256 at baseline.
+
+This is a modest strict-score gain, not evidence of a broad recognition or
+benchmark improvement: invalid final answers remain 193/256, down from
+203/256. Of the net 11 additional correct responses, 10 come from final-answer
+validity transitions; the 32 examples valid in both outputs improve from
+31 to 32 correct. Always answering `1` scores 97/256 (37.890625%), above
+both arms. The run therefore supports the audited vision-training/export/eval
+path and a measured task-specific strict-score change, not general accuracy,
+multiple-seed reproducibility, or training resume.
 
 ## Image Contract
 
