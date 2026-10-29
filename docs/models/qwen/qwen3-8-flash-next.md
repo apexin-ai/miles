@@ -375,5 +375,15 @@ inconsistent aggregates. It reports answer-macro accuracy, paired wrong/right
 transitions, invalid-answer changes and the always-one reference. Every plotted
 dot must be a measured checkpoint; dips are preserved, not smoothed away.
 
+With multiple allocated eight-GPU nodes, evaluate the baseline on one worker and
+disjoint groups of visual snapshots on others, passing `--skip-baseline` on those
+checkpoint workers. Keep every generation, data, and control option identical.
+After all workers finish, combine their output directories with
+`python -m examples.qwen3_8_next_vision_sft.merge --evaluations WORKER_DIRS
+--data DATA_DIR --output MERGED_DIR`. The merger rejects duplicate updates or
+different protocols, source hashes, and package versions, then re-scores the raw
+predictions before accepting a complete curve. Checkpoint workers require the
+completed frozen-language audits from training.
+
 A falling training loss, successful weight loading, or scores from the reference
 GLM/DeepSeek issues are not evidence of a Qwen evaluation improvement.
