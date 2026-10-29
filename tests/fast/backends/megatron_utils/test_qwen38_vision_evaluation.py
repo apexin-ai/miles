@@ -174,3 +174,37 @@ def test_visual_snapshot_requires_final_hash_not_just_an_intermediate_audit(visu
     final.rename(final.with_name("rank-001-update-000007.json"))
     with pytest.raises(ValueError, match="no completed update"):
         _load_snapshot(snapshot, args)
+
+
+@pytest.mark.parametrize("failure", [None, "begin", "load", "end", "exception"])
+def test_visual_updates_obey_native_session_lifecycle(failure):
+    from examples.qwen3_8_next_vision_sft.evaluate import _LOADER, _update_visual
+
+    calls = []
+    tensors = {"model.visual.weight": torch.ones(2)}
+
+    def begin():
+        calls.append("begin")
+        return failure != "begin", "begin failed"
+
+    def load(weights, *, load_format, flush_cache):
+        calls.append("load")
+        assert weights == list(tensors.items()) and load_format == _LOADER and flush_cache
+        if failure == "exception":
+            raise RuntimeError("load exception")
+        return failure != "load", "load failed"
+
+    def end():
+        calls.append("end")
+        return failure != "end", "end failed"
+
+    engine = SimpleNamespace(begin_weight_update=begin, update_weights_from_tensor=load, end_weight_update=end)
+    if failure is None:
+        _update_visual(engine, tensors)
+    else:
+        with pytest.raises(
+            RuntimeError if failure == "exception" else ValueError,
+            match=failure.replace("exception", "load exception"),
+        ):
+            _update_visual(engine, tensors)
+    assert calls == (["begin"] if failure == "begin" else ["begin", "load", "end"])

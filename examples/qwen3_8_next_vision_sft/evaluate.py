@@ -59,6 +59,22 @@ def load_visual_and_verify(model, named_tensors):
     print(json.dumps({"event": "visual-load-verified", "tensors": len(parameters)}), flush=True)
 
 
+def _update_visual(engine, tensors):
+    success, message = engine.begin_weight_update()
+    if not success:
+        raise ValueError(f"Cannot begin inference weight update: {message}")
+    try:
+        success, message = engine.update_weights_from_tensor(
+            list(tensors.items()), load_format=_LOADER, flush_cache=True
+        )
+        if not success:
+            raise ValueError(f"Inference visual update failed: {message}")
+    finally:
+        success, message = engine.end_weight_update()
+        if not success:
+            raise ValueError(f"Cannot finalize inference weight update: {message}")
+
+
 def _source_visual(model):
     mapping = json.loads((model / "model.safetensors.index.json").read_text())["weight_map"]
     selected = {name: shard for name, shard in mapping.items() if name.startswith("model.visual.")}
@@ -299,11 +315,7 @@ def main():
                 tensors, receipt = _source_visual(args.model), None
             else:
                 update, tensors, receipt = _load_snapshot(path, args)
-            success, message = engine.update_weights_from_tensor(
-                list(tensors.items()), load_format=_LOADER, flush_cache=True
-            )
-            if not success:
-                raise ValueError(f"Inference visual update failed: {message}")
+            _update_visual(engine, tensors)
             del tensors
             metrics = {
                 split: _evaluate_split(
