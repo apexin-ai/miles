@@ -107,9 +107,12 @@ def _prepare(processor, config, row, image_row, *, control, enable_thinking):
     text = processor.tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True, enable_thinking=enable_thinking
     )
+    _, header, prefill = text.rpartition("<|im_start|>assistant\n")
+    if not header or prefill not in ("<think>\n", "<think>\n\n</think>\n\n"):
+        raise ValueError("Unexpected native Qwen assistant generation prefix")
     if not images:
         ids = processor.tokenizer.encode(text, add_special_tokens=False)
-        return ids, None, pixel_hash
+        return ids, None, pixel_hash, prefill
     encoded = processor(text=[text], images=images, return_tensors="pt", add_special_tokens=False)
     ids = encoded["input_ids"][0].tolist()
     positions = image_rope_positions(
@@ -128,7 +131,7 @@ def _prepare(processor, config, row, image_row, *, control, enable_thinking):
         "mrope_positions": positions.T.contiguous(),
         "mrope_position_delta": torch.tensor([[int(positions.max()) + 1 - len(ids)]]),
     }
-    return ids, [payload], pixel_hash
+    return ids, [payload], pixel_hash, prefill
 
 
 def _evaluate_split(engine, processor, config, rows, output, *, args, split, update):
@@ -165,7 +168,8 @@ def _evaluate_split(engine, processor, config, rows, output, *, args, split, upd
                     meta = result["meta_info"]
                     if meta["prompt_tokens"] != len(encoded[0]):
                         raise ValueError("The inference engine changed the expanded image prompt length")
-                    prediction = result["text"]
+                    # The native template opens thinking inside the prompt, outside generated text.
+                    prediction = encoded[3] + result["text"]
                     extracted = answer_of(prediction)
                     correct += extracted == int(row["answer"])
                     invalid += extracted is None
@@ -183,6 +187,8 @@ def _evaluate_split(engine, processor, config, rows, output, *, args, split, upd
                         "image_pixel_sha256": encoded[2],
                         "prompt_tokens": len(encoded[0]),
                         "prediction": prediction,
+                        "generated_text": result["text"],
+                        "assistant_prefill": encoded[3],
                         "extracted_answer": extracted,
                         "finish_reason": meta.get("finish_reason"),
                         "completion_tokens": meta.get("completion_tokens"),
@@ -246,7 +252,7 @@ def main():
     parser.add_argument("--visual-snapshots", nargs="*", type=Path, default=[])
     parser.add_argument("--tp-size", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--max-new-tokens", type=int, default=4096)
     parser.add_argument("--context-length", type=int, default=8192)
     parser.add_argument("--enable-thinking", action="store_true")
     parser.add_argument("--mem-fraction-static", type=float, default=0.6)

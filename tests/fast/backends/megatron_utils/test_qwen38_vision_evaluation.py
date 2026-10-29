@@ -208,3 +208,42 @@ def test_visual_updates_obey_native_session_lifecycle(failure):
         ):
             _update_visual(engine, tensors)
     assert calls == (["begin"] if failure == "begin" else ["begin", "load", "end"])
+
+
+@pytest.mark.parametrize(
+    "thinking,generated,correct,invalid",
+    [(True, "Counted two.\n</think>\n\n2", 1, 0), (True, "Still counting: 2", 0, 1), (False, "2", 1, 0)],
+)
+def test_scoring_preserves_prompt_thinking_prefix(tmp_path, thinking, generated, correct, invalid):
+    from examples.qwen3_8_next_vision_sft.evaluate import _evaluate_split
+
+    prefill = "<think>\n" if thinking else "<think>\n\n</think>\n\n"
+    tokenizer = SimpleNamespace(
+        apply_chat_template=lambda *a, **k: "<|im_start|>user\nCount.<|im_end|>\n<|im_start|>assistant\n" + prefill,
+        encode=lambda *a, **k: [1, 2],
+    )
+
+    def generate(**kwargs):
+        assert kwargs["input_ids"] == [[1, 2]] and "image_data" not in kwargs
+        assert kwargs["sampling_params"]["max_new_tokens"] == 4096
+        return [{"text": generated, "meta_info": {"prompt_tokens": 2}}]
+
+    path = tmp_path / "predictions.jsonl"
+    metrics = _evaluate_split(
+        SimpleNamespace(generate=generate),
+        SimpleNamespace(tokenizer=tokenizer),
+        {},
+        [{"id": "scene", "messages": [{"content": "Count."}], "answer": "2"}],
+        path,
+        args=SimpleNamespace(
+            controls=["no_image"], batch_size=1, max_new_tokens=4096, context_length=8192, enable_thinking=thinking
+        ),
+        split="development",
+        update=0,
+    )
+    assert metrics["no_image"]["correct"] == correct
+    assert metrics["no_image"]["invalid"] == invalid
+    record = json.loads(path.read_text())
+    assert record["generated_text"] == generated
+    assert record["assistant_prefill"] == prefill
+    assert record["prediction"] == prefill + generated

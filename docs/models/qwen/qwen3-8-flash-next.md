@@ -281,12 +281,18 @@ replace their exact placeholder rows on each sequence-parallel slice. Visual
 replicas participate in tensor-parallel gradient reduction, including slices with
 no local image tokens.
 
-Current qualification: focused CPU contracts pass for image/mRoPE alignment,
-assistant masks, visual gradients and updates, recomputation, TP scatter, native
-weight naming, and launcher safety. **Full-model training, native save/reload,
-and a measured Qwen held-out improvement are not yet qualified.** The proposed
-one-node TP2/PP4/EP2 topology is a bring-up target, not an already measured memory
-or throughput guarantee. This status must be replaced only by closed run evidence.
+Focused CPU contracts pass for image/mRoPE alignment, assistant masks, visual
+gradients and updates, recomputation, TP scatter, native weight naming, evaluation
+parsing, and launcher safety. The full 48-layer model completed two vision-only
+updates on one eight-GPU B300 node with TP2/PP4/EP2 and batch size 8. Both visual
+replicas had finite, nonzero gradient probes for all 333 visual tensors; sampled
+BF16 values changed in 235 tensors on the second update. All eight decoder hashes
+remained unchanged. Native Megatron save/reload passed on every rank after
+deliberately corrupting every registered parameter, with exact complete-parameter
+hash restoration. This qualifies model-only reload, not optimizer/data-cursor
+resume. **The 32-update recipe and a measured Qwen held-out improvement remain
+unqualified.** The short qualification run does not establish their memory or
+throughput requirements.
 
 ### Data And Launch
 
@@ -306,7 +312,7 @@ MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_qwen3_8_next_vision_sft.py \
   --hf-checkpoint /root/models/Qwen3.8-Flash-Next \
   --prompt-data /root/datasets/geometry-v1/sft_exact.jsonl \
   --output-dir /root/runs/qwen38-image \
-  --freeze-language
+  --freeze-language --enable-thinking
 ```
 
 Run on an allocated GPU node with a compatible Megatron and SGLang environment.
@@ -325,8 +331,9 @@ from the held-out curve.
 ### Audits And Evaluation
 
 The opt-in audit writes per-rank parameter inventories, finite reduced-gradient
-probes and actual parameter-change probes. Frozen-language mode hashes all
-registered decoder parameters before and after training. Visual snapshots require
+probes, actual parameter-change probes, and imported runtime source paths/hashes.
+Frozen-language mode hashes all registered decoder parameters before and after
+training. Visual snapshots require
 identical full visual hashes on all replicas and an exact safetensors readback.
 These visual snapshots are **evaluation-only and nonresumable**. Native Megatron
 checkpoints are saved separately; optimizer/data-cursor resume is not established
@@ -342,7 +349,7 @@ weight loading is checked by exact TP-shard readback before generation.
 python -m examples.qwen3_8_next_vision_sft.evaluate \
   --model /root/models/Qwen3.8-Flash-Next \
   --data /root/datasets/geometry-v1 \
-  --output /root/runs/qwen38-image/evaluation \
+  --output /root/runs/qwen38-image/evaluation --enable-thinking \
   --visual-snapshots \
     /root/runs/qwen38-image/RUN_ID/audit/snapshots/update-000008 \
     /root/runs/qwen38-image/RUN_ID/audit/snapshots/update-000016 \
@@ -356,8 +363,12 @@ python -m examples.qwen3_8_next_vision_sft.curves \
 ```
 
 The evaluator records raw text for genuine-image, no-image and deterministic
-swapped-image controls, using fixed greedy decoding, native expanded prompt IDs,
-and `integer_first_final_line_v1`. `--limit` is for bring-up only and cannot
+swapped-image controls, using greedy decoding with 4096 new tokens, native expanded
+prompt IDs, and `integer_first_final_line_v1`. It retains the template's assistant
+prefill separately from generated text and includes it when scoring, so an unfinished
+native `<think>` block cannot become a valid final answer. Use `--enable-thinking`
+consistently for the reasoning protocol in training and evaluation.
+`--limit` is for bring-up only and cannot
 produce an accepted quality curve. The plotter re-scores raw predictions and
 rejects missing records, changed prompts/images, mismatched dataset hashes or
 inconsistent aggregates. It reports answer-macro accuracy, paired wrong/right

@@ -1,7 +1,9 @@
 """Opt-in visual gradient, replica, weight-change and frozen-language witnesses."""
 
 import hashlib
+import importlib.metadata
 import json
+import sys
 import time
 from functools import wraps
 from pathlib import Path
@@ -9,6 +11,29 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 from safetensors.torch import load_file, save_file
+
+
+def _runtime_identity():
+    selected = {
+        "mbridge.core.bridge",
+        "megatron.core.models.gpt.gpt_model",
+        "megatron.core.optimizer.optimizer",
+        "miles.backends.megatron_utils.model",
+        "miles_plugins.mbridge.qwen3_8_next",
+        "transformers.models.qwen3_vl.modeling_qwen3_vl",
+    }
+    sources = {}
+    for name, module in sorted(sys.modules.copy().items()):
+        if name not in selected and not name.startswith("miles_plugins.models.qwen3_8_next."):
+            continue
+        if filename := getattr(module, "__file__", None):
+            path = Path(filename).resolve()
+            sources[name] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    return {
+        "python": sys.executable,
+        "packages": {name: importlib.metadata.version(name) for name in ("torch", "transformers", "ray")},
+        "sources": sources,
+    }
 
 
 def parameter_hash(parameters):
@@ -108,6 +133,7 @@ def _initial_state(args, model, parameters):
     state = {
         "rank": dist.get_rank(),
         "world_size": dist.get_world_size(),
+        "runtime": _runtime_identity(),
         "num_updates": args.num_rollout
         * args.rollout_batch_size
         * args.n_samples_per_prompt
