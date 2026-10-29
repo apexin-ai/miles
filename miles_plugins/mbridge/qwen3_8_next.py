@@ -195,6 +195,15 @@ class Qwen38NextBridge(Qwen3_5Bridge):
     # a layer's experts; two entries because the loop alternates gate_up and down
     _GPU_CACHE_SIZE = 2
 
+    def _weight_split_across_tp(self, mcore_weights_name, mcore_weights, param, tp_split_size):
+        if mcore_weights_name.startswith("vision_model."):
+            # The native HF tower is replicated, including its non-gated linear_fc1.
+            # mbridge's decoder-name heuristics otherwise split that matrix as a GLU.
+            if mcore_weights.shape != param.shape:
+                raise ValueError(f"Native replicated vision shape mismatch: {mcore_weights_name}")
+            return [mcore_weights] * tp_split_size
+        return super()._weight_split_across_tp(mcore_weights_name, mcore_weights, param, tp_split_size)
+
     def _weight_to_mcore_format(self, mcore_weights_name: str, hf_weights: list[torch.Tensor]):
         """Slice on the device, reusing one upload across a layer's experts."""
         if not torch.cuda.is_available():

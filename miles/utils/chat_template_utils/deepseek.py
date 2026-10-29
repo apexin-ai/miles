@@ -17,7 +17,7 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-from sglang.srt.entrypoints.openai import chat_encoding, encoding_dsv4, encoding_dsv41
+from sglang.srt.entrypoints.openai import chat_encoding, encoding_dsv4
 from sglang.srt.entrypoints.openai.protocol import Tool
 
 from miles.utils.chat_template_utils.templates import encoding_dsv32
@@ -148,7 +148,12 @@ class DeepSeekV41Family(DeepSeekV4Family):
     server default comes from ``SGLANG_DSV41_REASONING_EFFORT``), and a
     mid-conversation system message also opens an assistant turn."""
 
-    template = encoding_dsv41
+    @property
+    def template(self):
+        # Model-specific SGLang branches (including Qwen38Next) may predate V4.1.
+        from sglang.srt.entrypoints.openai import encoding_dsv41
+
+        return encoding_dsv41
 
     def _build_encode_config(self, kwargs: dict) -> dict:
         kwargs = super()._build_encode_config(kwargs)
