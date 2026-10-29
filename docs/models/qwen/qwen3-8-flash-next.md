@@ -10,6 +10,10 @@ three: that branch, the SGLang
 branch, and [`radixark/Megatron-LM#89`](https://github.com/radixark/Megatron-LM/pull/89).
 The image in [section 3](#3-environment-setup) pins all three.
 
+For native image supervision rather than generated RL rollouts, see
+[Image SFT](#7-image-sft). That integration has separate qualification evidence;
+the RL recipe and its sliced CI test do not establish visual training quality.
+
 ## 1. Model Introduction
 
 [Qwen3.8-Flash-Next](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-Flash-Next)
@@ -248,3 +252,117 @@ not tell you.
 - [Qwen3.8](/models/qwen/qwen3-8) — the dense 27 B that shares the name and not the architecture
 - [Disk Offload](/advanced/disk-offload)
 - [True On-Policy](/examples/infra-features/true-on-policy)
+
+## 7. Image SFT
+
+### Scope And Qualification
+
+`scripts/run_qwen3_8_next_vision_sft.py` implements image SFT for the **complete
+48-layer** `Qwen/Qwen3.8-Flash-Next` checkpoint. It does not substitute a decoder
+slice, a text-only checkpoint, a LoRA adapter, or a different Qwen family.
+
+The provider attaches the entire native Qwen3-VL visual encoder and merger before
+Megatron constructs DDP and the optimizer. `--vision-trainable` selects `none`,
+`projector`, or `full`; `--freeze-language` trains vision with the decoder frozen.
+Without that flag the recipe jointly trains language and vision. The native PLE
+lookup table remains an immutable host asset; the discrete QSA indexer is frozen
+because its top-k selection does not have task-loss gradients. MTP is not enabled.
+
+The implementation uses the native image processor and whole-conversation chat
+template, masks image/user tokens, and supervises the assistant spans after image
+token expansion. The released template's thinking option is `enable_thinking`,
+not `thinking_mode`. For non-thinking integer supervision, the target is the
+integer itself: do not prepend a GLM-style `</think>` suffix.
+
+Image positions use the checkpoint's three-axis, interleaved mRoPE configuration.
+The QSA indexer uses physical packed-token rows when indexing these materialized
+positions; text-only position resets are not image positions. Image embeddings
+replace their exact placeholder rows on each sequence-parallel slice. Visual
+replicas participate in tensor-parallel gradient reduction, including slices with
+no local image tokens.
+
+Current qualification: focused CPU contracts pass for image/mRoPE alignment,
+assistant masks, visual gradients and updates, recomputation, TP scatter, native
+weight naming, and launcher safety. **Full-model training, native save/reload,
+and a measured Qwen held-out improvement are not yet qualified.** The proposed
+one-node TP2/PP4/EP2 topology is a bring-up target, not an already measured memory
+or throughput guarantee. This status must be replaced only by closed run evidence.
+
+### Data And Launch
+
+The example reuses the archived `geometric_stack_count` scenes referenced by
+[issue #1](https://github.com/leviking98z-rgb/miles/issues/1) and
+[issue #4](https://github.com/leviking98z-rgb/miles/issues/4), not their model scores.
+The archive pins 1024 train, 32 development and 256 held-out scenes with exact
+generator targets and decoded-pixel hashes. Generation requires the pinned
+Sphinx checkout; see `prepare.py --help` for its required revision and options.
+The model receives the question and image, not scene metadata or the oracle.
+
+```bash
+python -m examples.qwen3_8_next_vision_sft.prepare --help
+python scripts/run_qwen3_8_next_vision_sft.py --help
+
+MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_qwen3_8_next_vision_sft.py \
+  --hf-checkpoint /root/models/Qwen3.8-Flash-Next \
+  --prompt-data /root/datasets/geometry-v1/sft_exact.jsonl \
+  --output-dir /root/runs/qwen38-image \
+  --freeze-language
+```
+
+Run on an allocated GPU node with a compatible Megatron and SGLang environment.
+Use `MILES_SCRIPT_EXTERNAL_RAY=1` only for an already-running cluster. The launcher
+does not globally kill existing SGLang, Miles, Redis or Ray processes by default.
+Unsupported CP, interleaved PP, routing replay, dynamic microbatching and fused
+RoPE combinations fail instead of silently changing the image contract.
+
+Recipe defaults and their validation are owned by the launcher's `ScriptArgs`.
+The initial experiment fixes 32 optimizer updates, one 32-example batch per
+update, constant learning rate, zero weight decay, and visual snapshots at updates
+0/8/16/24/32. All hyperparameters and the development/held-out separation must be
+fixed before reading held-out results; do not select a learning rate or checkpoint
+from the held-out curve.
+
+### Audits And Evaluation
+
+The opt-in audit writes per-rank parameter inventories, finite reduced-gradient
+probes and actual parameter-change probes. Frozen-language mode hashes all
+registered decoder parameters before and after training. Visual snapshots require
+identical full visual hashes on all replicas and an exact safetensors readback.
+These visual snapshots are **evaluation-only and nonresumable**. Native Megatron
+checkpoints are saved separately; optimizer/data-cursor resume is not established
+by a model-only save or a visual snapshot.
+
+Run the evaluator on the same allocated GPU node after training, not on a control
+machine. It starts the full native SGLang model and evaluates the source baseline
+plus each explicitly supplied visual snapshot. A visual-only update is accepted
+only after every training rank closes its unchanged-language audit. Native visual
+weight loading is checked by exact TP-shard readback before generation.
+
+```bash
+python -m examples.qwen3_8_next_vision_sft.evaluate \
+  --model /root/models/Qwen3.8-Flash-Next \
+  --data /root/datasets/geometry-v1 \
+  --output /root/runs/qwen38-image/evaluation \
+  --visual-snapshots \
+    /root/runs/qwen38-image/RUN_ID/audit/snapshots/update-000008 \
+    /root/runs/qwen38-image/RUN_ID/audit/snapshots/update-000016 \
+    /root/runs/qwen38-image/RUN_ID/audit/snapshots/update-000024 \
+    /root/runs/qwen38-image/RUN_ID/audit/snapshots/update-000032
+
+python -m examples.qwen3_8_next_vision_sft.curves \
+  --evaluation /root/runs/qwen38-image/evaluation \
+  --data /root/datasets/geometry-v1 \
+  --output /root/runs/qwen38-image/curve
+```
+
+The evaluator records raw text for genuine-image, no-image and deterministic
+swapped-image controls, using fixed greedy decoding, native expanded prompt IDs,
+and `integer_first_final_line_v1`. `--limit` is for bring-up only and cannot
+produce an accepted quality curve. The plotter re-scores raw predictions and
+rejects missing records, changed prompts/images, mismatched dataset hashes or
+inconsistent aggregates. It reports answer-macro accuracy, paired wrong/right
+transitions, invalid-answer changes and the always-one reference. Every plotted
+dot must be a measured checkpoint; dips are preserved, not smoothed away.
+
+A falling training loss, successful weight loading, or scores from the reference
+GLM/DeepSeek issues are not evidence of a Qwen evaluation improvement.

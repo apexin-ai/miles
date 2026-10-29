@@ -1,0 +1,34 @@
+{
+  "task": "geometric_stack_count",
+  "dataset": {
+    "role_counts": {
+      "distillation": 1024,
+      "development": 32,
+      "validation": 256
+    },
+    "answer_suffix": "\nGive your final answer as a single integer on its own line.",
+    "supervision": "generator_exact_integer_no_teacher",
+    "question_scope": "Count objects inside full non-top sheet boundaries, including occluded portions.",
+    "fully_invisible_target_training_ids": [
+      "distillation-geometric_stack_count-00924",
+      "distillation-geometric_stack_count-01018"
+    ],
+    "held_out_fully_invisible_targets": 0,
+    "unrecoverable_boundaries_possible": true
+  },
+  "provenance": {
+    "generator_repository": "https://github.com/maveryn/sphinx",
+    "generator_commit": "28ef6c43629ab4491491a204167ef2f52dcd8182",
+    "generator_module_sha256": "ffdf30c3c79de794b3693ec68d5925fc88e72cd11058044c19f8b1c41113bf94",
+    "scene_files_sha256": {
+      "scenes-00.jsonl.gz": "9f21d8e86c26e1847ff4d480fa2f868c80c427c4d1d4857889e6fbf7956fecc1",
+      "scenes-01.jsonl.gz": "bf058f87c5470a16d1a263a2fe33afa7b6e22d393ca8cb11437990f026774959",
+      "scenes-02.jsonl.gz": "ec98268299e3c8078303d84744814fc52923f8c9fcd8799c4c070401a0c140ac",
+      "scenes-03.jsonl.gz": "3afb95cac55badeda64fcb766d873e207ae2267adb3d3269c46d91bf333ebb04",
+      "scenes-04.jsonl.gz": "a21a40b331b22db1000796407d6d56aaae744b02e5cd4c2ba16748d49f5f3f21",
+      "scenes-05.jsonl.gz": "26ebd31e0d611d0de5d05b212842d436a2a800e801294aef83faa19fb238040d"
+    }
+  },
+  "reference_commit": "74808f6e24254e1f647d78d8a98d714ab9daacb0",
+  "reference_issue": "https://github.com/leviking98z-rgb/miles/issues/1"
+}

@@ -53,6 +53,16 @@ class Dsv4MegatronPluginsConfig(BaseConfig):
     ] = False
 
 
+class Qwen38VisionMegatronPluginsConfig(BaseConfig):
+    """Qwen3.8-Flash-Next's opt-in native image SFT controls."""
+
+    qwen38_vision_trainable: A[str, Arg(choices=["none", "projector", "full"])] = "full"
+    qwen38_freeze_language: A[bool, Arg()] = False
+    qwen38_vision_recompute: A[bool, Arg()] = False
+    qwen38_audit_dir: A[str | None, Arg()] = None
+    qwen38_visual_snapshot_interval: A[int, Arg()] = 0
+
+
 class DsaMegatronPluginsConfig(BaseConfig):
     dsa_impl: A[str, Arg(choices=["miles", "megatron"])] = "miles"
     miles_dsa_topk_backend: A[

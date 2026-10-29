@@ -154,6 +154,7 @@ class Qwen38NextQSAIndexer(MegatronModule):
         positions: Tensor,
         rotary_pos_emb: Tensor,
         layout: PackedBlockLayout | None = None,
+        materialized_rope: bool = False,
     ):
         """``[T, hidden] -> (q [T, n_heads, head_dim], block_k [B, head_dim])``."""
         qk, _ = self.index_qk_proj(hidden_states)
@@ -177,7 +178,13 @@ class Qwen38NextQSAIndexer(MegatronModule):
             block_local = layout.block_local
         # sglang rotates a compressed key at the position of its block's first token
         block_positions = block_local * self.compress_ratio
-        q = apply_indexer_rope(q, rotary_pos_emb, positions)
+        rope_positions = positions
+        if materialized_rope:
+            # Image mRoPE is a per-token table, not a reusable text-position lookup.
+            rope_positions = torch.arange(hidden_states.shape[0], device=positions.device)
+            if layout is not None:
+                block_positions = layout.block_first_token
+        q = apply_indexer_rope(q, rotary_pos_emb, rope_positions)
         block_k = apply_indexer_rope(block_k.unsqueeze(1), rotary_pos_emb, block_positions).squeeze(1)
         return q, block_k
 
@@ -203,6 +210,7 @@ class Qwen38NextQSAIndexer(MegatronModule):
         positions: Tensor,
         rotary_pos_emb: Tensor,
         cu_seqlens: Tensor | None = None,
+        materialized_rope: bool = False,
     ) -> Tensor:
         """``[T, hidden] -> [T, token_topk]`` int32 token indices, ``-1`` where unused.
 
@@ -214,7 +222,9 @@ class Qwen38NextQSAIndexer(MegatronModule):
         if cu_seqlens is not None and cu_seqlens.numel() > 2:
             layout = PackedBlockLayout(cu_seqlens, positions, self.compress_ratio)
 
-        q, block_k = self.project_qk(hidden_states, positions, rotary_pos_emb, layout=layout)
+        q, block_k = self.project_qk(
+            hidden_states, positions, rotary_pos_emb, layout=layout, materialized_rope=materialized_rope
+        )
         logits = self.score_blocks(q, block_k, positions, layout=layout)
 
         k = min(self.block_topk, logits.shape[-1])

@@ -1,0 +1,176 @@
+"""Evidence validation, independent of any successful GPU quality run."""
+
+import hashlib
+import json
+from types import SimpleNamespace
+
+import pytest
+import torch
+from examples.qwen3_8_next_vision_sft.curves import collect_points
+from examples.qwen3_8_next_vision_sft.score import PROTOCOL, paired_answers
+from safetensors.torch import save_file
+
+
+def _write_jsonl(path, rows):
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+
+@pytest.fixture
+def evidence(tmp_path):
+    data, evaluation = tmp_path / "data", tmp_path / "evaluation"
+    data.mkdir()
+    evaluation.mkdir()
+    sources = [
+        {
+            "id": str(index),
+            "messages": [{"content": "<image>How many?"}],
+            "answer": str(index + 1),
+            "generator_metadata": {"variant": {"target_kind": "square"}},
+        }
+        for index in range(3)
+    ]
+    _write_jsonl(data / "validation.jsonl", sources)
+    results, predictions = [], []
+    for update, answers in ((0, [1, 0, 0]), (8, [1, 2, 0]), (16, [0, 2, 0]), (24, [1, 2, 3])):
+        rows = [
+            {
+                "id": source["id"],
+                "question": source["messages"][0]["content"],
+                "answer": source["answer"],
+                "dataset_role": "validation",
+                "control": control,
+                "update": update,
+                "image_id": source["id"] if control == "image" else None,
+                "image_pixel_sha256": source["id"] if control == "image" else None,
+                "input_ids_sha256": source["id"] + control,
+                "prediction": str(answers[index]) if control == "image" else "1",
+            }
+            for control in ("image", "no_image")
+            for index, source in enumerate(sources)
+        ]
+        _write_jsonl(evaluation / f"update-{update:06d}-validation.jsonl", rows)
+        predictions.append(rows)
+        results.append(
+            {
+                "update": update,
+                "metrics": {
+                    "validation": {
+                        "image": {"correct": sum(answer == index + 1 for index, answer in enumerate(answers))},
+                        "no_image": {"correct": 1},
+                    }
+                },
+            }
+        )
+    manifest = {
+        "complete": True,
+        "protocol": PROTOCOL,
+        "args": {"limit": 0, "controls": ["image", "no_image"]},
+        "data_files_sha256": {"validation": hashlib.sha256((data / "validation.jsonl").read_bytes()).hexdigest()},
+        "results": results,
+    }
+    (evaluation / "evaluation.json").write_text(json.dumps(manifest))
+    return data, evaluation, sources, predictions
+
+
+def test_paired_scoring_filters_controls_on_both_sides(evidence):
+    _, _, sources, predictions = evidence
+    pairs = paired_answers(sources, predictions[0], predictions[-1])
+    assert len(pairs) == 3
+    assert [row["trained_answer"] for row in pairs] == [1, 2, 3]
+
+
+def test_curve_preserves_a_real_dip_instead_of_inventing_monotonicity(evidence):
+    data, evaluation, _, _ = evidence
+    curve = collect_points(evaluation, data, split="validation")
+    assert curve["observed_endpoint_improvement"]
+    assert not curve["all_adjacent_points_nondecreasing"]
+    assert [p["image_paired_metrics"]["trained_correct"] for p in curve["points"]] == [1, 2, 1, 3]
+
+
+@pytest.mark.parametrize("key,value", [("complete", False), ("protocol", "different")])
+def test_curve_rejects_incomplete_or_changed_protocol(evidence, key, value):
+    data, evaluation, _, _ = evidence
+    path = evaluation / "evaluation.json"
+    manifest = json.loads(path.read_text())
+    manifest[key] = value
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="complete, untruncated"):
+        collect_points(evaluation, data, split="validation")
+
+
+@pytest.mark.parametrize("key,value", [("input_ids_sha256", "different"), ("image_id", "different")])
+def test_curve_rejects_changed_checkpoint_requests(evidence, key, value):
+    data, evaluation, _, predictions = evidence
+    predictions[-1][0][key] = value
+    _write_jsonl(evaluation / "update-000024-validation.jsonl", predictions[-1])
+    with pytest.raises(ValueError, match="fixed evaluation request"):
+        collect_points(evaluation, data, split="validation")
+
+
+def test_curve_recomputes_accuracy_from_raw_text(evidence):
+    data, evaluation, _, predictions = evidence
+    predictions[-1][0]["prediction"] = "Not an integer"
+    _write_jsonl(evaluation / "update-000024-validation.jsonl", predictions[-1])
+    with pytest.raises(ValueError, match="aggregate disagrees"):
+        collect_points(evaluation, data, split="validation")
+
+
+@pytest.fixture
+def visual_snapshot(tmp_path):
+    model, audit = tmp_path / "model", tmp_path / "audit"
+    model.mkdir()
+    identity = {}
+    for name in ("config.json", "model.safetensors.index.json"):
+        (model / name).write_text("{}")
+        identity[name] = hashlib.sha256((model / name).read_bytes()).hexdigest()
+    snapshot = audit / "snapshots/update-000008"
+    snapshot.mkdir(parents=True)
+    weights = snapshot / "visual.safetensors"
+    save_file({"model.visual.test": torch.ones(2)}, str(weights))
+    (snapshot / "visual.json").write_text(
+        json.dumps(
+            {
+                "complete": True,
+                "frozen_language": True,
+                "source_identity": identity,
+                "update": 8,
+                "file_sha256": hashlib.sha256(weights.read_bytes()).hexdigest(),
+            }
+        )
+    )
+    for rank in range(2):
+        (audit / f"rank-{rank:03d}-initial.json").write_text(
+            json.dumps(
+                {
+                    "rank": rank,
+                    "world_size": 2,
+                    "num_updates": 8,
+                    "source_identity": identity,
+                    "language_sha256": "unchanged",
+                }
+            )
+        )
+        (audit / f"rank-{rank:03d}-update-000008.json").write_text(
+            json.dumps({"rank": rank, "update": 8, "final_language_sha256": "unchanged"})
+        )
+    return snapshot, SimpleNamespace(model=model)
+
+
+def test_visual_snapshot_requires_all_frozen_language_ranks(visual_snapshot):
+    from examples.qwen3_8_next_vision_sft.evaluate import _load_snapshot
+
+    snapshot, args = visual_snapshot
+    assert _load_snapshot(snapshot, args)[0] == 8
+    (snapshot.parent.parent / "rank-001-initial.json").unlink()
+    with pytest.raises(ValueError, match="every training rank"):
+        _load_snapshot(snapshot, args)
+
+
+def test_visual_snapshot_requires_final_hash_not_just_an_intermediate_audit(visual_snapshot):
+    from examples.qwen3_8_next_vision_sft.evaluate import _load_snapshot
+
+    snapshot, args = visual_snapshot
+    final = snapshot.parent.parent / "rank-001-update-000008.json"
+    final.rename(final.with_name("rank-001-update-000007.json"))
+    with pytest.raises(ValueError, match="no completed update"):
+        _load_snapshot(snapshot, args)

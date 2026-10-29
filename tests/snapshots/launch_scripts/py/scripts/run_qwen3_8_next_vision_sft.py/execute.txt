@@ -1,0 +1,116 @@
+### 0
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 1
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 2
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "TORCHINDUCTOR_COMPILE_THREADS": "1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --spec miles_plugins.models.qwen3_8_next.qwen3_8_next get_qwen3_8_next_spec
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 24
+  --num-query-groups 2
+  --kv-channels 256
+  --num-layers 48
+  --hidden-size 2560
+  --ffn-hidden-size 640
+  --normalization RMSNorm
+  --apply-layernorm-1p
+  --position-embedding-type mrope
+  --norm-epsilon 1e-6
+  --rotary-percent 0.25
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 248320
+  --rotary-base 10000000
+  --moe-ffn-hidden-size 640
+  --moe-shared-expert-intermediate-size 640
+  --moe-router-score-function softmax
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 10
+  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --num-experts 512
+  --moe-grouped-gemm
+  --moe-token-drop-policy probs
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
+  --attention-output-gate
+  --moe-shared-expert-gate
+  --mrope-section 11 11 10
+  --no-rope-fusion
+  --hf-checkpoint /root/models/Qwen3.8-Flash-Next
+  --ref-load /root/models/Qwen3.8-Flash-Next
+  --save /root/shared_data/260101-000000-000/checkpoints
+  --save-interval 32
+  --no-save-optim
+  --no-save-rng
+  --prompt-data /root/datasets/image-sft/train.jsonl
+  --input-key messages
+  --multimodal-keys '{"image":"images"}'
+  --apply-chat-template-kwargs '{"enable_thinking":false}'
+  --rollout-shuffle
+  --rollout-seed 42
+  --num-rollout 32
+  --rollout-batch-size 32
+  --global-batch-size 32
+  --n-samples-per-prompt 1
+  --num-steps-per-rollout 1
+  --rollout-function-path miles_plugins.models.qwen3_8_next.vision_sft.generate_rollout
+  --tensor-model-parallel-size 2
+  --pipeline-model-parallel-size 4
+  --expert-model-parallel-size 2
+  --expert-tensor-parallel-size 1
+  --sequence-parallel
+  --context-parallel-size 1
+  --qkv-format thd
+  --micro-batch-size 1
+  --seq-length 4096
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --linear-attention-backend fla
+  --debug-train-only
+  --loss-type sft_loss
+  --calculate-per-token-loss
+  --disable-compute-advantages-and-returns
+  --bf16
+  --model-name qwen4_exp
+  --custom-model-provider-path miles_plugins.models.qwen3_8_next.vision.get_qwen38_vision_model_provider
+  --qwen38-vision-trainable full
+  --qwen38-vision-recompute
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --attention-dropout 0
+  --hidden-dropout 0
+  --qwen38-audit-dir /root/shared_data/260101-000000-000/audit
+  --qwen38-visual-snapshot-interval 8
+  --custom-megatron-before-train-step-hook-path miles_plugins.models.qwen3_8_next.vision_audit.before_step
+  --custom-megatron-init-path miles_plugins.models.qwen3_8_next.vision_audit.install_final_save_check
+  --optimizer adam
+  --lr 1e-06
+  --lr-decay-style constant
+  --weight-decay 0.0
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --clip-grad 1
+  --seed 42
+  --optimizer-cpu-offload
+  --optimizer-offload-fraction 1.0
+  --use-precision-aware-optimizer
+  --use-wandb
+  --wandb-project miles-run_qwen3_8_next_vision_sft
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --deploy-component all
