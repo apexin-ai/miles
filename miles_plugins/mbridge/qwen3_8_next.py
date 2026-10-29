@@ -5,6 +5,8 @@ and a QSA indexer on the full-attention layers. The checkpoint has no block or f
 layernorms (each ``hc_norm`` is the pre-block norm), so the inherited entries are popped.
 """
 
+from functools import lru_cache
+
 import torch
 from mbridge.core import register_model
 
@@ -195,6 +197,13 @@ class Qwen38NextBridge(Qwen3_5Bridge):
     # a layer's experts; two entries because the loop alternates gate_up and down
     _GPU_CACHE_SIZE = 2
 
+    def _get_safetensor_io(self, weights_path):
+        io = super()._get_safetensor_io(weights_path)
+        # Reopening a safetensors file creates a new mmap even for the same expert matrix.
+        self._cached_cpu_reader = lru_cache(maxsize=self._GPU_CACHE_SIZE)(io.load_one_hf_weight)
+        io.load_one_hf_weight = self._cached_cpu_reader
+        return io
+
     def _weight_split_across_tp(self, mcore_weights_name, mcore_weights, param, tp_split_size):
         if mcore_weights_name.startswith("vision_model."):
             # The native HF tower is replicated, including its non-gated linear_fc1.
@@ -217,15 +226,15 @@ class Qwen38NextBridge(Qwen3_5Bridge):
 
         moved = []
         for w in hf_weights:
-            # data_ptr is stable for repeated reads of one tensor from the same mmap
+            # Keep the source alive: an unmapped address can be reused by a different weight.
             key = (w.data_ptr(), tuple(w.shape), w.dtype)
             hit = cache.get(key)
             if hit is None:
                 if len(cache) >= self._GPU_CACHE_SIZE:
                     cache.pop(next(iter(cache)))
-                hit = w.to(torch.cuda.current_device(), non_blocking=False)
+                hit = (w, w.to(torch.cuda.current_device(), non_blocking=False))
                 cache[key] = hit
-            moved.append(hit)
+            moved.append(hit[1])
         return super()._weight_to_mcore_format(mcore_weights_name, moved)
 
     def load_weights(self, model, *args, **kwargs):
@@ -237,6 +246,7 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         """
         chunks = model if isinstance(model, (list, tuple)) else [model]
         originals = []
+        self._cached_cpu_reader = None
         for chunk in chunks:
             cached = chunk.state_dict()
             originals.append((chunk, chunk.state_dict))
@@ -244,6 +254,9 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         try:
             return super().load_weights(model, *args, **kwargs)
         finally:
+            if self._cached_cpu_reader is not None:
+                self._cached_cpu_reader.cache_clear()
+                self._cached_cpu_reader = None
             for chunk, orig in originals:
                 try:
                     del chunk.state_dict

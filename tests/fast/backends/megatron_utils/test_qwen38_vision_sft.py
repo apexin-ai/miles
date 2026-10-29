@@ -1,8 +1,10 @@
 """CPU contracts for native Qwen images; full-model quality is measured separately."""
 
 import ast
+import gc
 import re
 import sys
+import weakref
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
@@ -268,6 +270,59 @@ def test_native_visual_bridge_does_not_apply_decoder_tp_splitting(name, shape, t
     assert all(torch.equal(replica, source) for replica in replicas)
     with pytest.raises(ValueError, match="replicated vision shape"):
         bridge._weight_split_across_tp(name, source, torch.empty(1), tp_size)
+
+
+def test_hf_expert_reads_reuse_bounded_source_mappings(monkeypatch):
+    pytest.importorskip("mbridge")
+    from miles_plugins.mbridge.qwen3_5 import Qwen3_5Bridge
+    from miles_plugins.mbridge.qwen3_8_next import Qwen38NextBridge
+
+    reads = []
+
+    def load(name):
+        reads.append(name)
+        return torch.ones(2)
+
+    monkeypatch.setattr(
+        Qwen3_5Bridge, "_get_safetensor_io", lambda self, path: SimpleNamespace(load_one_hf_weight=load)
+    )
+    bridge = Qwen38NextBridge.__new__(Qwen38NextBridge)
+    io = bridge._get_safetensor_io("unused")
+    gate = io.load_one_hf_weight("gate")
+    down = io.load_one_hf_weight("down")
+    for _ in range(512):
+        assert io.load_one_hf_weight("gate") is gate
+        assert io.load_one_hf_weight("down") is down
+    assert reads == ["gate", "down"]
+    io.load_one_hf_weight("next-layer")
+    assert io.load_one_hf_weight("gate") is not gate
+    assert io.load_one_hf_weight.cache_info().currsize == 2
+    bridge._cached_cpu_reader.cache_clear()
+    assert io.load_one_hf_weight.cache_info().currsize == 0
+
+
+def test_device_weight_cache_keeps_mmap_source_alive_until_eviction(monkeypatch):
+    pytest.importorskip("mbridge")
+    from miles_plugins.mbridge.qwen3_5 import Qwen3_5Bridge
+    from miles_plugins.mbridge.qwen3_8_next import Qwen38NextBridge
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.Tensor, "to", lambda self, *a, **k: self.clone())
+    monkeypatch.setattr(Qwen3_5Bridge, "_weight_to_mcore_format", lambda self, name, weights: weights)
+    bridge = Qwen38NextBridge.__new__(Qwen38NextBridge)
+    source = torch.tensor([1.0, 2.0])
+    reference = weakref.ref(source)
+    first = bridge._weight_to_mcore_format("weight", [source])[0]
+    assert bridge._weight_to_mcore_format("weight", [source])[0] is first
+    del source
+    gc.collect()
+    assert reference() is not None
+    for value in (3.0, 4.0):
+        bridge._weight_to_mcore_format("other", [torch.full((2,), value)])
+    gc.collect()
+    assert reference() is None
+    assert torch.equal(first, torch.tensor([1.0, 2.0]))
 
 
 def test_qwen_runtime_does_not_require_the_optional_deepseek_v41_encoder(monkeypatch):
