@@ -313,6 +313,17 @@ Megatron at `eed6851e5088cff7c10ee195de01f83e21094652`.
 evaluation finishes.** Training completion and parameter changes do not establish
 visual quality.
 
+The initial 4096-token development image arms at updates 0/8/16/24 each scored
+0/32 under the unchanged strict scorer. Of these 128 predictions, 113 still had
+an open thinking block; 15 had closed thinking but an invalid final-answer format.
+The [development diagnosis](../../assets/images/qwen3-8-flash-next-vision-sft/length4k-development-diagnosis.json)
+records per-example finish reasons and hashes of the retained raw prediction files.
+Those evaluation jobs were interrupted and do not qualify a held-out curve.
+The next [development-only length protocol](../../assets/images/qwen3-8-flash-next-vision-sft/length16k-development-protocol.json)
+uses 16384 new tokens and context 32768 for the same baseline and visual snapshots.
+It keeps language frozen and leaves training weights, images and scoring unchanged.
+An effect from increasing the budget must be distinguished from a training gain.
+
 ### Data And Launch
 
 The example reuses the archived `geometric_stack_count` scenes referenced by
@@ -381,9 +392,17 @@ python -m examples.qwen3_8_next_vision_sft.curves \
   --output /root/runs/qwen38-image/curve
 ```
 
+To diagnose truncation, pass `--max-new-tokens 16384 --context-length 32768` to
+the evaluator for both the baseline and every snapshot. Expanded image prompts
+plus the generation budget must fit the context length. Inspect development
+outputs before choosing a common budget for the full evaluation;
+`--splits development --controls image` is a length diagnosis, not a qualified
+held-out quality curve. More output tokens can finish reasoning but do not repair
+an invalid final-answer format by themselves.
+
 The evaluator records raw text for genuine-image, no-image and deterministic
-swapped-image controls, using greedy decoding with 4096 new tokens, native expanded
-prompt IDs, and `integer_first_final_line_v1`. It retains the template's assistant
+swapped-image controls, using greedy decoding (4096 new tokens by default), native
+expanded prompt IDs, and `integer_first_final_line_v1`. It retains the template's assistant
 prefill separately from generated text and includes it when scoring, so an unfinished
 native `<think>` block cannot become a valid final answer. Use `--enable-thinking`
 consistently for the reasoning protocol in training and evaluation.
