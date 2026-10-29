@@ -1,0 +1,90 @@
+{
+  "created_at": "2026-10-29T21:54:11.922470+00:00",
+  "run_id": "vision32-v1",
+  "training_source_commit": "9e1cb86174cca03279c55db263cc40f8b08fe467",
+  "model": {
+    "id": "Qwen/Qwen3.8-Flash-Next",
+    "revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
+    "layers": 48,
+    "identity": {
+      "config.json": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+      "model.safetensors.index.json": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de",
+      "chat_template.jinja": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+    }
+  },
+  "data_sha256": {
+    "sft_exact.jsonl": "40f2159076083a73d38b9cc800a8a3702b68a302824571b5166c0531402ffb1d",
+    "development.jsonl": "78249a226152b10229f73b23a03706c31d140e95dcbb6325561864059120142c",
+    "validation.jsonl": "6f9b21c2cefe866a6b259c11ca9a0969b190494772cf46ba35ec9f025739376e",
+    "distillation.jsonl": "2d666b0b67f8c3aba2ef0bf11de71a7e7acfbf48fd14dd1c9d982492e6a3003e"
+  },
+  "training_source_sha256": {
+    "scripts/run_qwen3_8_next_vision_sft.py": "bb56e6cc70b1a4923f5621f9991d80f2d409732c17da61a269e280e41af58399",
+    "miles_plugins/models/qwen3_8_next/vision.py": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da",
+    "miles_plugins/models/qwen3_8_next/vision_sft.py": "168c3f9b525c67320fb4d9c46d7ed678a1c692cdf677774681f677d17b77195a",
+    "miles_plugins/models/qwen3_8_next/vision_audit.py": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5",
+    "miles_plugins/models/qwen3_8_next/vision_inputs.py": "a983fc18d5ba06f114d6fe41e6b90a5aa83a440a1579f161f567762d65460b8d",
+    "miles/backends/megatron_utils/megatron_to_hf/qwen3_8_next.py": "25458c1389eac897ab77ed83a7da7747c7bb7771bf156f058a287a36730d5e48"
+  },
+  "training": {
+    "freeze_language": true,
+    "vision_trainable": "full",
+    "updates": 32,
+    "batch_size": 32,
+    "micro_batch_size": 1,
+    "seq_length": 4096,
+    "tp": 2,
+    "pp": 4,
+    "ep": 2,
+    "lr": 1e-06,
+    "weight_decay": 0,
+    "optimizer": "Adam",
+    "betas": [
+      0.9,
+      0.98
+    ],
+    "clip_grad": 1,
+    "seed": 42,
+    "enable_thinking": true,
+    "thinking_effort": "native default xhigh",
+    "native_checkpoint_model_only": true
+  },
+  "evaluation": {
+    "fixed_updates": [
+      0,
+      8,
+      16,
+      24,
+      32
+    ],
+    "splits": [
+      "development",
+      "validation"
+    ],
+    "controls": [
+      "image",
+      "no_image",
+      "swapped_image"
+    ],
+    "tp": 8,
+    "ep": 8,
+    "batch_size": 32,
+    "max_new_tokens": 4096,
+    "context_length": 8192,
+    "temperature": 0,
+    "top_p": 1,
+    "enable_thinking": true,
+    "thinking_effort": "native default xhigh",
+    "protocol": "integer_first_final_line_v1",
+    "limit": 0,
+    "native_assistant_prefill_in_scoring": true,
+    "heldout_selection": false,
+    "preserve_all_measured_dips": true
+  },
+  "allocations": {
+    "training": "alloc_75c9ae8cbe9f9d2f",
+    "baseline": "alloc_4b3bd95f9594c89c",
+    "evaluation1": "alloc_430726116a9b3bbe",
+    "evaluation2": "alloc_cb1b22c58fb8a36a"
+  }
+}
