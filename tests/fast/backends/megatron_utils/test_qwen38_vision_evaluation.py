@@ -2,11 +2,13 @@
 
 import hashlib
 import json
+import shutil
 from types import SimpleNamespace
 
 import pytest
 import torch
 from examples.qwen3_8_next_vision_sft.curves import collect_points
+from examples.qwen3_8_next_vision_sft.merge import merge_evaluations
 from examples.qwen3_8_next_vision_sft.score import PROTOCOL, paired_answers
 from safetensors.torch import save_file
 
@@ -247,3 +249,72 @@ def test_scoring_preserves_prompt_thinking_prefix(tmp_path, thinking, generated,
     assert record["generated_text"] == generated
     assert record["assistant_prefill"] == prefill
     assert record["prediction"] == prefill + generated
+
+
+@pytest.fixture
+def checkpoint_workers(evidence, tmp_path):
+    data, evaluation, _, _ = evidence
+    original = json.loads((evaluation / "evaluation.json").read_text())
+    original.update(
+        model_files_sha256={"config.json": "model"},
+        evaluator_sha256="evaluator",
+        packages={"torch": "pinned"},
+        visual_snapshots=[],
+        seconds=2,
+    )
+    original["args"].update(splits=["validation"], max_new_tokens=4096, data=str(data))
+    workers = []
+    for index, updates in enumerate(([0], [8, 16], [24])):
+        path = tmp_path / f"worker-{index}"
+        path.mkdir()
+        manifest = {**original, "results": [item for item in original["results"] if item["update"] in updates]}
+        manifest["args"] = {**original["args"], "output": str(path), "skip_baseline": index != 0}
+        (path / "evaluation.json").write_text(json.dumps(manifest))
+        for update in updates:
+            name = f"update-{update:06d}-validation.jsonl"
+            shutil.copyfile(evaluation / name, path / name)
+        workers.append(path)
+    return data, workers, tmp_path / "merged"
+
+
+def test_parallel_checkpoint_merge_preserves_raw_predictions_and_real_dip(checkpoint_workers):
+    data, workers, output = checkpoint_workers
+    result = merge_evaluations(list(reversed(workers)), output, data=data)
+    assert result["complete"] and len(result["components_sha256"]) == 3
+    assert [item["update"] for item in result["results"]] == [0, 8, 16, 24]
+    assert (output / "update-000008-validation.jsonl").read_bytes() == (
+        workers[1] / "update-000008-validation.jsonl"
+    ).read_bytes()
+    assert not collect_points(output, data, split="validation")["all_adjacent_points_nondecreasing"]
+
+
+@pytest.mark.parametrize("change", ["tokens", "evaluator", "packages", "incomplete", "duplicate"])
+def test_parallel_checkpoint_merge_rejects_different_or_repeated_measurements(checkpoint_workers, change):
+    data, workers, output = checkpoint_workers
+    path = workers[-1] / "evaluation.json"
+    manifest = json.loads(path.read_text())
+    if change == "tokens":
+        manifest["args"]["max_new_tokens"] = 128
+    elif change == "evaluator":
+        manifest["evaluator_sha256"] = "different"
+    elif change == "packages":
+        manifest["packages"]["torch"] = "different"
+    elif change == "incomplete":
+        manifest["complete"] = False
+    else:
+        workers.append(workers[0])
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError):
+        merge_evaluations(workers, output, data=data)
+    assert not output.exists()
+
+
+def test_parallel_checkpoint_merge_rescores_text_before_accepting_result(checkpoint_workers):
+    data, workers, output = checkpoint_workers
+    path = workers[-1] / "update-000024-validation.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows[0]["prediction"] = "invalid"
+    _write_jsonl(path, rows)
+    with pytest.raises(ValueError, match="aggregate disagrees"):
+        merge_evaluations(workers, output, data=data)
+    assert not json.loads((output / "evaluation.json").read_text())["complete"]

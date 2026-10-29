@@ -250,6 +250,7 @@ def main():
         default=["image", "no_image", "swapped_image"],
     )
     parser.add_argument("--visual-snapshots", nargs="*", type=Path, default=[])
+    parser.add_argument("--skip-baseline", action="store_true", help="Evaluate only supplied snapshots on this worker")
     parser.add_argument("--tp-size", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-new-tokens", type=int, default=4096)
@@ -260,6 +261,8 @@ def main():
     args = parser.parse_args()
     if min(args.tp_size, args.batch_size, args.max_new_tokens) < 1 or args.limit < 0:
         parser.error("Invalid device, batch or token counts")
+    if args.skip_baseline and not args.visual_snapshots:
+        parser.error("--skip-baseline requires at least one visual snapshot")
     args.output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     processor, config = _processor(str(args.model))
@@ -315,7 +318,7 @@ def main():
         custom_weight_loader=[_LOADER],
     )
     try:
-        checkpoints = [(0, None), *[(None, path) for path in args.visual_snapshots]]
+        checkpoints = ([] if args.skip_baseline else [(0, None)]) + [(None, path) for path in args.visual_snapshots]
         for update, path in checkpoints:
             if path is None:
                 tensors, receipt = _source_visual(args.model), None
