@@ -1,0 +1,42 @@
+{
+  "name": "vision32-length16k-dev-v1",
+  "formal_quality_curve": false,
+  "purpose": "User requests vision-only improvement and output-length diagnosis before any language training",
+  "training_changed": false,
+  "language_frozen": true,
+  "original_training_protocol_sha256": "5ca5c2a3174c2b09664ef0f605fd9fb7eb223fa83b90a2e97f887db473be27db",
+  "data_sha256": {
+    "sft_exact.jsonl": "40f2159076083a73d38b9cc800a8a3702b68a302824571b5166c0531402ffb1d",
+    "development.jsonl": "78249a226152b10229f73b23a03706c31d140e95dcbb6325561864059120142c",
+    "validation.jsonl": "6f9b21c2cefe866a6b259c11ca9a0969b190494772cf46ba35ec9f025739376e",
+    "distillation.jsonl": "2d666b0b67f8c3aba2ef0bf11de71a7e7acfbf48fd14dd1c9d982492e6a3003e"
+  },
+  "evaluation": {
+    "fixed_updates": [
+      0,
+      8,
+      16,
+      24,
+      32
+    ],
+    "splits": [
+      "development"
+    ],
+    "n": 32,
+    "controls": [
+      "image"
+    ],
+    "tp": 8,
+    "batch_size": 32,
+    "max_new_tokens": 16384,
+    "context_length": 32768,
+    "temperature": 0,
+    "top_p": 1,
+    "enable_thinking": true,
+    "limit": 0,
+    "scorer": "integer_first_final_line_v1"
+  },
+  "evaluator_sha256": "b090f4e1146b8e4838357972c9b9b6119ed2592de2d7ccb03c3f042ab91d433a",
+  "worker_sha256": "d4035831f1cb041f0bf571b2f75eea49eef8da5d8abee96312a6eff40cf4fe03",
+  "selection_basis": "development image arms at updates 0/8/16/24 were 0/32 under 4096 tokens, primarily unfinished reasoning or invalid final format; no validation metrics inspected"
+}
