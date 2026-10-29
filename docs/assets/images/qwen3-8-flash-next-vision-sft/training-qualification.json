@@ -1,0 +1,790 @@
+{
+  "complete": true,
+  "run_id": "vision32-v1",
+  "updates": 32,
+  "ranks": [
+    {
+      "rank": 0,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "visual_tensors": 333,
+      "nonzero_finite_gradient_tensors": 333,
+      "changed_sampled_bf16_tensors": 224,
+      "optimizer_result": "(True, 20.910467477951908, None)",
+      "visual_sha256": "4a595c9f5cdb3c856879fe2254d579cfff43413b4246eea475074ac7a736e275",
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "a983fc18d5ba06f114d6fe41e6b90a5aa83a440a1579f161f567762d65460b8d"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 1,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "visual_tensors": 333,
+      "nonzero_finite_gradient_tensors": 333,
+      "changed_sampled_bf16_tensors": 224,
+      "optimizer_result": "(True, 20.910467477951908, None)",
+      "visual_sha256": "4a595c9f5cdb3c856879fe2254d579cfff43413b4246eea475074ac7a736e275",
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "a983fc18d5ba06f114d6fe41e6b90a5aa83a440a1579f161f567762d65460b8d"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 2,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 20.910467477951908, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "a983fc18d5ba06f114d6fe41e6b90a5aa83a440a1579f161f567762d65460b8d"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 3,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 20.910467477951908, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "a983fc18d5ba06f114d6fe41e6b90a5aa83a440a1579f161f567762d65460b8d"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 4,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 20.910467477951908, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "a983fc18d5ba06f114d6fe41e6b90a5aa83a440a1579f161f567762d65460b8d"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 5,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 20.910467477951908, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "a983fc18d5ba06f114d6fe41e6b90a5aa83a440a1579f161f567762d65460b8d"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 6,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 20.910467477951908, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "a983fc18d5ba06f114d6fe41e6b90a5aa83a440a1579f161f567762d65460b8d"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 7,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 20.910467477951908, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "a983fc18d5ba06f114d6fe41e6b90a5aa83a440a1579f161f567762d65460b8d"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    }
+  ],
+  "snapshots": [
+    {
+      "complete": true,
+      "resumable": false,
+      "update": 0,
+      "frozen_language": true,
+      "source_identity": {
+        "config.json": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+        "model.safetensors.index.json": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de"
+      },
+      "tensors": 333,
+      "parameters": 448931056,
+      "replicas": 2,
+      "parameter_sha256": "97f688e89e2d0ba59a5f89ea20e48590b56d78e9817c357b5644f27cb15a86ce",
+      "file_sha256": "6eb9e554981f944118b1d8fd4d12ec5213d996a4510ecd21d3398f8f7d775804"
+    },
+    {
+      "complete": true,
+      "resumable": false,
+      "update": 8,
+      "frozen_language": true,
+      "source_identity": {
+        "config.json": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+        "model.safetensors.index.json": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de"
+      },
+      "tensors": 333,
+      "parameters": 448931056,
+      "replicas": 2,
+      "parameter_sha256": "d620130f5d85c04482a5fe3cf064dda6a8c340c164347a782553f2c100f1edaf",
+      "file_sha256": "e170d4d24e59b16968c8237e09a3a5a2cbe5b50f6b518bdf5dec5810f5436771"
+    },
+    {
+      "complete": true,
+      "resumable": false,
+      "update": 16,
+      "frozen_language": true,
+      "source_identity": {
+        "config.json": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+        "model.safetensors.index.json": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de"
+      },
+      "tensors": 333,
+      "parameters": 448931056,
+      "replicas": 2,
+      "parameter_sha256": "8cfef73c32ff1464b9b25518dc0eee135e4bc8b4012ef991550ca918eaf7fc4e",
+      "file_sha256": "c1d57a66e1cd127f265c6be825f387ded6469b178b88db4bb2d259c4408a7ae7"
+    },
+    {
+      "complete": true,
+      "resumable": false,
+      "update": 24,
+      "frozen_language": true,
+      "source_identity": {
+        "config.json": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+        "model.safetensors.index.json": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de"
+      },
+      "tensors": 333,
+      "parameters": 448931056,
+      "replicas": 2,
+      "parameter_sha256": "366c672342bacbfcf41510170303b7b12abc7268044760082d08ef51dbdca710",
+      "file_sha256": "1ddde88835cbaa6518675c66099ebd71f67ce6ee9e568f28b1947a7969484be3"
+    },
+    {
+      "complete": true,
+      "resumable": false,
+      "update": 32,
+      "frozen_language": true,
+      "source_identity": {
+        "config.json": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+        "model.safetensors.index.json": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de"
+      },
+      "tensors": 333,
+      "parameters": 448931056,
+      "replicas": 2,
+      "parameter_sha256": "4a595c9f5cdb3c856879fe2254d579cfff43413b4246eea475074ac7a736e275",
+      "file_sha256": "40a20bf0153c540d3e64aa900a846e351cb53a5b3f59e4889f18ed9f5b51eaa2"
+    }
+  ],
+  "protocol_sha256": "5ca5c2a3174c2b09664ef0f605fd9fb7eb223fa83b90a2e97f887db473be27db",
+  "recorded_at": "2026-10-29T22:16:09.498021+00:00"
+}

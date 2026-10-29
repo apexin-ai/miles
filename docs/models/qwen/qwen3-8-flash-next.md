@@ -283,16 +283,35 @@ no local image tokens.
 
 Focused CPU contracts pass for image/mRoPE alignment, assistant masks, visual
 gradients and updates, recomputation, TP scatter, native weight naming, evaluation
-parsing, and launcher safety. The full 48-layer model completed two vision-only
-updates on one eight-GPU B300 node with TP2/PP4/EP2 and batch size 8. Both visual
-replicas had finite, nonzero gradient probes for all 333 visual tensors; sampled
-BF16 values changed in 235 tensors on the second update. All eight decoder hashes
-remained unchanged. Native Megatron save/reload passed on every rank after
-deliberately corrupting every registered parameter, with exact complete-parameter
-hash restoration. This qualifies model-only reload, not optimizer/data-cursor
-resume. **The 32-update recipe and a measured Qwen held-out improvement remain
-unqualified.** The short qualification run does not establish their memory or
-throughput requirements.
+parsing, and launcher safety. The full 48-layer model completed the fixed
+32-update vision-only recipe on one eight-GPU B300 node with TP2/PP4/EP2,
+batch size 32, learning rate `1e-6`, zero weight decay and `enable_thinking=True`.
+Both visual replicas had finite, nonzero gradient probes for all 333 visual
+tensors; sampled BF16 values changed in 224 tensors on the final update. Their
+complete visual hashes agreed, and snapshots at updates 0/8/16/24/32 passed
+exact safetensors readback. All eight complete decoder hashes remained unchanged.
+Native Megatron save/reload passed on every rank after deliberately corrupting
+every registered parameter, with exact complete-parameter hash restoration.
+This qualifies model-only reload, not optimizer/data-cursor resume. The native
+checkpoint is iteration 31 because rollout indices start at zero. A preceding
+two-update, batch-8 qualification separately passed the same model-only reload
+check; its sampled change count was 235 on the second update.
+
+The 32-update run used training source `9e1cb86174cca03279c55db263cc40f8b08fe467`.
+Its [fixed protocol](../../assets/images/qwen3-8-flash-next-vision-sft/protocol.json) has SHA256
+`5ca5c2a3174c2b09664ef0f605fd9fb7eb223fa83b90a2e97f887db473be27db`;
+the final full visual hash is
+`4a595c9f5cdb3c856879fe2254d579cfff43413b4246eea475074ac7a736e275`.
+The project retains all per-rank runtime/source audits, snapshot receipts and
+native reload receipts under `checkpoints/experiments/vision32-v1/audit/`, with
+their consolidated qualification in `logs/train-vision32-v1-qualification.json`.
+The [recorded training qualification](../../assets/images/qwen3-8-flash-next-vision-sft/training-qualification.json)
+includes all eight ranks, actual imported source hashes, and snapshot receipts.
+Training used PyTorch `2.11.0+cu130`, Transformers `5.8.1` and Ray `2.56.0`, with
+Megatron at `eed6851e5088cff7c10ee195de01f83e21094652`.
+**A measured Qwen held-out improvement remains unqualified until the fixed
+evaluation finishes.** Training completion and parameter changes do not establish
+visual quality.
 
 ### Data And Launch
 
