@@ -309,9 +309,8 @@ The [recorded training qualification](../../assets/images/qwen3-8-flash-next-vis
 includes all eight ranks, actual imported source hashes, and snapshot receipts.
 Training used PyTorch `2.11.0+cu130`, Transformers `5.8.1` and Ray `2.56.0`, with
 Megatron at `eed6851e5088cff7c10ee195de01f83e21094652`.
-**A measured Qwen held-out improvement remains unqualified until the fixed
-evaluation finishes.** Training completion and parameter changes do not establish
-visual quality.
+The fixed held-out evaluation below is complete. Its small endpoint gain does
+not establish a stable improvement across checkpoints or training seeds.
 
 The initial 4096-token development image arms at updates 0/8/16/24 each scored
 0/32 under the unchanged strict scorer. Of these 128 predictions, 113 still had
@@ -323,6 +322,10 @@ The next [development-only length protocol](../../assets/images/qwen3-8-flash-ne
 uses 16384 new tokens and context 32768 for the same baseline and visual snapshots.
 It keeps language frozen and leaves training weights, images and scoring unchanged.
 An effect from increasing the budget must be distinguished from a training gain.
+The [completed length diagnosis](../../assets/images/qwen3-8-flash-next-vision-sft/length16k-development-diagnosis.json)
+records 0/32 at updates 0/8/24/32 under the original high-reasoning protocol;
+update 16 was deliberately stopped. Increasing the budget alone did not resolve
+that development failure.
 
 A separate [32-scene development protocol](../../assets/images/qwen3-8-flash-next-vision-sft/low-thinking-development-protocol.json)
 keeps thinking enabled with native `low` effort, 16384 output tokens, context
@@ -350,7 +353,43 @@ and strict scorer. Its runtime uses batch size 256 and native decode CUDA graphs
 consistently across workers; the development runs above used batch size 32 and
 eager decoding. Each worker loads one checkpoint in a fresh engine. The primary
 comparison is the original baseline versus the fixed final update 32, with no
-checkpoint selected from the held-out curve. Validation results remain pending.
+checkpoint selected from the held-out curve.
+
+After seeing the original first-line scores, the user requested extraction from
+the last nonempty final-answer line instead. The new
+`integer_last_final_line_v2` scorer was applied to the **same retained predictions
+at every checkpoint**, including baseline. It rejects unfinished thinking and
+requires that entire final line to be an integer; it does not search prose for
+an arbitrary number. Generation, data, labels and trained weights are unchanged.
+The old first-line results remain recorded below and in the evidence.
+
+| Vision update | Last-line correct / 256 | Last-line invalid | Original first-line correct / 256 |
+| --- | --- | --- | --- |
+| 0 | 111 | 1 | 60 |
+| 8 | 110 | 2 | 65 |
+| 16 | 103 | 3 | 64 |
+| 24 | 110 | 3 | 71 |
+| 32 | 113 | 3 | 59 |
+
+![All five fixed validation checkpoints, scored from the last final line](../../assets/images/qwen3-8-flash-next-vision-sft/validation256-lastline-curve.png)
+
+The [qualified five-point curve](../../assets/images/qwen3-8-flash-next-vision-sft/validation256-lastline-curve.json)
+and [qualification receipt](../../assets/images/qwen3-8-flash-next-vision-sft/validation256-lastline-qualification.json)
+record exact dataset, raw prediction, source and scorer hashes. The final score
+is 44.14%, versus baseline 43.36%: **+2/256, or +0.78 percentage points**.
+Forty-six answers change from wrong to right and 44 from right to wrong.
+Among the 252 scenes with valid answers at both endpoints, correct answers
+increase from 109 to 112; validity transitions contribute a net loss of one.
+The curve is not monotonic. This is one image-only run, without matched negative
+controls or multiple-seed replication; it does not establish broad visual
+recognition improvement. The user-requested scoring revision occurred after the
+original result was observed, rather than being part of the initial protocol.
+
+The rescoring implementation and existing evaluation contracts passed 45 focused
+CPU tests on the allocated node. The complete retained evidence archive has
+SHA256 `4f73b30e5a1b9d848b278b97bf5f71db81497d6119d3b183c7c2db00c5bf8978`;
+the recorded qualification has SHA256
+`65592eec0a0c58a4ab23163ac690a58698cc8b8e86b4e831c6f7685cfc304237`.
 
 ### Data And Launch
 
