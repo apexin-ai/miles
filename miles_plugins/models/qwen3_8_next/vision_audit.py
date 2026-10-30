@@ -1,4 +1,4 @@
-"""Opt-in visual gradient, replica, weight-change and frozen-language witnesses."""
+"""Opt-in visual and language gradient, weight-change and replica witnesses."""
 
 import hashlib
 import importlib.metadata
@@ -82,6 +82,42 @@ def _visual_parameters(parameters):
     return [(name.split("vision_model.", 1)[1], p) for name, p in parameters if "vision_model." in name]
 
 
+def _language_probe_names(parameters, *, limit=16):
+    names = [name for name, p in parameters if "vision_model." not in name and p.requires_grad]
+    count = min(limit, len(names))
+    return [names[i * (len(names) - 1) // max(count - 1, 1)] for i in range(count)]
+
+
+def _capture_probes(optimizer, parameters):
+    probes = []
+    for name, parameter in parameters:
+        count = min(parameter.numel(), 1024)
+        indices = torch.arange(count, device=parameter.device) * (parameter.numel() - 1) // max(count - 1, 1)
+        gradient = _gradient_samples(optimizer, parameter, indices)
+        probes.append((name, parameter, indices, parameter.detach().flatten()[indices].clone(), gradient))
+    return probes
+
+
+def _probe_results(probes):
+    rows = []
+    for name, parameter, indices, initial, gradient in probes:
+        final = parameter.detach().flatten()[indices]
+        rows.append(
+            {
+                "name": name,
+                "gradient_finite": bool(torch.isfinite(gradient).all()),
+                "gradient_nonzero": int(torch.count_nonzero(gradient)),
+                "gradient_max": float(gradient.abs().max()),
+                "delta_nonzero": int(torch.count_nonzero(final != initial)),
+                "delta_max": float((final.float() - initial.float()).abs().max()),
+                "weight_finite": bool(torch.isfinite(final).all()),
+            }
+        )
+    if any(not row["gradient_finite"] or not row["weight_finite"] for row in rows):
+        raise ValueError("Nonfinite audited gradient or parameter")
+    return rows
+
+
 def save_visual_snapshot(parameters, directory, *, update, frozen_language, source_identity):
     from megatron.core import parallel_state
 
@@ -126,6 +162,9 @@ def _initial_state(args, model, parameters):
     language = [(name, p) for name, p in parameters if "vision_model." not in name]
     if args.qwen38_freeze_language and any(p.requires_grad for _, p in language):
         raise ValueError("Frozen-language SFT has a trainable decoder parameter")
+    language_probes = [] if args.qwen38_freeze_language else _language_probe_names(parameters)
+    if not args.qwen38_freeze_language and not language_probes:
+        raise ValueError("Joint SFT has no trainable decoder parameters")
     index = json.loads((Path(args.hf_checkpoint) / "model.safetensors.index.json").read_text())["weight_map"]
     expected = {name.removeprefix("model.visual.") for name in index if name.startswith("model.visual.")}
     if visual and {name for name, _ in visual} != expected:
@@ -134,25 +173,16 @@ def _initial_state(args, model, parameters):
         "rank": dist.get_rank(),
         "world_size": dist.get_world_size(),
         "runtime": _runtime_identity(),
-        "num_updates": args.num_rollout
-        * args.rollout_batch_size
-        * args.n_samples_per_prompt
-        // args.global_batch_size,
-        "language_sha256": parameter_hash(language) if args.qwen38_freeze_language else None,
+        "num_updates": args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size,
+        "language_sha256": parameter_hash(language),
+        "language_frozen": args.qwen38_freeze_language,
+        "language_probe_names": language_probes,
         "visual_sha256": parameter_hash(visual) if visual else None,
         "steps_per_rollout": args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size,
-        "source_identity": {
-            name: hashlib.sha256((Path(args.hf_checkpoint) / name).read_bytes()).hexdigest()
-            for name in ("config.json", "model.safetensors.index.json")
-        },
+        "source_identity": {name: hashlib.sha256((Path(args.hf_checkpoint) / name).read_bytes()).hexdigest() for name in ("config.json", "model.safetensors.index.json")},
     }
-    inventory = [
-        {"name": name, "shape": list(p.shape), "dtype": str(p.dtype), "trainable": p.requires_grad}
-        for name, p in parameters
-    ]
-    (root / f"rank-{dist.get_rank():03d}-initial.json").write_text(
-        json.dumps({**state, "parameters": inventory}) + "\n"
-    )
+    inventory = [{"name": name, "shape": list(p.shape), "dtype": str(p.dtype), "trainable": p.requires_grad} for name, p in parameters]
+    (root / f"rank-{dist.get_rank():03d}-initial.json").write_text(json.dumps({**state, "parameters": inventory}) + "\n")
     if args.qwen38_visual_snapshot_interval:
         save_visual_snapshot(
             parameters,
@@ -173,42 +203,30 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler):
         state = _initial_state(args, model, parameters)
         model[0]._qwen38_audit_state = state
     selected = [(name, p) for name, p in parameters if "vision_model." in name and p.requires_grad]
+    language_names = set(state["language_probe_names"])
+    language_selected = [(name, p) for name, p in parameters if name in language_names]
     original = getattr(optimizer.step, "_qwen38_original_step", optimizer.step)
 
     def audited_step(*positional, **keywords):
-        probes = []
-        for name, parameter in selected:
-            count = min(parameter.numel(), 1024)
-            indices = torch.arange(count, device=parameter.device) * (parameter.numel() - 1) // max(count - 1, 1)
-            gradient = _gradient_samples(optimizer, parameter, indices)
-            probes.append((name, parameter, indices, parameter.detach().flatten()[indices].clone(), gradient))
+        probes = _capture_probes(optimizer, selected)
+        language_probes = _capture_probes(optimizer, language_selected)
         result = original(*positional, **keywords)
         torch.cuda.synchronize()
-        rows = []
-        for name, parameter, indices, initial, gradient in probes:
-            final = parameter.detach().flatten()[indices]
-            rows.append(
-                {
-                    "name": name,
-                    "gradient_finite": bool(torch.isfinite(gradient).all()),
-                    "gradient_nonzero": int(torch.count_nonzero(gradient)),
-                    "gradient_max": float(gradient.abs().max()),
-                    "delta_nonzero": int(torch.count_nonzero(final != initial)),
-                    "delta_max": float((final.float() - initial.float()).abs().max()),
-                    "weight_finite": bool(torch.isfinite(final).all()),
-                }
-            )
-        if any(not row["gradient_finite"] or not row["weight_finite"] for row in rows):
-            raise ValueError("Nonfinite visual gradient or parameter")
+        rows = _probe_results(probes)
+        language_rows = _probe_results(language_probes)
         if rows and not any(row["gradient_nonzero"] for row in rows):
             raise ValueError("No visual gradient probe received a nonzero gradient")
+        if language_rows and not any(row["gradient_nonzero"] for row in language_rows):
+            raise ValueError("No language gradient probe received a nonzero gradient")
         update = rollout_id * state["steps_per_rollout"] + step_id + 1
         is_final = rollout_id == args.num_rollout - 1 and step_id == state["steps_per_rollout"] - 1
         language_after = None
-        if is_final and args.qwen38_freeze_language:
+        if is_final:
             language_after = parameter_hash([(name, p) for name, p in parameters if "vision_model." not in name])
-            if language_after != state["language_sha256"]:
+            if args.qwen38_freeze_language and language_after != state["language_sha256"]:
                 raise ValueError("Frozen decoder weights changed during visual training")
+            if not args.qwen38_freeze_language and language_after == state["language_sha256"]:
+                raise ValueError("The trainable decoder did not change during joint SFT")
         visual = _visual_parameters(parameters)
         visual_hash = parameter_hash(visual) if visual else None
         if is_final and selected and visual_hash == state["visual_sha256"]:
@@ -218,6 +236,7 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler):
             "update": update,
             "optimizer_result": str(result),
             "parameters": rows,
+            "language_parameters": language_rows,
             "visual_sha256": visual_hash,
             "initial_language_sha256": state["language_sha256"],
             "final_language_sha256": language_after,
