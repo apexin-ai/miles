@@ -1,0 +1,1114 @@
+{
+  "complete": true,
+  "run_id": "vision32-prompt-v2",
+  "updates": 32,
+  "source_commit": "bc8e69fbbe614b54fea7577ef2f60978ff7f39c5",
+  "training_protocol_sha256": "a01e8205977faccb14b114bb30d0fcab3d0f325e46a14a37dda56ee92c7ab6eb",
+  "base_evaluation_protocol_sha256": "9a8f51633b2dd5c620acb86392155f7789d2fcecfe51c02aec0674b4525246af",
+  "language_frozen": true,
+  "all_eight_initial_weights_match_previous_run": true,
+  "visual_ranks": [
+    0,
+    1
+  ],
+  "visual_replica_hashes_agree": true,
+  "final_visual_sha256": "b77bf409ad6d111c244b22e266ee124e55d425cae80f022521fe543fd945216a",
+  "ranks": [
+    {
+      "rank": 0,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "initial_weights_match_prior_run": true,
+      "visual_tensors": 333,
+      "nonzero_finite_gradient_tensors": 333,
+      "changed_sampled_bf16_tensors": 218,
+      "optimizer_result": "(True, 15.865876226744705, None)",
+      "visual_sha256": "b77bf409ad6d111c244b22e266ee124e55d425cae80f022521fe543fd945216a",
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "5af760b44708c75cfbd1a7745eda2187ef7cc7b4173ec2da48c9b501901dab02"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 1,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "initial_weights_match_prior_run": true,
+      "visual_tensors": 333,
+      "nonzero_finite_gradient_tensors": 333,
+      "changed_sampled_bf16_tensors": 218,
+      "optimizer_result": "(True, 15.865876226744705, None)",
+      "visual_sha256": "b77bf409ad6d111c244b22e266ee124e55d425cae80f022521fe543fd945216a",
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "5af760b44708c75cfbd1a7745eda2187ef7cc7b4173ec2da48c9b501901dab02"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 2,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "initial_weights_match_prior_run": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 15.865876226744705, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "5af760b44708c75cfbd1a7745eda2187ef7cc7b4173ec2da48c9b501901dab02"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 3,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "initial_weights_match_prior_run": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 15.865876226744705, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "5af760b44708c75cfbd1a7745eda2187ef7cc7b4173ec2da48c9b501901dab02"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 4,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "initial_weights_match_prior_run": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 15.865876226744705, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "5af760b44708c75cfbd1a7745eda2187ef7cc7b4173ec2da48c9b501901dab02"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 5,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "initial_weights_match_prior_run": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 15.865876226744705, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "5af760b44708c75cfbd1a7745eda2187ef7cc7b4173ec2da48c9b501901dab02"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 6,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "initial_weights_match_prior_run": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 15.865876226744705, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "5af760b44708c75cfbd1a7745eda2187ef7cc7b4173ec2da48c9b501901dab02"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    },
+    {
+      "rank": 7,
+      "decoder_unchanged": true,
+      "native_reload_passed": true,
+      "initial_weights_match_prior_run": true,
+      "visual_tensors": 0,
+      "nonzero_finite_gradient_tensors": 0,
+      "changed_sampled_bf16_tensors": 0,
+      "optimizer_result": "(True, 15.865876226744705, None)",
+      "visual_sha256": null,
+      "runtime": {
+        "python": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/venv/bin/python",
+        "packages": {
+          "torch": "2.11.0+cu130",
+          "transformers": "5.8.1",
+          "ray": "2.56.0"
+        },
+        "sources": {
+          "mbridge.core.bridge": {
+            "path": "/usr/local/lib/python3.12/dist-packages/mbridge/core/bridge.py",
+            "sha256": "c8cf398e6b3d178bd2593862d03aca528bd1af599dfa2e78a78ba607b0fbba7b"
+          },
+          "megatron.core.models.gpt.gpt_model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/models/gpt/gpt_model.py",
+            "sha256": "ecc0639e83bcdad85b4718417f5c1a254e39da35200c2e8fe913c94ee3e4cf82"
+          },
+          "megatron.core.optimizer.optimizer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/dependencies/megatron-q38/megatron/core/optimizer/optimizer.py",
+            "sha256": "3f306e02f76135c8c25ce8be178b58eefd8c55dc57224406c2ca19dd75b81a76"
+          },
+          "miles.backends.megatron_utils.model": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles/backends/megatron_utils/model.py",
+            "sha256": "bb6ac07b459f9324571ccfd715d1f0465b494437423bbcbbd7b827c3b3fd8907"
+          },
+          "miles_plugins.mbridge.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/mbridge/qwen3_8_next.py",
+            "sha256": "79797883d9c9a02932e5f632759993030ee7a93e24cb21c4cc6eb71434104b10"
+          },
+          "miles_plugins.models.qwen3_8_next.gdn": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/gdn.py",
+            "sha256": "01ff83c31d6c1305c0b6628c449ebefaf2c2ee0773ac2af6ba554c9ea1ddd44d"
+          },
+          "miles_plugins.models.qwen3_8_next.hyper_connection": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/hyper_connection.py",
+            "sha256": "ee4d311f19fb36a00c581a37773c9c1d8eededf59bfd2ce3d72d3eba6eea7876"
+          },
+          "miles_plugins.models.qwen3_8_next.model_provider": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/model_provider.py",
+            "sha256": "69cc9e36c663a48767552987e0ff6fcd066345822a55cb8d9006a05674315c52"
+          },
+          "miles_plugins.models.qwen3_8_next.ops": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/__init__.py",
+            "sha256": "e4a78226b25e0aadfb3f0c622962e7e7e03a8b66234d6d52850b2f60a46a8d2c"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.attention": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/attention.py",
+            "sha256": "3a27343abfc8a4c47876b376fdd0a39beddd24dc1b03ef1fcf0285f74ac0f2d3"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.ple": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/ple.py",
+            "sha256": "5311978da103281e9e25777ecbf343ddeb15e65ea3bc72558ae9b19a6406a45f"
+          },
+          "miles_plugins.models.qwen3_8_next.ops.qsa_indexer": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/ops/qsa_indexer.py",
+            "sha256": "0d36625630e345270e4ba36a8ddd911395cecfdcfdf4b3ed838a50239c1eb078"
+          },
+          "miles_plugins.models.qwen3_8_next.qwen3_8_next": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/qwen3_8_next.py",
+            "sha256": "31b55dca33bc431375f53ebbdd6cd4eb779e5abdfa12529c8a13e1d64073059b"
+          },
+          "miles_plugins.models.qwen3_8_next.vision": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision.py",
+            "sha256": "71539d45ab224ac3b61a4aa82c744d9d33739c9f32a9d4dd97f27055eeeec4da"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_audit": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_audit.py",
+            "sha256": "fb90903a507bdb1adbba88a5ac0d2359ee344093454c446a1a00b1126477a5a5"
+          },
+          "miles_plugins.models.qwen3_8_next.vision_inputs": {
+            "path": "/workspace/jlw/miles-q38-vision-sft-20261030/workdir-train-prompt-v2-rayfix/miles_plugins/models/qwen3_8_next/vision_inputs.py",
+            "sha256": "5af760b44708c75cfbd1a7745eda2187ef7cc7b4173ec2da48c9b501901dab02"
+          },
+          "transformers.models.qwen3_vl.modeling_qwen3_vl": {
+            "path": "/usr/local/lib/python3.12/dist-packages/transformers/models/qwen3_vl/modeling_qwen3_vl.py",
+            "sha256": "25d870f30d8a0f5209238d8a8e97a5f7965455a769bc88f5b425bbd167b4a209"
+          }
+        }
+      }
+    }
+  ],
+  "snapshots": [
+    {
+      "update": 0,
+      "receipt": {
+        "complete": true,
+        "resumable": false,
+        "update": 0,
+        "frozen_language": true,
+        "source_identity": {
+          "config.json": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+          "model.safetensors.index.json": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de"
+        },
+        "tensors": 333,
+        "parameters": 448931056,
+        "replicas": 2,
+        "parameter_sha256": "97f688e89e2d0ba59a5f89ea20e48590b56d78e9817c357b5644f27cb15a86ce",
+        "file_sha256": "6eb9e554981f944118b1d8fd4d12ec5213d996a4510ecd21d3398f8f7d775804"
+      },
+      "weight_bytes": 897899120
+    },
+    {
+      "update": 8,
+      "receipt": {
+        "complete": true,
+        "resumable": false,
+        "update": 8,
+        "frozen_language": true,
+        "source_identity": {
+          "config.json": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+          "model.safetensors.index.json": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de"
+        },
+        "tensors": 333,
+        "parameters": 448931056,
+        "replicas": 2,
+        "parameter_sha256": "706e3ca1534b921973bd7e5dc524af70f46485dae9bfc6a335c94f499aa8ac85",
+        "file_sha256": "3cab440c7e755bfc1aa0743f8f4bcd67d13889ac78645296c18dacb0e10cd179"
+      },
+      "weight_bytes": 897899120
+    },
+    {
+      "update": 16,
+      "receipt": {
+        "complete": true,
+        "resumable": false,
+        "update": 16,
+        "frozen_language": true,
+        "source_identity": {
+          "config.json": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+          "model.safetensors.index.json": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de"
+        },
+        "tensors": 333,
+        "parameters": 448931056,
+        "replicas": 2,
+        "parameter_sha256": "a48b2762f19ac9ff7b68e6782b2282e51e311d30d3f6b51156d1576e5e9ec9f6",
+        "file_sha256": "7c37dca61e9fb8f1a786a86f128869125bf529056dc3b2518c8eaf93d14cd227"
+      },
+      "weight_bytes": 897899120
+    },
+    {
+      "update": 24,
+      "receipt": {
+        "complete": true,
+        "resumable": false,
+        "update": 24,
+        "frozen_language": true,
+        "source_identity": {
+          "config.json": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+          "model.safetensors.index.json": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de"
+        },
+        "tensors": 333,
+        "parameters": 448931056,
+        "replicas": 2,
+        "parameter_sha256": "89f31501390eadb2d712be717c3c85d9245dc2ec7bed6a5e58fecde5416de7f7",
+        "file_sha256": "51802571e1226938d86e5459a4902e2adbacce1622d02654859f836cf283223c"
+      },
+      "weight_bytes": 897899120
+    },
+    {
+      "update": 32,
+      "receipt": {
+        "complete": true,
+        "resumable": false,
+        "update": 32,
+        "frozen_language": true,
+        "source_identity": {
+          "config.json": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+          "model.safetensors.index.json": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de"
+        },
+        "tensors": 333,
+        "parameters": 448931056,
+        "replicas": 2,
+        "parameter_sha256": "b77bf409ad6d111c244b22e266ee124e55d425cae80f022521fe543fd945216a",
+        "file_sha256": "0df506257498fca2de72a497573c020d5b091c77bc6c52a4938f49eb7f0f6ab9"
+      },
+      "weight_bytes": 897899120
+    }
+  ],
+  "data_changed": false,
+  "labels_changed": false,
+  "new_quality_result_claimed": false,
+  "files_sha256": {
+    "data/vision32-prompt-v2-a04-protocol.json": "a01e8205977faccb14b114bb30d0fcab3d0f325e46a14a37dda56ee92c7ab6eb",
+    "data/vision32-prompt-v2-protocol.json": "9a8f51633b2dd5c620acb86392155f7789d2fcecfe51c02aec0674b4525246af",
+    "logs/prompt-alignment-v2-qualification-a02.json": "22496f7d0696cafabeff713cd4b38c861cfea924a1946c71102390b9d29ead8f",
+    "logs/prompt-v2-a04-ray-driver-probe.json": "09913263d2922ea47cd1f282f414c4d859356a77bfd5d19cf9038865c72c7b97",
+    "logs/train-vision32-prompt-v2-initial-comparison.json": "74c28723e484158e8eba8df19cd7e192bf8b2dc0099ea39694f55d63a7072d44",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-initial.json": "14a7cfc0cafacd1907dd8437f98b3c1a43d17f12e5f0cac7c0919e722509ff3e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000001.json": "e3f1ea6b2ed9645ffa82e30a42412b789a2a3770a9a6ac6a7aa204ef01a055e3",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000002.json": "ddfa5319731e5105d4d0307e68a561ba1f8fcc61383f6bebd03a314b5f6c77a7",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000003.json": "bd80872a633f7a115f533bc522e870d8475f99f124309051c29d81e4d564ab30",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000004.json": "cef079952d17ca81b82a80a6f420140164108f1b13807bc80d15e0fec2ad3ce6",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000005.json": "e1957e60df2611afe66ac22753a58022f79cda94c203accb07651a9233b5b3e0",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000006.json": "3df1c921f790cd4e6dfc9a01b89c91d4867be6316dcff938c61fb0aed6236061",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000007.json": "d6c26ce8e4fc7596181f6a5c3ef8f5b60360defd00d5552b579b8c8988273a07",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000008.json": "9d0d4de2b94cdef30880142af7cc16ec9736f347a38a4633e70efe20b9bc546b",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000009.json": "fa6307cbfd595bfcf0f7b0347aa3bd564acf3b30def7e5051fac6b2f7e50071e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000010.json": "e7bede103b3f648aacc03c5aa532f0a060cbea30597c07023341e59c5a1895c7",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000011.json": "031edfd3ad7176ebf5402a455d64d68b5e6bad840174b60b5b9b1b19cd372c69",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000012.json": "3f28e77119829cd0e8d1a92127ed9e4a2ddefca9dfb1c269e09bacee4329e81e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000013.json": "f0c664f0cbe0f476dc4636510fcbb7106bc35fbe58cb572301ac59491d7380c9",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000014.json": "7e30630438cff892203d358b215803cf70295e647f20d1403c73442885dc2e44",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000015.json": "15d2e0a6d3369c778497b14c44c76f26ce81316a34aed62e0ef450ef26e0426d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000016.json": "32986da48dcb39995a27972339467de410791513342a9e68dd2dce1662037dd4",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000017.json": "60a861cd4e18a33f8d26477c2e2c5e8ecc8dd6d4d881d74a53c6e5cbf45427f7",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000018.json": "ab33a0097ac641b0b8e0a3abc6827a8e5570d4f29d41aa83856773d6d044c3e4",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000019.json": "1d863b1088183602546ac4a7125efeafc574246d7072b7f56f43be1641d89b15",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000020.json": "2255ae964b39a5abfa45498ca5f2ba051ae74c199be77c9c1e4efd9c3954b824",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000021.json": "f58491a1f7f588e3ff479332c4f4ded09b5237725f235fc5c7b7b5e0aa097e91",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000022.json": "8ba1bdf6bd3eada5eabb425e972546765b98eae0ecb1ab307af41d0f7f9fd536",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000023.json": "a6085db97f24a51d7e711b526d0b58be7f778ded4045fd81f2bbb18d21fb12a0",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000024.json": "baba629ec3595c155b56837044bd142e36595fb9185a811a9ff449aa24f70395",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000025.json": "d54341fdf9d4fed598e68e2ced0ce3a033c0ec8d80453410cbaff792e196ecc6",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000026.json": "b1add5e1a757fa41f16378deb1be4be13d2b1a78bf6d81c7b00d874efafd725d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000027.json": "6ad39f1122ddc1c441791e5dfeabd39b3663877c8dc02e6a3b8499722cef2835",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000028.json": "4e63c05c1e626a0296235f0355cafaae25416fd06a2ac66f627ef360c24cbc7e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000029.json": "9486a8b787bb9aa76f9a8bd5d5a17674df3c4e580ba2fff6e5329c904a192660",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000030.json": "0b7e0c8cbfdd5fc0baf288879e1e47e91ce00aacd573a88f667710214b6b6035",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000031.json": "93044a8bf8527521bf3d1c4b6d13d7c8696a82096aaf3ccf8345578a670ddc92",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-000-update-000032.json": "b7487fef0efcff0ab1f5426a05ee3868751cdb91c9fd33e58511b96c97551d2f",
+    "checkpoints/experiments/vision32-prompt-v2/audit/checkpoint-reload/rank-000.json": "2a7decbb72b7765e19c41cd55ba8d7ab02b33de5a61a524be46c33b7a6202032",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-initial.json": "52bee4fcc1f7506874b12a2766de39dc90bb9865d432b5517e38d5d7c02bc3b3",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000001.json": "a2491ab810343faa5246b0d15b6113031bd89310ebfd7680e1edb9f498442148",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000002.json": "3ee6d75e1b76ee9ce3e7d1a4d4d5aa9b4fc49e35c6fb84bbec0f5cb12c3c507b",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000003.json": "7ad6941b49d44f4e0b5e0f24295f8d58f852c99264efd46b3683813dbc0df2b4",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000004.json": "b3c065d9388024010f2a3af90d9bac1fd44d9e83db3235c593f762fd267b33b6",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000005.json": "668e08aebb7bc442e66022c567eb4235b0099b7e59a771a86a2d5abb2f68aab1",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000006.json": "54585b5948b5a0df83c96fe4ad0c5e098894d9700ba380f8fc35878bf487210d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000007.json": "a73a0582fda5fb60a71eb5f87cedd5bcbee25973b5419ba89e72526f7ce121dc",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000008.json": "28b9c27a6185f89f8a26a91ed8916ed87fa2211c2689ddb9bc14ea5640d4b78b",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000009.json": "2ce30c48e21734dcdca01c1e14476177c5a4ec00daab4035cb73a9e4e7b30afe",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000010.json": "3842fba760d79d6ed8b833a0537ad748e858e869f133cdb6294358a2c2c9b3c5",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000011.json": "43baea74231ebdb8f4abbefa74c3344b6730c825d0670758f39ab22c12fc7df6",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000012.json": "90d8b29bce33c50915e103229a95af6f9a09b14d33901345e4ad3208b530f3e4",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000013.json": "35b0d1273e2e110ff56f04f6b7a5f74a5356d41d4701996792df4d036e0532c5",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000014.json": "58daf76f7a4ef287284cd65c79e8a9cfa01295fec02ac3901d27cd16561fafd9",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000015.json": "cd636227016781d430923886d56df7dc0c94a549fe5014395d8cb01c9514ed11",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000016.json": "acbf73d759190f3b82fddaa367507715f35080e93d3719b45e9098b73da69f5c",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000017.json": "963a08cc72b3a1c599e4b696e15be872c8d33a63d0093e080eae0ae31306eb04",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000018.json": "2719a3ee484fade9f1d05e8a173df36d2ad83e487d567187fbc38f306cca4387",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000019.json": "6b41f9756039e896d9cde44244e27145d84c9d21ffbaa9bea3a685abc0a035f5",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000020.json": "a1ace23b98eb79ab6edb01550f25bcdacd3db71e122d35ed08e154be5053cba2",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000021.json": "81b43c64fe909334c30bc47a29eedca93334a3b7f7b7624235095122e012ac24",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000022.json": "d2db88516049d3889fcabedab2a1e17c97a33acc3204388bdac954a95aa73a55",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000023.json": "224cf2ef878b91fd4d8f29d5d6ac8809f6db15236abc33112b973b44b145e076",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000024.json": "392701823d890b992e3d61f9a716028ce4904f48d36762d6a47b08ded62f524a",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000025.json": "30966868695d4622349c2d93eb8a934fe1e2ca8012fe9820561255f9b77ef50e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000026.json": "80c7eb346b40720ded2f341ed0b9481357cb509b0bf78e44f2534ae3158c1b96",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000027.json": "caf3b07aefe61d46ca00f338fab90ef196560d291b2bc70b81c0aec97c002397",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000028.json": "acf65768889e28dac2c1ab5e33cf333d207f7377e13ec28bcf29fc58f0863439",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000029.json": "9860de516a329014ff4f9c0b0402020e6cd5924ba20af62508a36483790dd9ed",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000030.json": "f8c245924b5e78dcc784a00464570c9c560fd5b7ce0e674b0cfa98cc45e03f56",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000031.json": "c16fde1f532adba41b91e058dcc9a3a1708b69c50c101a079554404f0aeb6468",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-001-update-000032.json": "92d3ca2cb3f035797dcaf46213b9480cfb4a9ea8974ff7b13c0867fce9d7925f",
+    "checkpoints/experiments/vision32-prompt-v2/audit/checkpoint-reload/rank-001.json": "d63982e3df558a7b2869d88846d1e3e1d995a64af96d3f3d5514f8b0451cce4e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-initial.json": "b6f23d282f45b716caf715035bacb16a756ef043f5c8699105932ad163a6420f",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000001.json": "e079924211f600776da379099eb3619df585312747dac146c16bac81b57f74cb",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000002.json": "9069c249e5787f8429b8d088cc34e6d38021084aeab60fca7497be4f49bb1f28",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000003.json": "89414bd5ae5715aaeb4ff9c5ad57c23f278434e877ce365fec702e34a0b31f6d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000004.json": "948087cfb4413c553c03354838a5bbee8664e7b80e60758fbc6ef87ae1826ee4",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000005.json": "5b09e11650949358de1f4d24817aec5b93fa725c709d8eb1ca0940cce4bd05cc",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000006.json": "998904cd63d1cbb562f2cc7d2c1544ca57021d8e478e20b1578fd5bd822b5b42",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000007.json": "687f09bc8086631e258cc0a08b7ca3a4f5497244e777c882df5f7165a35f444e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000008.json": "6f323bcff13c80449f06c4a545242bbaf269bda23afc9b39fa04cc698e5e594c",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000009.json": "de3249d669dcd0e4fb32a86bab404d27cd6f1a14cc0012cfd07859b989740c70",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000010.json": "2c26ca7fa45bd8f05af9d048467de9d3f9be1696fe25e691195a4fbb51244526",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000011.json": "cac2618b377b517c8daa7a8177c33ed77cec092adab7bc2f6f5dc29afd035011",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000012.json": "79a8960262070842cb3f75c30b6738919bf8c5343ed5bde63966ed1cd58b8852",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000013.json": "298da14805ccd7d5a5202f7fdef1465cf46b662b533e7f8c6ca55495fafee0fe",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000014.json": "cfb0af77309b4db8d40c23501fb9cef0cb89b1e05177cb5c189405f3d4fdf78a",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000015.json": "8756a214a74ae28d0f54ee8696d43eb616b4562de36b483d0b7719b8919a13b2",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000016.json": "3c4f0ad5b22a669cbc0f04b75febd27d2dac105e0e767929a28c4ab17a50fbb9",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000017.json": "c106a0f9e07e826e8f191bc1febed903933b4ef00736deba02d0c0c1ef5386bd",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000018.json": "71536bf1fbc349bc1191a5a4c7c3fc90599d8d4f24bf40ca40775df556e3ea64",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000019.json": "315ce7b618fe4ff1628423d68643129c961c0dc3ac2cebf50e4c968dc314611d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000020.json": "27bb5206cae4c68386dcf5e531e63849e06fa18246c510f4d8bb18be56ff1a92",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000021.json": "4c796584cbf4b4b348497c1cf55f537da5c552227cf174a1f1895a4d9a7b6f35",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000022.json": "92ff4dee4ec96031aed353acb793f5c80d49d95718357d347bdd2a90d2229488",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000023.json": "a2acad92af72ed1ad8f9d7148d037bcf66c9c1d7ee28cc23d1f57c1de0cd1243",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000024.json": "b84d49b675d0e05aae00ce4e70870465a00546272283489ce6b4d43df1df730e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000025.json": "43989ca287c9dd6f5d0211e64a7376b172ba52d997654a5c8687563d18a49345",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000026.json": "92311740b59528e591aa19478ca8048ea09c8a93058472d7ba6930ad164a1f79",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000027.json": "4dca440a59d87a6e7718a2658211a288394fb98ef8ca97f3dcb90ad57d3edaec",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000028.json": "4b5fc734f71843910469f2e199f0c8e42cbcba2dce25b21861ebeea3f9783c1f",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000029.json": "e88f8d51510e6c8ca1e9562497fd87bbd6de1b00f2d49a662b82e055699662b4",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000030.json": "569f6ac4781e7c8107c69ee52e9283f37458ae6f3f6be62d2cb7896f6495fe79",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000031.json": "98f04a478ea465d07d63709dc19d1c80f1c910e6ff222c4807bb7c77f2c86c90",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-002-update-000032.json": "a0a496baec1ceeaf0fe878e8203b892ad7143b96962c562bd1346657dc1b04c2",
+    "checkpoints/experiments/vision32-prompt-v2/audit/checkpoint-reload/rank-002.json": "cb1160ab4302f06563ff67210b946c40b1f9741b83a9204f6d4c7102f72defe5",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-initial.json": "097aee12ed8427dbc0c2a16fe05b987573b023fe35de78a6d458157c65030b02",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000001.json": "f6310d943d63f204d90291e3f903e42c67a963eed19a2a28a0b3765e24045412",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000002.json": "07648b17827a9e9eea77c11a8bbd3e5020b2b1043085eadccdc2cb32c3f2acd1",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000003.json": "f1a8cea17f0a3b28a6eb2992dcddc67f6468c592af8ca82d01dd48e0be26859a",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000004.json": "64a6aaf323c71f57188312587917d797bba11a7d80039295ca855695a3e314e0",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000005.json": "9f6cd3b8a3848b31bd9f591c43bbe9552f1c6fa3a042297537257e54f489a7ec",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000006.json": "79496560c86604436e30aa1817bbd1f0315a2a085df588450adf67e8a390e8c7",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000007.json": "99b78e23bd17e7e63222f48d49ec043181589d358c0faab8a7c6173c04d76766",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000008.json": "7de014009bfaa01188a9b99b9c38279da36e8cec6afa8af785ff72d3eb9fe71d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000009.json": "d49bed712f5035babc6590fbc3fcf240dbee70bd0ae443e8a862d268991c17b7",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000010.json": "60cb4cf9216b243060ef63583d48c0125ce4196255ae0c300d5ebe464b33334d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000011.json": "6bea3222e8be9405adcf6198e8f4ef63b16d87c5252b40b4cc57a70178c88751",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000012.json": "34299c813d1f01cb9e161f8645c0b653950bb14802d01cb8b996c3373943fff1",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000013.json": "dde367a07ddd8b07d488a571f4cefb1a5c8168cc1e6d168701c91b8656ecb83d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000014.json": "f19385e309bc55e0693e265bb0d97c35312058029a18829b8aa88052c69cd199",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000015.json": "90f48d3cb2e2ab78e86cf5d9f64fba36fed33bffcb4f9e7524676a11e76f9cdf",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000016.json": "67a05c3b5952687392a555902ace58c37d30877121687f6535c67d2ba6fad08c",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000017.json": "cc338552475b2ef39c77c845d8b9fcf4bd4ed949ce66de7f7b43c953e4c4e334",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000018.json": "ebd4b216d810663711c36971711aaa259111bb42012b2bdbc94bcfc57f55bb6c",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000019.json": "0a52cb057efe5fd965c3c09f938b802760dbcff5b06ab0d4f49eef35591acf60",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000020.json": "b7594935aeeaf6335c0a307e3dffc1d4f8d8ba897f620d11d6dd278a13ff9fba",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000021.json": "04324e65f6a56ce2e38db884d347472b617e80f34d3b6e382d3d95edbc9d0b8e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000022.json": "6ccd5b2ada8f7fdbd6785298341a1e168241e22b667032d30fd54f7051bc7162",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000023.json": "861b315945b2a46821297f4fe3d2aba64fad2d7088b644de6313b05b43508c14",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000024.json": "78872dd77ed77af6662fb82e36eccef55bd90be05b0a14e30d86de403261141d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000025.json": "5a10e035cd8be5d198eb6b19584ae03a1426ddbca91816ebc75691726c1fbfa6",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000026.json": "ae5d7ee4743cf71193e85b7c4c1291aa5cf7aa9985aaed41100b57901feabf02",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000027.json": "5a46f0dc641e242973d7ba31cf92f44a4075a87957e5c135d7a6f1a516ca69a4",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000028.json": "d43eddc9ce57b9015f9ccee6ea9df8c859ef7995499fb2a961af06736e792a29",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000029.json": "baa4df256ac67f832b2580ac64c87c0566583526306cd3368f5d59f2d5f0ed51",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000030.json": "40cd59aeba0b1f5435324271ca56ee3f132e5b63a5bd9acafe5958ebf23b9d72",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000031.json": "aebc8b02485eaa533fc98b45088d4fef84a3528aeb7d1eed6d695daaf552b43f",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-003-update-000032.json": "669d4c8d1bc0a189047546ec7c63a88979f0934fc04a58a543a2a2213f20904d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/checkpoint-reload/rank-003.json": "97db58a5d3d48a153c52445f969356e2e884ac129854784f95180e169d5580b6",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-initial.json": "fddfe8d49e3c67a553b4f6dd6884cae6e87d1a87fc780cf7a5d46cb29e737588",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000001.json": "be66bd0b276804b14ee0d7bee698b66739d04a2b6f3e371cf8e64dedcac5bc08",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000002.json": "94a0ae6e847633db40bd148d15d82a8b14b2e0edc69c2ab076af60b8dc721934",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000003.json": "dc80c744f304d01ee439ad60bdc38419df35957d0a1f6ea8ad3a0b87e660659c",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000004.json": "7d100947a2cf4b8ae5751b0d2475d7fd08f6734295af220c0773685311db25b6",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000005.json": "f5c17b740a498ab26f1e62355dd455c7b89a0bcd4f96d04750ee29fefa9c8363",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000006.json": "fbf391209b7973e677f480da63109e874dbf670499de71845c10a8befe2c0220",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000007.json": "cc6933548e74ef0e96e3fd08e9ba2232463e4f6b66b773f386214ea0ce6c04a0",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000008.json": "165d3b378659be356edfef50e45c1f46d4c4b6c4b944abc9f59d0c3702c88476",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000009.json": "f1c27f86b224bfa73dcfca9b6813a06d1b85ed52a1cc21768e000566e68dbafd",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000010.json": "372f89bd255e0f1329c85f649a5125e75afcf0afd17058c6871b8638502e04a9",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000011.json": "15a2fe94d26b46f8a69e70488092b86da7231dea18d07654cccbc4a2a362e752",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000012.json": "d01e1d3f1e54b180b6f1e148f76b14d21a87b7dddc85482072a8793552acb364",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000013.json": "7c02f7e389183a0fb773e60f4eed36657b977b8b8549a7ce5a14f27c39ca17aa",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000014.json": "2fae205c5a35efb7b04c91c7d93276938be535411b202ffb3601717d6b2fbc33",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000015.json": "87dde6d43d1946091f516b755da2a602d8bf8f1428a0d81bb3c971b671e87ac3",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000016.json": "81741ce9150c07314e4b261a1188eb99e4aca290f0f3790c04d631e354229cec",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000017.json": "6d97f34e98ea8fbcbddc261c35c11983197900a959ecb17fbf847bb6f836f511",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000018.json": "ad1d9276b18d521b859fa9b0138eda4c8709c50ea444025c9bd283296f6889f7",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000019.json": "21f59e9fa9c89ec50e18339bdf0e56141179689f1480955205b3993f2a52fb91",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000020.json": "ff5dced044fefabf17b1fdf31639388ed01264a54ec55fd2fc494bda9e0eeec6",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000021.json": "31c618587a4ce830aba2d38e13262132a4f710dfd85231bba08c0f2781db4ba9",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000022.json": "3c885e0ba4359f00f51c8cea5e981dec2f048cb2336e9b62a4981a36ba88da11",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000023.json": "826d7bc6333c2c436fac3170f33604c86e892352e178ba8c73f1c37241e47304",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000024.json": "b794a7e8e4dd4e8cfee79ef58c51683174368b67b59f6c8520a3ab154ada395b",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000025.json": "3425008f5d7c75dc5cc2d0f4fee0cdcc1da09730ed11f23c360d592f8a7e38d7",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000026.json": "f1871dd4bfe070c5e3ce57beb0984f88320ecd4fbe604ab85b23f0d3453b9ed2",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000027.json": "f5d404a12d5dac1cfa21ade64eabdcd3f483ee2d680704d92c7b7d0479b07595",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000028.json": "826fd1870a21286c4f2747e68f43c3a90032eb20619dca244c80ae4f9783b444",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000029.json": "c12c7e6f9436334a1da7b02d72a3a8a2ad1fff4156760a04fcf6b2c9d28cfde5",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000030.json": "4b046a7583973b194c6060b204f6ee660a178cc627b7211e3127885aa85ab444",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000031.json": "98309e5121c4fdcdaf465dd76785e8d588e2ca81a61a85e2cc2ceeba1ea8055b",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-004-update-000032.json": "bdfe4ee3ad3be695b3f9253d86cd55d2265ad9b82c0ab1ab3f699c962570f351",
+    "checkpoints/experiments/vision32-prompt-v2/audit/checkpoint-reload/rank-004.json": "024606fad9fe8f0984d8d4ada0f28ad7983472149647ef91262a8cb069f77d49",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-initial.json": "77bc784f7cd579bd2c7fafe9521f1524591ab619d89326eee0ef9a5bbd523fa8",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000001.json": "94fd90dc35c86d1e8f6e003fbf5e32b44950364296431b7d5df78e5e3c4212c7",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000002.json": "0fce84231656d00c27105fc97df28248c189dc03650cb23e5613b6159acd0701",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000003.json": "aa69ccda314fda8d5ec4c8691b9f7f853648f402f735493b918a7c08efe9ca99",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000004.json": "e844047c1ce36dae445c5973d3af66afa35a739cbeceb5d0848310ad46fb65ca",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000005.json": "eaa3d8e3bd7ab34ce66a5a295e94a89e47afea2fe0e91db0bfec0068440b1882",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000006.json": "5366bf9481c5747d2764c5647ec181c5aac1f86ddaa3227df97f71fed2a8341b",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000007.json": "ec6a1debbe7979c9070cea8c0bbbc8787daad208155e7b6a3ff30ab8432898c4",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000008.json": "951e64538da7f56b2aad2da76ef77b9d7d65d527f2af9c8441f0bee6a14c97a2",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000009.json": "b4aa383921fdceb68e01d70c728c650e6e0ab438e5c12c85685065a7a1d5691a",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000010.json": "1a587f8857df988508b6605091d727120bd7f0e6f238c1efdbe1d7a9a25857f2",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000011.json": "88ace7350e33c1a693b2d7bcf1590d0d6abf29896ca46b9723eedfafd06ef3b1",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000012.json": "39ebcf2d728976c9ef29a62a8e1a4b315fa03993d0eaab29006952d97658ffac",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000013.json": "bb2347f338a9b7711d45528215737b67b24eb4ab2802140100a38c1b39579eee",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000014.json": "05f7a3e628e7b248a0f10d9d8acefdf4b2edbbe233eef8bda2dc1ba05df50253",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000015.json": "ef8eb53cc860c32e187531a321054fa2445d55a535b8bdd70e2ced5dc121c3ca",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000016.json": "c4a2d722bd603623e9a5b99dd524456b66667303f6ab35b0c79e50c3c4b46d27",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000017.json": "a046ec7147dbe2f6b39221788f382235196722545e6265a9573a5b94525469bb",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000018.json": "27ae0f4d0ed53a5782ef6b6218904b496cbaff88c4a663a7d0189ebfa2a7a2ed",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000019.json": "5708285fd0d13871b2bfd7ce6bc7b5cb5c75e675bb939d929d2f4e744970e519",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000020.json": "4db853b91de0dbe171ab4a9a67f732e2af8dc25ce979eb2734e2fe78c5b05cce",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000021.json": "61d45245a9eeb45ad80709df502895b74200cbdc25aa2e5809e1aea249cc1947",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000022.json": "e3fa531affea9d327a4bbc1e3570a6bc4bb88b4d26e5e62264aede52d91230cd",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000023.json": "778c68bf90548088ea2b4351b88e4c8e6807036ed2433511310b8b6af3de9046",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000024.json": "3720dadd338e266096a0004c8ae03e55eaa048a02fc406d11bf5247a5ba42683",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000025.json": "425dca43b3b4c144bf50cce20cd3c48fea974cb06583e2c9456448b931b13e49",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000026.json": "3f5a4cd02cb9d5813cead1d23f55441cd3028143d2103140ee21b00c23c92598",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000027.json": "95fd33baa82bcb870efc0145d239f88a26899788c5eed07c1d3bf2ce7a05b684",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000028.json": "f3f2ff0d21a53f2d4c3e05695ba73f3e2b769251ee7870735b94a90dad847f6f",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000029.json": "b4be94db580481c35a8d71ae95a0c9c9f69beb26367dfcab747f2b8a7a96807d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000030.json": "64601de0e819b65f5454ee591d39a4d4e55127d383de2d970f3317565492d34b",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000031.json": "8f95ffe29d9b9b586b101d52eb22a208137610ddff036f2608a2c3ed617d58b2",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-005-update-000032.json": "af61ea7b19fb027e7dae6e3d033b657e6562337bdf175ff427ede45e0290ae5f",
+    "checkpoints/experiments/vision32-prompt-v2/audit/checkpoint-reload/rank-005.json": "48860bd27a7ebe0f138e615ec2ad58bb895f8fe868f8308a02e4726a84063013",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-initial.json": "e2e6fee5b7f1625349d79981c944f81c06bfb22f1ce1a2170bdf43295bec348b",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000001.json": "f8bcc4fe20e3cea8add77287ee52141efab4d64d06a95b98b953e4cd170c2c2a",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000002.json": "10e76d30d05857920edd851ed2540265566052a0fd96e4d94eaad285a722b3a2",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000003.json": "6b16b97cc94e1fb07130ebdfdbed723d93fc0c4bab6c18b6df92ca03e45e3c05",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000004.json": "ff658bb085b086c0806ab2fcac55244b4fb063b2da50c2add528e9818240ef87",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000005.json": "b65ba667660358188704393cbb9975a68b8dac10d7753ee7d60705543cf3f096",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000006.json": "c6875d407c3580c430a83d5b8ebb2afbc9a91c66f6e3e461d393afe74cbc87ac",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000007.json": "e48b788d8444bc9b8e257ad6ced3b4637218eacfed194258aae88758855ab8ac",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000008.json": "f95c0cfae9178a54ec10e9656e7209c30afbe48ba72deba7d96359e9743f6d2e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000009.json": "18694de8a1c751aa306eda8daac6e214a0c9b7892dd760ff52f64029cc0f04b8",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000010.json": "99990b2482dca0f09788e890af41f91a5e57878271eab433bd81e4931b2519ed",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000011.json": "f8b666805e3dcc0a4762262bd9a8928d2d4783fda57cfa98f123a481fd546c96",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000012.json": "84c3646d730f52053d5b84041e67ccfe22b153202dfffe1cd40206ec0bb75797",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000013.json": "cf37b2c213865613276234c82139f86a01772f54ef72141bdbcc27f09258e69e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000014.json": "715f79e44bff477f1f030bf3590b428898eebe6b7622fe5d70238fcf33ce3d22",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000015.json": "bdbb9d66aa986b038c7f05ed68825b078e0f900f967d233521ed4d6adae45ac2",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000016.json": "a25ca6dece6c71f1fcfced42d74203d56be530deff2995c06814fe504b9ba248",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000017.json": "ce13aab206e357353a501c283c028e9e23d2ee32f492eb695dfb91c6d7ddbf1e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000018.json": "a8769ad9bb30d476f9f9feaec6979cd24eef6ed49d1bb4f24003612e9080c010",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000019.json": "8a0a35c4e8019d7b3902279f3c8871e458101a5af87a8125112f70c1a43bddcc",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000020.json": "9ba92e86d668c146f52967c43c1890825bd45af4bf9ab20b895c530f9a9ba02a",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000021.json": "36b1f5a7692c9f4c94215d94f8f03699a68e168708127d47d44e46ec08b0dd7c",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000022.json": "158fcc2e514e417344e35f736d27153044f854ef27daa77bc4be084ee3b0c5b3",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000023.json": "0e20d7ae2f93570dd9bb9f406128c7d0c407b8a8bcafb3fe2bd64834296a7619",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000024.json": "75e91f6960373c65de5f1ca26331697deab5a3b1c4e2e30ac1317dccf188f6ca",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000025.json": "fb829215e1aae882aadd827b989fc81a8cce6793b908c3d386b0e607f03b963e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000026.json": "efc47ee154d7ac724db7bb848a3787a63d611ee4016548c6fdc9f18f9ad98f13",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000027.json": "2f65f5a85ccfa74a4656bd240a57ee0af5ace0f7de8801a047d6c90851cca00a",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000028.json": "68503a7d92f3aece881d727f230897e93397459ff677e0db2c2d0f365bb52c73",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000029.json": "8bea9dc1fa00355080ae0c70812b103154cb5b70325ea717f41858e43af7b9b0",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000030.json": "73e60e082f7e3f09a54fcc0ca9ddb9c34cdb6d5f853ab2a0ad698b04caeb9115",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000031.json": "05b1d9974e170ec7060f6d7e42aae9b912dbf6f3ef19838d7b6c8cc63610ed0b",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-006-update-000032.json": "0bcf7b00699dcf94ddb3d0c87ad4b4520d42040545d87e9f7a8964e3f0a38113",
+    "checkpoints/experiments/vision32-prompt-v2/audit/checkpoint-reload/rank-006.json": "ced4630f1d7cb034b1cc784628e41d77b995dd6526b745cda699a73fe2787c55",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-initial.json": "24ad42c36ce45458670b5e6e8430eadb8b366711dcacf9d1849ba193ee67759d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000001.json": "3cb2b07ad72e13dde60d701e90903961d4ebc217a435b5a545ee1352e342cdcc",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000002.json": "a02313b0c65f49728cc4cdef0d8b7e43a448c970eaa8182130b2c4d4272a066b",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000003.json": "dfca120e47e153a2913b3af547e4a6bfa551d2a3cf4b4a75ec163bf2db33c35f",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000004.json": "87162c246a461294f3595eeff50f7503fb6cb2e5469101f99dba4435ab87f493",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000005.json": "0d67b1c0ca8914fa3e2a64cf958a6ae24846f1944b02e087fc62bd2906775014",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000006.json": "b06dc9bc9f033a1f2d3d424028017ded432e1008d6ea254f2263f93bf7c9bbd8",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000007.json": "1cf0b2821d3d06a193c23b167b1cc327c653e1d522e7b2a44c17d1109f427c8a",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000008.json": "6430ce418e563f8813ed5dbbd0221f44d5fd4803d99f6879973067d96bdcd873",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000009.json": "de64f4e3795247f2b58c1b36dbc1a8dc8022f4bb9bd53b3da35233ac90000a80",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000010.json": "7953005f8e5c61e9ace9eae660e95f7d0e75a6109b702c0bbc181d45a8f51192",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000011.json": "0f39fd68e7d003f1d8bd6e4f94e5c9d86d3d66d76d318defe8a98438ed24904d",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000012.json": "c84b4b4bb360f72b538ce436d17c220631e59f6f19b363e9b9308c359ecf3a3b",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000013.json": "f9876c48fff751dcec560a1328ffe65b43bf2cb99675cec355522706534ff0e7",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000014.json": "7488515f539ebd302e68632cf1205ac8bf2a95032da6ca94b9b4809af48b9445",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000015.json": "8760a3b23e31df3b6208112206df43758cbf349771b3f762f0c9c23277ecf4ac",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000016.json": "0d6ca20f20eb83fcd0810106d0a80c9fa93252e328bdfa66ea36a09ed8e62678",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000017.json": "9b230bb21acde709028e6bfc49b0e4237eb7fbf44fc6cb1b37d2075362d45420",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000018.json": "37e676e12cd6fa9a3f1d8ac3cf35f8046ba8662f0f7b53fd0462dfa74f05a4da",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000019.json": "439633619211e4f8b1f417834669b2e19166d007975848ccd53e0455808c56b5",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000020.json": "fb23abf67757c374f282d2446053a04cfec5630a87398846dfdd3fb2a53138cc",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000021.json": "95b21c8395a90797b67a0b68a82afe897d756bc247944bf20371475ed8fd5577",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000022.json": "e17536d85b44fae7ba257092386a4b5f6ec3a2a38131a6dbcf7d1938f53279b3",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000023.json": "25566f23fe34c76c02e4da846424f9dd1e143659edd14d0606ba23172fea7bd9",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000024.json": "49e80b11c1556d1e5b224749123b7e32ee9bef7c60a2e0dc453aeb6b15fcc65c",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000025.json": "426c829f1202bfa478183d93cc2543477c294931fbd6d7598325f28d15d3257e",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000026.json": "c5eada1b969d1319349be87f7904e01775701c6c8368d0ec4247035722789b87",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000027.json": "84b8461498f883373546790c3469a58f3a355225a8ef2a39ff15416b812b25bd",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000028.json": "5a1334ecfc0e782ffc9ebf650f8260d886326c682c33270a37f8beb703d5771c",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000029.json": "7074f3b022883d95d864309479354469d981483b70f039cf917908bab2cf9673",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000030.json": "e6060d4b873cb74af3ec794c872b1399e03ecb983864d3341af4fd9a7b38f2d8",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000031.json": "5a6b1549819f1ef949d245c6935940b656bd385a47491f8a50bfafa6c028b827",
+    "checkpoints/experiments/vision32-prompt-v2/audit/rank-007-update-000032.json": "01f5c9b8c877c963dafd1892a388f13beafd537258d53316dd3e7d5b697b0c7f",
+    "checkpoints/experiments/vision32-prompt-v2/audit/checkpoint-reload/rank-007.json": "3f7cec6e02b3eae1f9d521fc7c9161235903dfdaa6ef88b7da47b76728ff68ff",
+    "checkpoints/experiments/vision32-prompt-v2/audit/snapshots/update-000000/visual.json": "efc052fb4c96fbca7e4643e5568ed748bee772ef4da0c8830e9b9de656a4cab8",
+    "checkpoints/experiments/vision32-prompt-v2/audit/snapshots/update-000008/visual.json": "2603b3329214f3cd13d0a2451848680aaa82b63f502b36ce6145db70dff311aa",
+    "checkpoints/experiments/vision32-prompt-v2/audit/snapshots/update-000016/visual.json": "bd35fff5773bf1531e71e7693b0ea94f7ae7ff6332387dfa1d7e2725084443a3",
+    "checkpoints/experiments/vision32-prompt-v2/audit/snapshots/update-000024/visual.json": "b82298f162ae99d3be299808258753112463953ff050a11168dc63c87d935daf",
+    "checkpoints/experiments/vision32-prompt-v2/audit/snapshots/update-000032/visual.json": "8ed8c2afd892d2d2dfc454744bf11bf47b29eb90097090b22059ef6fd4684ab7"
+  }
+}
