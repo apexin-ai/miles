@@ -4,6 +4,28 @@ from copy import deepcopy
 
 import torch
 
+INTEGER_FINAL_INSTRUCTION = (
+    "Keep all reasoning in the thinking block. Your final answer after thinking must consist of "
+    "exactly one integer and nothing else. Do not include explanations, headings, lists, units, "
+    "or Markdown in the final answer."
+)
+
+
+def apply_final_answer_format(messages, final_answer_format):
+    """Apply the same optional output instruction in training and evaluation."""
+    result = deepcopy(messages)
+    if final_answer_format == "dataset":
+        return result
+    if final_answer_format != "integer-only":
+        raise ValueError("Unknown final-answer format")
+    if result and result[0]["role"] == "system":
+        if not isinstance(result[0]["content"], str):
+            raise ValueError("An existing system instruction must be text")
+        result[0]["content"] += "\n\n" + INTEGER_FINAL_INSTRUCTION
+    else:
+        result.insert(0, {"role": "system", "content": INTEGER_FINAL_INSTRUCTION})
+    return result
+
 
 def normalize_image_messages(messages, image_count):
     """Accept Miles' <image> convention or structured native image blocks."""

@@ -17,15 +17,14 @@ from PIL import Image
 from safetensors import safe_open
 from safetensors.torch import load_file
 
-from miles_plugins.models.qwen3_8_next.vision_inputs import image_rope_positions, normalize_image_messages
+from miles_plugins.models.qwen3_8_next.vision_inputs import (
+    apply_final_answer_format,
+    image_rope_positions,
+    normalize_image_messages,
+)
 from miles_plugins.models.qwen3_8_next.vision_sft import _processor
 
 _LOADER = "examples.qwen3_8_next_vision_sft.evaluate.load_visual_and_verify"
-_INTEGER_FINAL_INSTRUCTION = (
-    "Keep all reasoning in the thinking block. Your final answer after thinking must consist of "
-    "exactly one integer and nothing else. Do not include explanations, headings, lists, units, "
-    "or Markdown in the final answer."
-)
 
 
 def _sha(path):
@@ -134,10 +133,7 @@ def _prepare(
     messages = normalize_image_messages(
         [{"role": "user", "content": ("<image>" * len(images)) + question}], len(images)
     )
-    if final_answer_format == "integer-only":
-        messages.insert(0, {"role": "system", "content": _INTEGER_FINAL_INSTRUCTION})
-    elif final_answer_format != "dataset":
-        raise ValueError("Unknown final-answer format")
+    messages = apply_final_answer_format(messages, final_answer_format)
     text = processor.tokenizer.apply_chat_template(
         messages,
         tokenize=False,

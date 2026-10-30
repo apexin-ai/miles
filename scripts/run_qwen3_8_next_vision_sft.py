@@ -17,6 +17,7 @@ Example:
         --output-dir /root/runs/qwen38-vision --freeze-language
 """
 
+import json
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -48,6 +49,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     visual_snapshot_interval: int = 8
     rollout_seed: int = 42
     enable_thinking: bool = False
+    reasoning_effort: Literal["xhigh", "medium", "low"] = "xhigh"
+    final_answer_format: Literal["dataset", "integer-only"] = "dataset"
     audit: bool = True
     checkpoint_reload_check: bool = True
     load: str | None = None
@@ -81,7 +84,7 @@ def execute(args: ScriptArgs):
     )
     if args.load:
         checkpoint_args += f"--load {args.load} --no-load-optim --no-load-rng "
-    template = '{"enable_thinking":' + str(args.enable_thinking).lower() + "}"
+    template = json.dumps({"enable_thinking": args.enable_thinking, "reasoning_effort": args.reasoning_effort})
     rollout_args = (
         f'--prompt-data {args.prompt_data} --input-key messages --multimodal-keys \'{{"image":"images"}}\' '
         f"--apply-chat-template-kwargs '{template}' --rollout-shuffle --rollout-seed {args.rollout_seed} "
@@ -101,6 +104,7 @@ def execute(args: ScriptArgs):
         "--disable-compute-advantages-and-returns --bf16 --model-name qwen4_exp "
         "--custom-model-provider-path miles_plugins.models.qwen3_8_next.vision.get_qwen38_vision_model_provider "
         f"--qwen38-vision-trainable {args.vision_trainable} --qwen38-vision-recompute "
+        f"--qwen38-sft-final-answer-format {args.final_answer_format} "
         f"--actor-num-nodes {args.num_nodes} --actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} --attention-dropout 0 --hidden-dropout 0 "
     )
