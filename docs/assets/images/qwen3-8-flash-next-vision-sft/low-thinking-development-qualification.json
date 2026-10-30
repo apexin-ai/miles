@@ -1,0 +1,47 @@
+{
+  "complete": true,
+  "qualified_at": "2026-10-30T01:48:47.106513+00:00",
+  "development_only": true,
+  "formal_heldout_curve": false,
+  "source_commit": "8886ead689fd489d2c97cc650ed715779b223c82",
+  "evaluator_sha256": "7c477fa5a257e2af1cc6ddb3f33a48ae0f7db0aaa6b614cb5458464232be4142",
+  "protocol_sha256": "5813a4e2d2e73b1106b4443120d273796d282006bb00825001c2481d9ee41378",
+  "scorer_sha256": "51daa947bd1cb3f56f32705950486de66751d626ee0e6535b7052d1db627d19f",
+  "metrics": {
+    "n": 32,
+    "baseline_correct": 9,
+    "trained_correct": 12,
+    "baseline_invalid": 14,
+    "trained_invalid": 10,
+    "wrong_to_right": 7,
+    "right_to_wrong": 4,
+    "both_valid_n": 13,
+    "both_valid_baseline_correct": 6,
+    "both_valid_trained_correct": 8,
+    "delta_percentage_points": 9.375
+  },
+  "same_questions_images_labels_expanded_inputs_and_prefill": true,
+  "raw_predictions_strictly_rescored": true,
+  "language_frozen": true,
+  "data_changed": false,
+  "labels_changed": false,
+  "heldout_256_status": "Separate fixed-protocol validation; no heldout result used here",
+  "limitations": [
+    "Only 32 development scenes",
+    "One prompt-only output instruction; no grammar constraints",
+    "Image-only, without matched negative controls",
+    "Always predicting one also scores 12/32 on this dev set; cannot infer broad visual recognition gain"
+  ],
+  "files_sha256": {
+    "data/vision32-format-dev-v2-protocol.json": "5813a4e2d2e73b1106b4443120d273796d282006bb00825001c2481d9ee41378",
+    "workdir-eval-controls-v1/examples/qwen3_8_next_vision_sft/score.py": "51daa947bd1cb3f56f32705950486de66751d626ee0e6535b7052d1db627d19f",
+    "data/geometry-v1/development.jsonl": "78249a226152b10229f73b23a03706c31d140e95dcbb6325561864059120142c",
+    "logs/train-vision32-v1-qualification.json": "ba4d4a0abd1d381d9398c8190337df4c9c7fee8831d1f9a27c020f06493e6db6",
+    "data/eval-vision32-format-quality-update000000-a01/evaluation.json": "5ca29e6eb66883199a3c9a87f73b3e56b3b630f8c0ee688ed6ab3fcc62f7bc23",
+    "data/eval-vision32-format-quality-update000000-a01/update-000000-development.jsonl": "7bae9e7d5b7e44b6af529896b8cb3682d8d6e23da798d2844d7f144a891085d9",
+    "logs/eval-vision32-format-quality-update000000-a01.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "data/eval-vision32-format-quality-update000032-a01/evaluation.json": "595ba8f6a73f6d378f5c97be7571bf53198335e06e493c50d4ef5e0929219f62",
+    "data/eval-vision32-format-quality-update000032-a01/update-000032-development.jsonl": "2d11e08a09d3dd1ed6c4942dfe37f704141eaf41b0cdbb758247562b6c84b363",
+    "logs/eval-vision32-format-quality-update000032-a01.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  }
+}
