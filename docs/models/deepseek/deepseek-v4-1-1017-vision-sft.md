@@ -283,8 +283,8 @@ their existing native preservation path.
 
 For qualification runs, `audit.before_step` can be registered through Miles'
 existing before-train-step hook with `DSV41_AUDIT_DIR` set to a unique attempt
-directory. `checkpoint_audit.install_final_save_check()` can be installed by
-the custom Megatron initialization hook to test the final synchronous save.
+directory. `checkpoint_audit.install_final_save_check` can be passed as
+`--custom-megatron-init-path` to test the final synchronous save.
 It corrupts in-memory visual parameters and language probes, reloads the saved
 model without optimizer/RNG state, and checks complete visual hashes. This is
 deliberately a model-only reload test, not a training-resume claim. Do not use

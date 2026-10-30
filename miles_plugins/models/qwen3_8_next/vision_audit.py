@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import sys
 import time
@@ -173,16 +174,27 @@ def _initial_state(args, model, parameters):
         "rank": dist.get_rank(),
         "world_size": dist.get_world_size(),
         "runtime": _runtime_identity(),
-        "num_updates": args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size,
+        "num_updates": args.num_rollout
+        * args.rollout_batch_size
+        * args.n_samples_per_prompt
+        // args.global_batch_size,
         "language_sha256": parameter_hash(language),
         "language_frozen": args.qwen38_freeze_language,
         "language_probe_names": language_probes,
         "visual_sha256": parameter_hash(visual) if visual else None,
         "steps_per_rollout": args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size,
-        "source_identity": {name: hashlib.sha256((Path(args.hf_checkpoint) / name).read_bytes()).hexdigest() for name in ("config.json", "model.safetensors.index.json")},
+        "source_identity": {
+            name: hashlib.sha256((Path(args.hf_checkpoint) / name).read_bytes()).hexdigest()
+            for name in ("config.json", "model.safetensors.index.json")
+        },
     }
-    inventory = [{"name": name, "shape": list(p.shape), "dtype": str(p.dtype), "trainable": p.requires_grad} for name, p in parameters]
-    (root / f"rank-{dist.get_rank():03d}-initial.json").write_text(json.dumps({**state, "parameters": inventory}) + "\n")
+    inventory = [
+        {"name": name, "shape": list(p.shape), "dtype": str(p.dtype), "trainable": p.requires_grad}
+        for name, p in parameters
+    ]
+    (root / f"rank-{dist.get_rank():03d}-initial.json").write_text(
+        json.dumps({**state, "parameters": inventory}) + "\n"
+    )
     if args.qwen38_visual_snapshot_interval:
         save_visual_snapshot(
             parameters,
@@ -271,30 +283,46 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler):
 
 
 def _verify_saved_model(args, iteration, model):
+    """Corrupt the live model, reload the just-saved checkpoint and require a bitwise match.
+
+    ``args`` is the TrainerConfig that ``save`` received. Checkpoint load fields are
+    runtime-only on ``args.backend``, so they are applied through MegatronCkptLoadConfig.
+    """
     from miles.backends.megatron_utils.checkpoint import load_checkpoint
+    from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 
     parameters = [(name, parameter) for chunk in model for name, parameter in chunk.named_parameters()]
     visual = _visual_parameters(parameters)
     before = parameter_hash(parameters)
-    previous = {key: getattr(args, key) for key in ("load", "ckpt_step", "no_load_optim", "no_load_rng", "finetune")}
+    request = MegatronCkptLoadConfig(
+        load=args.backend.save,
+        resume_from_ckpt=False,
+        no_load_optim=True,
+        no_load_rng=True,
+        finetune=True,
+        ckpt_step=iteration,
+    )
+    load_kwargs = dict(checkpointing_context=None, skip_load_to_model_and_opt=False, args=args)
+    # Fail on a call-contract mismatch before the live model is touched.
+    inspect.signature(load_checkpoint).bind(model, None, None, **load_kwargs)
+    originals = [parameter.detach().flatten()[: min(32, parameter.numel())].clone() for _, parameter in parameters]
     started = time.monotonic()
     try:
         # Only the live model is corrupted. The closed checkpoint and source HF files are read-only.
         with torch.no_grad():
             for _, parameter in parameters:
                 parameter.flatten()[: min(32, parameter.numel())].fill_(float("nan"))
-        args.load = args.save
-        args.ckpt_step = iteration
-        args.no_load_optim = True
-        args.no_load_rng = True
-        args.finetune = True
-        result = load_checkpoint(model, None, None, checkpointing_context=None, skip_load_to_model_and_opt=False)
+        with request.apply(args.backend):
+            result = load_checkpoint(model, None, None, **load_kwargs)
         torch.cuda.synchronize()
         if result[0] != 0 or parameter_hash(parameters) != before:
             raise ValueError("The native checkpoint did not restore every model parameter exactly")
-    finally:
-        for key, value in previous.items():
-            setattr(args, key, value)
+    except BaseException:
+        # Leave no NaN slices behind; the caller still sees the original failure.
+        with torch.no_grad():
+            for (_, parameter), original in zip(parameters, originals, strict=True):
+                parameter.flatten()[: original.numel()].copy_(original)
+        raise
     root = Path(args.qwen38_audit_dir) / "checkpoint-reload"
     root.mkdir(parents=True, exist_ok=True)
     receipt = {
@@ -315,21 +343,29 @@ def _verify_saved_model(args, iteration, model):
 
 
 def install_final_save_check(args):
-    """Use the native final-save lifecycle for a synchronous model-only roundtrip."""
+    """Use the native final-save lifecycle for a synchronous model-only roundtrip.
+
+    ``args`` is the frozen flat view passed to ``--custom-megatron-init-path`` hooks.
+    The wrapped ``save`` receives the live TrainerConfig as its first argument.
+    """
     from miles.backends.megatron_utils import actor
     from miles.backends.megatron_utils import model as backend
 
     if args.async_save or not args.qwen38_audit_dir or not args.save:
         raise ValueError("Qwen checkpoint qualification requires synchronous saving and an audit directory")
-    if getattr(backend.save, "_qwen38_final_save_check", False):
+    if getattr(
+        backend.save, "_qwen38_final_save_check", False
+    ):  # config-access-exempt: marker attribute on a function, not a config field
         return
     original = backend.save
+    if next(iter(inspect.signature(original).parameters)) != "args":
+        raise TypeError("Qwen checkpoint qualification expects save(args, iteration, model, ...)")
 
     @wraps(original)
-    def save(iteration, model, optimizer, scheduler, *positional, **keywords):
-        result = original(iteration, model, optimizer, scheduler, *positional, **keywords)
-        if iteration == args.num_rollout - 1:
-            _verify_saved_model(args, iteration, model)
+    def save(trainer_args, iteration, model, optimizer, scheduler, *positional, **keywords):
+        result = original(trainer_args, iteration, model, optimizer, scheduler, *positional, **keywords)
+        if iteration == trainer_args.num_rollout - 1:
+            _verify_saved_model(trainer_args, iteration, model)
         return result
 
     save._qwen38_final_save_check = True
