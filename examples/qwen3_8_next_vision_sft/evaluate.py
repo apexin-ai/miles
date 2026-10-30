@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 import torch
-from examples.qwen3_8_next_vision_sft.score import answer_of, read_rows
+from examples.qwen3_8_next_vision_sft.score import PROTOCOL, answer_of, read_rows
 from PIL import Image
 from safetensors import safe_open
 from safetensors.torch import load_file
@@ -359,7 +359,8 @@ def main():
             name: importlib.metadata.version(name)
             for name in ("torch", "transformers", "sglang-kernel", "flashinfer-python")
         },
-        "protocol": "integer_first_final_line_v1",
+        "protocol": PROTOCOL,
+        "scorer_sha256": _sha(Path(__file__).with_name("score.py")),
         "results": [],
     }
     target = args.output / "evaluation.json"

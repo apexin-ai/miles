@@ -21,6 +21,7 @@ def _protocol(manifest):
             for key in ("protocol", "model_files_sha256", "data_files_sha256", "evaluator_sha256", "packages")
         },
         "args": {key: value for key, value in manifest["args"].items() if key not in ("output", "skip_baseline")},
+        "scorer_sha256": manifest.get("scorer_sha256"),
     }
 
 
