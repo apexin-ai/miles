@@ -33,9 +33,10 @@ class _Chunk(torch.nn.Module):
 
 class _DistributedOptimizerLike:
     """Megatron DistributedOptimizer's layout: bf16 params step through fp32 master shards, fp32 params through
-    views of their own shard; the torch optimizer keys its state by those shard tensors."""
+    views of their own shard; the torch optimizer keys its state by those shard tensors. ``fused`` moves the
+    step count into the param group, where TE / Apex FusedAdam keep it."""
 
-    def __init__(self, chunk: _Chunk) -> None:
+    def __init__(self, chunk: _Chunk, *, fused: bool = False) -> None:
         bf16 = [chunk.replicated]
         fp32 = [chunk.a_log, chunk.sharded, chunk.expert]
         self.model_float16_groups = [bf16]
@@ -49,6 +50,10 @@ class _DistributedOptimizerLike:
         for shard in shards:
             shard.grad = torch.ones_like(shard)
         self.optimizer.step()
+        if fused:
+            for shard in shards:
+                del self.optimizer.state[shard]["step"]
+            self.optimizer.param_groups[0]["step"] = 1
 
 
 def _check_worker(rank: int, world_size: int, port: int, *, perturb: str | None) -> None:
@@ -58,7 +63,7 @@ def _check_worker(rank: int, world_size: int, port: int, *, perturb: str | None)
         with torch.no_grad():
             chunk.sharded.fill_(rank)
             chunk.expert.fill_(rank)
-        optimizer = _DistributedOptimizerLike(chunk)
+        optimizer = _DistributedOptimizerLike(chunk, fused=perturb == "group_step")
         master = optimizer.shard_fp32_from_float16_groups[0][0]
         a_log_state = optimizer.optimizer.state[optimizer.shard_fp32_groups[0][0]]
         if rank == 1 and perturb == "low_bits":
@@ -73,11 +78,14 @@ def _check_worker(rank: int, world_size: int, port: int, *, perturb: str | None)
             a_log_state["exp_avg_sq"][0] *= 1.5
         if rank == 1 and perturb == "step":
             a_log_state["step"] += 1
+        if rank == 1 and perturb == "group_step":
+            optimizer.optimizer.param_groups[0]["step"] += 1
 
         expected = {
             "low_bits": "pp0.replicated#main ",
             "a_log_moment": "pp0.a_log#exp_avg_sq ",
             "step": "pp0.a_log#step ",
+            "group_step": "pp0.a_log#group.step ",
         }
         # replicated: 2 params; bf16 param: #main + step/exp_avg/exp_avg_sq; fp32 a_log: #main + 3 state entries
         if perturb is None:
@@ -86,7 +94,8 @@ def _check_worker(rank: int, world_size: int, port: int, *, perturb: str | None)
             with pytest.raises(RuntimeError) as error:
                 check_tp_replicas([chunk], optimizer, group=dist.group.WORLD, where="unit")
             message = str(error.value)
-            assert "1 of 10 TP-replicated tensors differ" in message
+            # the group step is shared by both replicated params
+            assert f"{2 if perturb == 'group_step' else 1} of 10 TP-replicated tensors differ" in message
             assert expected[perturb] in message
             assert "sharded" not in message and "expert" not in message
     finally:
@@ -109,6 +118,23 @@ class TestNamedTensors:
             "pp0.replicated#exp_avg",
             "pp0.replicated#exp_avg_sq",
             "pp0.replicated#step",
+        ]
+
+    def test_a_fused_adam_group_step_is_included(self) -> None:
+        """CRV-FIX-002: TE / Apex FusedAdam keep the step in the param group, not in the per-param state."""
+        chunk = _Chunk()
+        names = [name for name, _ in named_tensors([chunk], _DistributedOptimizerLike(chunk, fused=True), replicated_only=True)]
+        assert names == [
+            "pp0.replicated",
+            "pp0.a_log",
+            "pp0.a_log#main",
+            "pp0.a_log#exp_avg",
+            "pp0.a_log#exp_avg_sq",
+            "pp0.a_log#group.step",
+            "pp0.replicated#main",
+            "pp0.replicated#exp_avg",
+            "pp0.replicated#exp_avg_sq",
+            "pp0.replicated#group.step",
         ]
 
     def test_a_plain_torch_optimizer_over_model_params_is_traced(self) -> None:
@@ -143,6 +169,10 @@ class TestCheckTpReplicas:
     def test_a_different_step_count_is_caught(self) -> None:
         """CRV-FIX-002: scalar state entries are compared too."""
         run_multiprocess(partial(_check_worker, perturb="step"), world_size=2)
+
+    def test_a_different_fused_adam_group_step_is_caught(self) -> None:
+        """CRV-FIX-002: the param group's step count is compared too."""
+        run_multiprocess(partial(_check_worker, perturb="group_step"), world_size=2)
 
     def test_check_is_a_no_op_without_torch_distributed(self) -> None:
         """Single-process tools and stubbed unit tests call it freely."""
@@ -191,11 +221,11 @@ class TestSaveOrder:
         ]
 
 
-def _dump(root: Path, tag: str, ranks: dict[int, dict], world_size: int = 2) -> None:
+def _dump(root: Path, tag: str, ranks: dict[int, dict], world_size: int = 2, runs: dict[int, str] | None = None) -> None:
     out = root / tag
     out.mkdir(parents=True)
     for rank, tensors in ranks.items():
-        record = {"rank": rank, "world_size": world_size, "where": tag, "tensors": tensors}
+        record = {"rank": rank, "world_size": world_size, "run": (runs or {}).get(rank, "r1"), "where": tag, "tensors": tensors}
         (out / f"rank{rank:05d}.json").write_text(json.dumps(record))
 
 
@@ -212,6 +242,7 @@ class TestDigestDump:
         before, after = tmp_path / "save_iteration_3", tmp_path / "load_iteration_3"
         record = json.loads((before / "rank00000.json").read_text())
         assert record["world_size"] == 1
+        assert record["run"] == json.loads((after / "rank00000.json").read_text())["run"]
         assert set(record["tensors"]) == {"pp0.replicated", "pp0.a_log", "pp0.sharded", "pp0.expert"}
         [problem] = compare_digest_dirs(before, after)
         assert problem.startswith("rank 0: pp0.sharded:")
@@ -224,10 +255,13 @@ class TestDigestDump:
             ("empty", "holds no rank dumps"),
             ("missing_rank", "incomplete dump, ranks present [0]"),
             ("missing_tensor", "rank 1: b: 2 -> missing"),
+            ("mixed_runs", "come from 2 different runs"),
+            ("stale_tag", "rank dumps [1] were written for another tag"),
         ],
     )
     def test_incomplete_or_absent_dumps_never_compare_as_identical(self, tmp_path, setup, message) -> None:
-        """CRV-FIX-004: a wrong tag, an empty directory, a missing rank or tensor is a failure."""
+        """CRV-FIX-004: a wrong tag, an empty directory, a missing rank or tensor, a directory reused by another
+        run or a dump written for another tag is a failure."""
         full = {0: {"a": "1", "b": "2"}, 1: {"a": "1", "b": "2"}}
         _dump(tmp_path, "save", full)
         if setup == "empty":
@@ -236,6 +270,12 @@ class TestDigestDump:
             _dump(tmp_path, "load", {0: full[0]})
         elif setup == "missing_tensor":
             _dump(tmp_path, "load", {0: full[0], 1: {"a": "1"}})
+        elif setup == "mixed_runs":
+            _dump(tmp_path, "load", full, runs={1: "r0"})
+        elif setup == "stale_tag":
+            _dump(tmp_path, "load", full)
+            record = json.loads((tmp_path / "load" / "rank00001.json").read_text())
+            (tmp_path / "load" / "rank00001.json").write_text(json.dumps(record | {"where": "save iteration 2"}))
         problems = compare_digest_dirs(tmp_path / "save", tmp_path / "load")
         assert any(message in p for p in problems), problems
 
