@@ -55,6 +55,16 @@ def _install_ple_context_hooks(model: GPTModel) -> None:
     logger.info("PLE n-gram context hooks installed on the stage hosting the PLE layer")
 
 
+def assert_qsa_indexers_frozen(model) -> None:
+    """Fail if any QSA indexer parameter would reach the optimizer."""
+    trainable = [name for name, p in model.named_parameters() if ".indexer." in name and p.requires_grad]
+    if trainable:
+        raise RuntimeError(
+            f"QSA indexer parameters require grad: {trainable[:4]}{'...' if len(trainable) > 4 else ''}. "
+            "They have no training objective; left trainable, weight decay shrinks them every step."
+        )
+
+
 def get_qwen3_8_next_model_provider(
     pre_process: bool = True, post_process: bool = True, vp_stage=None, *, args: "TrainerConfig"
 ):
@@ -66,4 +76,5 @@ def get_qwen3_8_next_model_provider(
 
     model = base_provider(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
     _install_ple_context_hooks(model)
+    assert_qsa_indexers_frozen(model)
     return model
