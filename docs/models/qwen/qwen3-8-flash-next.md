@@ -255,6 +255,9 @@ not tell you.
 
 ## 7. Image SFT
 
+The consolidated [vision-only and joint SFT report](https://github.com/apexin-ai/miles/issues/1)
+publishes measured results, figures, and qualification limits for both runs.
+
 ### Completed Five-Epoch Vision-Only Result
 
 The complete native visual tower and merger were trained with the language model
@@ -266,7 +269,7 @@ the full 1024-scene training set and the fixed 256-scene validation set:
 | Training, 1024 scenes | 448/1024 (43.75%) | 511/1024 (49.90%) | **+6.15 pp, net +63** | 221 | 158 |
 | Validation, 256 scenes | 113/256 (44.14%) | 125/256 (48.83%) | **+4.69 pp, net +12** | 59 | 47 |
 
-![Measured original-base and final visual-only scores](https://raw.githubusercontent.com/leviking98z-rgb/miles/refs/heads/feat/qwen38-next-vision-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-vision-sft/u160-eval-gain.png)
+![Measured original-base and final visual-only scores](https://raw.githubusercontent.com/apexin-ai/miles/refs/heads/feat/qwen38-next-vision-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-vision-sft/u160-eval-gain.png)
 
 These bars show two measured endpoints. Intermediate checkpoints of this
 continuation were not evaluated. Both endpoints use genuine images, identical
@@ -282,7 +285,7 @@ The improvement persists among scenes where both answers have valid formats:
 contribute the remaining net +5 training scenes and net zero validation scenes.
 Invalid answers fall from 19 to 6 on training and change from 1 to 2 on validation.
 
-![Paired gains, regressions and validity accounting](https://raw.githubusercontent.com/leviking98z-rgb/miles/refs/heads/feat/qwen38-next-vision-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-vision-sft/u160-paired-changes.png)
+![Paired gains, regressions and validity accounting](https://raw.githubusercontent.com/apexin-ai/miles/refs/heads/feat/qwen38-next-vision-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-vision-sft/u160-paired-changes.png)
 
 The [canonical result and exact protocol](../../assets/images/qwen3-8-flash-next-vision-sft/u160-results.json),
 [1024 training pairs](../../assets/images/qwen3-8-flash-next-vision-sft/u160-training1024-pairs.jsonl)
@@ -299,7 +302,7 @@ updates 65–160 continue from its audited update-64 visual state. Adam state wa
 **reset at update 64**. This is five nominal passes through 1024 training scenes,
 with no claim of uninterrupted optimizer or data-cursor resume.
 
-![All 96 logged continuation loss points](https://raw.githubusercontent.com/leviking98z-rgb/miles/refs/heads/feat/qwen38-next-vision-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-vision-sft/u160-training-loss.png)
+![All 96 logged continuation loss points](https://raw.githubusercontent.com/apexin-ai/miles/refs/heads/feat/qwen38-next-vision-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-vision-sft/u160-training-loss.png)
 
 The [loss data](../../assets/images/qwen3-8-flash-next-vision-sft/u160-training-loss.json)
 contains every actual continuation update, without smoothing or filling missing
@@ -311,7 +314,7 @@ covers **333 visual tensors / 448,931,056 parameters**, all 32 final rank audits
 unchanged complete language hashes, identical visual replica hashes and 32
 successful native model-only reload checks. All 25 inventoried model, bridge,
 launcher and evaluator source files match commit
-[`2aa7a69d`](https://github.com/leviking98z-rgb/miles/commit/2aa7a69d6855bb4293b5273a930e25cdafd6f7fa). The final
+[`2aa7a69d`](https://github.com/apexin-ai/miles/commit/2aa7a69d6855bb4293b5273a930e25cdafd6f7fa). The final
 complete visual parameter hash is
 `619d90d4c362f100e86b65bc94ac41fc46c486ea46ae80a7cc9be0359c283d2f`.
 The native checkpoint iteration is 95, corresponding to the 96th continuation
@@ -361,7 +364,7 @@ expanded input tokens, assistant prefills and evaluation settings.
 | Training, 1024 scenes | 448/1024 (43.75%) | 511/1024 (49.90%) | **778/1024 (75.98%)** |
 | Validation, 256 scenes | 113/256 (44.14%) | 125/256 (48.83%) | **189/256 (73.83%)** |
 
-![Final saved joint model compared with original and visual-only models](https://raw.githubusercontent.com/leviking98z-rgb/miles/refs/heads/feat/qwen38-next-joint-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-joint-sft/joint160-evaluation.png)
+![Final saved joint model compared with original and visual-only models](https://raw.githubusercontent.com/apexin-ai/miles/refs/heads/feat/qwen38-next-joint-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-joint-sft/joint160-evaluation.png)
 
 Against the original baseline, joint SFT gains **32.23 percentage points** on
 training and **29.69 points** on validation. Validation has 88 wrong-to-right
@@ -388,7 +391,7 @@ Assistant targets contain native answer-boundary tokens and the integer answer;
 there are no supervised reasoning traces. Joint parameter training therefore
 does not establish a reasoning-trace training result.
 
-![All 160 measured joint SFT loss points and epoch means](https://raw.githubusercontent.com/leviking98z-rgb/miles/refs/heads/feat/qwen38-next-joint-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-joint-sft/joint160-training-loss.png)
+![All 160 measured joint SFT loss points and epoch means](https://raw.githubusercontent.com/apexin-ai/miles/refs/heads/feat/qwen38-next-joint-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-joint-sft/joint160-training-loss.png)
 
 Epoch mean losses are **0.21623, 0.09650, 0.06366, 0.04577, 0.04758**; the
 last logged loss is 0.05182. These are 160 actual batch losses, without smoothing.
