@@ -13,6 +13,7 @@ from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update.hf_passthrough import complete_hf_export
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
@@ -54,6 +55,14 @@ def save_hf_model(
                 weights=merge_lora_into_weights(model, weights) if is_lora_model(model) else weights,
                 hf_checkpoint=args.hf_checkpoint,
             )
+            if torch.distributed.get_rank() == 0:
+                # base tensors the model does not hold (Qwen3.8: PLE table, untrained MTP, unbuilt vision tower)
+                receipt = complete_hf_export(checkpoint_dir, args.hf_checkpoint, mtp_trained=args.enable_mtp_training)
+                if receipt is not None:
+                    logger.info(
+                        f"HF export {checkpoint_dir}: {receipt['exported_keys']} exported + "
+                        f"{receipt['passthrough_keys']} passed through from {receipt['base']} {receipt['passthrough_groups']}"
+                    )
         else:
             bridge = _get_hf_bridge(args.hf_checkpoint)
             with patch_megatron_model(model):
