@@ -99,3 +99,76 @@ class TestGetLogProbsAndEntropy:
 
         assert fused_cross_entropy_calls == [(True, True)]
         assert not result["log_probs"][0].requires_grad
+
+
+@pytest.mark.parametrize("recompute_loss_function", [False, True])
+def test_fused_sft_loss_scores_the_torch_backend_rows_over_the_true_vocab(monkeypatch, recompute_loss_function):
+    """Packed SFT docs with thd padding rows and vocab padding columns: the fused op gets the rows and next
+    tokens the torch backend scores, the true vocabulary, and the in-place backward only when the loss is not
+    recomputed. The loss mask then weighs response token ``i`` with ``loss_mask[i]``."""
+    from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
+    from miles.backends.training_utils.loss.hub.losses import sft_loss_function
+
+    fused_log_probs = pytest.importorskip("miles.backends.training_utils.loss.hub.fused_log_probs")
+    parallel_state = SimpleNamespace(
+        tp=SimpleNamespace(rank=0, size=1, group=object()), cp=SimpleNamespace(rank=0, size=1)
+    )
+    monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
+    if not torch.cuda.is_available():
+        monkeypatch.setattr(torch.Tensor, "pin_memory", lambda self: self)
+    calls = []
+
+    def fake_fused_log_probs_and_entropy(logits, rows, targets, **kwargs):
+        calls.append((logits, rows, targets, kwargs))
+        log_softmax = torch.log_softmax(logits[rows, : kwargs["vocab_size"]].float(), dim=-1)
+        return log_softmax.gather(1, targets.unsqueeze(1)).squeeze(1), None
+
+    monkeypatch.setattr(fused_log_probs, "fused_log_probs_and_entropy", fake_fused_log_probs_and_entropy)
+    lengths, responses, padding_rows, vocab_size, width = [17, 13, 2, 12], [16, 6, 1, 11], 7, 37, 40
+    args = Namespace(
+        loss_type="sft_loss",
+        log_probs_backend="fused",
+        recompute_loss_function=recompute_loss_function,
+        qkv_format="thd",
+        allgather_cp=False,
+        true_on_policy_mode=False,
+        rollout_temperature=1.0,
+        train_backend="megatron",
+        backend=SimpleNamespace(vocab_size=vocab_size),
+    )
+    logits = torch.randn(1, sum(lengths) + padding_rows, width)
+    tokens = [torch.randint(0, vocab_size, (length,)) for length in lengths]
+    loss_masks = [torch.randint(0, 2, (response,)).float() for response in responses]
+    batch = dict(unconcat_tokens=tokens, total_lengths=lengths, response_lengths=responses, loss_masks=loss_masks)
+
+    loss, _ = sft_loss_function(
+        args,
+        batch,
+        logits,
+        get_sum_of_sample_mean(lengths, responses, loss_masks, calculate_per_token_loss=True),
+    )
+
+    [(scored_logits, rows, targets, kwargs)] = calls
+    torch_chunks = list(
+        logit_processors._iter_response_chunks(
+            logits,
+            args=args,
+            unconcat_tokens=tokens,
+            total_lengths=lengths,
+            response_lengths=responses,
+            include_response_indices=False,
+        )
+    )
+    assert torch.equal(scored_logits[rows], torch.cat([chunk for chunk, _, _ in torch_chunks]))
+    assert torch.equal(targets, torch.cat([chunk_tokens for _, chunk_tokens, _ in torch_chunks]))
+    doc_ends = torch.tensor(lengths).cumsum(0) - 1  # a doc's last token predicts nothing
+    assert rows.tolist() == [row for end, n in zip(doc_ends.tolist(), responses) for row in range(end - n, end)]
+    assert torch.equal(targets, torch.cat([doc[-n:] for doc, n in zip(tokens, responses, strict=True)]))
+    assert kwargs["vocab_size"] == vocab_size
+    assert kwargs["temperature"] == 1.0
+    assert kwargs["inplace_backward"] is not recompute_loss_function
+    assert kwargs["tp_group"] is parallel_state.tp.group
+    log_softmax = torch.log_softmax(logits[0, rows, :vocab_size], dim=-1)
+    expected = -(log_softmax.gather(1, targets.unsqueeze(1)).squeeze(1) * torch.cat(loss_masks)).sum()
+    torch.testing.assert_close(loss, expected)
