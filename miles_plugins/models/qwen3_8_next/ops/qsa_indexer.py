@@ -147,6 +147,9 @@ class Qwen38NextQSAIndexer(MegatronModule):
         self.k_layernorm = torch.nn.Parameter(torch.zeros(self.head_dim, dtype=dtype))
         for p in (self.q_layernorm, self.k_layernorm):
             p.sequence_parallel = config.sequence_parallel
+        # No training objective reaches the indexer (it runs under no_grad). Freeze it so
+        # DDP gives it no main_grad and the optimizer never applies weight decay to it.
+        self.requires_grad_(False)
 
     def project_qk(
         self,
