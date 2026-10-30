@@ -117,3 +117,47 @@ def test_disabled_without_both_settings(monkeypatch):
     monkeypatch.delenv("MILES_QWEN38_INDEXER_MONITOR_DIR", raising=False)
     monkeypatch.setenv("MILES_QWEN38_INDEXER_MONITOR_EVERY", "10")
     assert not IndexerRecallMonitor.from_env().enabled
+
+
+TP_HQ, TP_HKV, TP_D, TP_TOPK = 8, 2, 4, 3
+
+
+def _tp_case():
+    lens = [57, 70]
+    lo, hi, blk_base, bitmap = _packed(lens)
+    g = torch.Generator().manual_seed(4)
+    query = torch.randn(sum(lens), TP_HQ, TP_D, generator=g) * 3
+    key = torch.randn(sum(lens), TP_HKV, TP_D, generator=g) * 3
+    rows = torch.arange(20, sum(lens), 3)
+    return query, key, bitmap, lo, hi, blk_base, rows
+
+
+def _tp_worker(rank, world, init_file, out_file):
+    torch.distributed.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=world)
+    query, key, bitmap, lo, hi, blk_base, rows = _tp_case()
+    # Megatron's split: each rank owns a contiguous slice of query heads and the kv heads they read
+    hq, hkv = TP_HQ // world, TP_HKV // world
+    q = query[:, rank * hq : (rank + 1) * hq]
+    k = key[:, rank * hkv : (rank + 1) * hkv]
+    stats = measure_rows(
+        q, k, bitmap, lo, hi, blk_base, RATIO, TP_D**-0.5, TP_TOPK, rows, tp_group=torch.distributed.group.WORLD
+    )
+    if rank == 0:
+        torch.save(stats, out_file)
+    torch.distributed.destroy_process_group()
+
+
+def test_tp_split_heads_match_the_all_heads_teacher(tmp_path):
+    """Per-rank heads summed over the TP group give the all-heads recall and teacher overlap."""
+    query, key, bitmap, lo, hi, blk_base, rows = _tp_case()
+    want = measure_rows(query, key, bitmap, lo, hi, blk_base, RATIO, TP_D**-0.5, TP_TOPK, rows)
+    out = tmp_path / "stats.pt"
+    torch.multiprocessing.spawn(_tp_worker, args=(2, str(tmp_path / "init"), str(out)), nprocs=2, join=True)
+    got = torch.load(out)
+    for g, w in zip(got, want, strict=True):
+        assert g["pos"] == w["pos"]
+        assert g["recall"] == pytest.approx(w["recall"], abs=1e-6)
+        assert g["overlap"] == pytest.approx(w["overlap"], abs=1e-6)
+    # the case is sensitive: one rank's heads alone pick a different teacher somewhere
+    local = measure_rows(query[:, : TP_HQ // 2], key[:, :1], bitmap, lo, hi, blk_base, RATIO, TP_D**-0.5, TP_TOPK, rows)
+    assert any(abs(a["overlap"] - b["overlap"]) > 1e-6 for a, b in zip(local, want, strict=True))
