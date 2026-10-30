@@ -14,6 +14,7 @@ import torch
 from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModel, Qwen3VLVisionModel
 
+from examples.qwen3_8_next_vision_sft import evaluate, export_full
 from miles_plugins.models.qwen3_8_next import vision_audit
 from miles_plugins.models.qwen3_8_next.vision import set_visual_scope
 from miles_plugins.models.qwen3_8_next.vision_inputs import (
@@ -31,6 +32,86 @@ _CONFIG = {
     "vision_end_token_id": 9003,
     "vision_config": {"spatial_merge_size": 2},
 }
+
+
+def test_full_checkpoint_export_preserves_decoder_vision_and_immutable_assets(tmp_path):
+    base, output, checkpoint = [tmp_path / name for name in ["base", "export", "checkpoint"]]
+    base.mkdir()
+    output.mkdir()
+    config = {"num_hidden_layers": 1, "num_experts": 2, "hidden_size": 3, "num_attention_heads": 1, "num_key_value_heads": 1, "vocab_size": 8}
+    (base / "config.json").write_text(json.dumps({"text_config": config}))
+    native = {
+        "embedding.word_embeddings.weight": torch.arange(24, dtype=torch.float32).reshape(8, 3),
+        "vision_model.weight": torch.full((2, 3), 13.0),
+        "decoder.layers.0.mlp.experts.linear_fc1.weight": torch.arange(24, dtype=torch.float32).reshape(2, 4, 3),
+        "decoder.layers.0.mlp.experts.linear_fc2.weight": torch.full((2, 3, 2), 17.0),
+    }
+    export_full.dcp.save(native, checkpoint_id=str(checkpoint), planner=export_full.dcp.DefaultSavePlanner(flatten_state_dict=False))
+    restored = export_full._native_tensors(checkpoint, meta=False)
+    assert set(restored) == set(native) and all(torch.equal(value, restored[name]) for name, value in native.items())
+    converted = export_full._convert(export_full._model_args(base), restored)
+    expected = {
+        "model.language_model.embed_tokens.weight": native["embedding.word_embeddings.weight"],
+        "model.visual.weight": native["vision_model.weight"],
+        "model.language_model.layers.0.mlp.experts.gate_up_proj": native["decoder.layers.0.mlp.experts.linear_fc1.weight"],
+        "model.language_model.layers.0.mlp.experts.down_proj": native["decoder.layers.0.mlp.experts.linear_fc2.weight"],
+    }
+    assert set(converted) == set(expected) and all(torch.equal(value, converted[name]) for name, value in expected.items())
+    frozen = {
+        "model.language_model.layers.0.ple.ple_embedding.layer_multipliers": torch.tensor([7]),
+        "model.language_model.layers.0.ple.ple_embedding.ngram_heads_offsets": torch.tensor([0, 3]),
+        "model.language_model.layers.0.ple.ple_embedding.ngram_heads_vocab_sizes": torch.tensor([3, 5]),
+        "mtp.layers.0.frozen.weight": torch.tensor([19.0]),
+    }
+    baseline = {**{name: torch.zeros_like(value) for name, value in expected.items()}, **frozen}
+    export_full.save_file(baseline, str(base / "model.safetensors"))
+    index = {"metadata": {}, "weight_map": {name: "model.safetensors" for name in baseline}}
+    (base / "model.safetensors.index.json").write_text(json.dumps(index))
+    source_hash = export_full._sha(base / "model.safetensors")
+    index, by_file, missing = export_full._check_inventory(base, converted)
+    assert missing == set(frozen)
+    export_full._write_shards(base, output, converted, index, by_file, missing)
+    with export_full.safe_open(str(output / "model.safetensors"), framework="pt") as result:
+        assert set(result.keys()) == set(baseline)
+        assert all(torch.equal(result.get_tensor(name), value) for name, value in {**expected, **frozen}.items())
+    assert export_full._sha(base / "model.safetensors") == source_hash
+    with pytest.raises(ValueError, match="missing="):
+        export_full._check_inventory(base, {name: value for name, value in converted.items() if name != "model.language_model.embed_tokens.weight"})
+
+
+def test_complete_expert_export_rejects_partial_or_unstacked_experts():
+    with pytest.raises(ValueError, match="complete expert layout"):
+        export_full._convert(SimpleNamespace(num_experts=2), {"decoder.layers.0.mlp.experts.linear_fc1.weight": torch.ones(4, 3)})
+
+
+@pytest.mark.parametrize("tamper", [None, "unfinished", "index", "checkpoint", "rank"])
+def test_joint_evaluation_requires_a_complete_unchanged_model_export(tmp_path, tamper):
+    for name in ["config.json", "model.safetensors.index.json", ".metadata"]:
+        (tmp_path / name).write_text("{}")
+    receipt = {
+        "complete": True,
+        "plan_only": False,
+        "update": 160,
+        "checkpoint": str(tmp_path),
+        "native_metadata_sha256": evaluate._sha(tmp_path / ".metadata"),
+        "source_config_sha256": evaluate._sha(tmp_path / "config.json"),
+        "hf_index_sha256": evaluate._sha(tmp_path / "model.safetensors.index.json"),
+        "closed_rank_audits": [{"rank": 0, "complete_parameter_sha256": "a" * 64}],
+    }
+    if tamper == "unfinished":
+        receipt["complete"] = False
+    elif tamper == "index":
+        (tmp_path / "model.safetensors.index.json").write_text("changed")
+    elif tamper == "checkpoint":
+        (tmp_path / ".metadata").write_text("changed")
+    elif tamper == "rank":
+        receipt["closed_rank_audits"] = [{"rank": 1, "complete_parameter_sha256": "a" * 64}]
+    (tmp_path / "joint-export.json").write_text(json.dumps(receipt))
+    if tamper:
+        with pytest.raises(ValueError):
+            evaluate._full_model_receipt(tmp_path, 160)
+    else:
+        assert evaluate._full_model_receipt(tmp_path, 160) == receipt
 
 
 def test_joint_probe_selection_is_bounded_and_includes_decoder_endpoints():
