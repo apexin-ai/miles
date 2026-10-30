@@ -174,7 +174,9 @@ class V41CarryPlan:
         cand = config.v41_candidate_source_layer_id
         self.candidates = 0 <= cand <= layer_id and any(cand < layer and ratios[layer] for layer in later)
         self.candidate_block_size = config.v41_candidate_block_size
-        self.input_ids = getattr(config, "v41_vision_enabled", False) or (
+        self.input_ids = getattr(
+            config, "v41_vision_enabled", False
+        ) or (  # config-access-exempt: V4.1 configs built outside get_dsv41_spec omit the image extension
             bool(config.v41_engram_layer_ids) and layer_id < max(config.v41_engram_layer_ids)
         )
 
@@ -633,7 +635,9 @@ def get_dsv41_spec(args, config, vp_stage):
     assert args.dsv4_impl == "miles", "DeepSeek-V4.1 is only supported with --dsv4-impl miles"
     hf_config = load_hf_config(args.hf_checkpoint)
     apply_v41_config(config, hf_config)
-    config.v41_vision_enabled = getattr(args, "dsv41_image_sft", False)
+    config.v41_vision_enabled = getattr(
+        args, "dsv41_image_sft", False
+    )  # config-access-exempt: only the V4.1 image provider adds this runtime flag to its provider view
     if config.v41_vision_enabled:
         config.v41_image_token_id = hf_config.image_token_id
     config.v41_stage_bounds = v41_pipeline_bounds(config, vp_stage)
@@ -660,7 +664,7 @@ def get_dsv41_spec(args, config, vp_stage):
         layer_spec.module = V41TransformerLayer
         layer_spec.submodules.self_attention_hyper_connection = V41HyperConnection
         layer_spec.submodules.mlp_hyper_connection = V41HyperConnection
-        if getattr(config, "v41_vision_enabled", False):
+        if config.v41_vision_enabled:
             from miles_plugins.models.deepseek_v4_1.router import DeepSeekV41VisionRouter
 
             layer_spec.submodules.mlp.keywords["submodules"].router = DeepSeekV41VisionRouter

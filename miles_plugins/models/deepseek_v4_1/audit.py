@@ -22,7 +22,9 @@ def record_inventory(model):
             dtype=str(p.dtype),
             trainable=p.requires_grad,
             numel=p.numel(),
-            sequence_parallel=getattr(p, "sequence_parallel", False),
+            sequence_parallel=getattr(
+                p, "sequence_parallel", False
+            ),  # config-access-exempt: Megatron tags only sequence-parallel parameters
         )
         for name, p in model.named_parameters()
     ]
@@ -30,12 +32,16 @@ def record_inventory(model):
 
 
 def _gradient_buffers(optimizer):
-    children = getattr(optimizer, "chained_optimizers", None)
+    children = getattr(
+        optimizer, "chained_optimizers", None
+    )  # config-access-exempt: only ChainedOptimizer has children
     if children is not None:
         for child in children:
             yield from _gradient_buffers(child)
     else:
-        yield from getattr(optimizer, "buffers", ())
+        yield from getattr(
+            optimizer, "buffers", ()
+        )  # config-access-exempt: only distributed optimizers own gradient buffers
 
 
 def _reduced_gradient(optimizer, parameter, indices):
@@ -86,7 +92,9 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler):
     original = optimizer.step
     # A discarded/nonfinite step may never call the previous witness wrapper.
     # Do not nest stale wrappers (and stale before-update hashes) on retry.
-    original = getattr(original, "_dsv41_original_step", original)
+    original = getattr(
+        original, "_dsv41_original_step", original
+    )  # config-access-exempt: marker set on our own step wrapper
 
     def step(*positional, **keywords):
         probes = []

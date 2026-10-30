@@ -298,6 +298,8 @@ def test_scoring_preserves_prompt_thinking_prefix(tmp_path, thinking, generated,
             enable_thinking=thinking,
             reasoning_effort="xhigh",
             final_answer_format="dataset",
+            # evaluate.py's parser always defines both flags; mirror it instead of relying on getattr defaults.
+            empty_thinking_prefill=False,
             constrain_integer_answer=constrain,
         ),
         split="development",

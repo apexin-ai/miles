@@ -128,13 +128,16 @@ class Qwen38NextAttention(SelfAttention):
         rotary_pos_emb = kwargs.get("rotary_pos_emb")
         if rotary_pos_emb is None:
             raise RuntimeError("the QSA indexer reuses the attention RoPE, but no rotary_pos_emb was passed")
+        materialized_rope = getattr(
+            self.config, "qwen3_8_next_materialized_rope", False
+        )  # config-access-exempt: set only by the Qwen3.8 spec, absent on generic test configs
         with torch.no_grad():
             selection = self.indexer(
                 indexer_states[:, 0],
                 positions,
                 rotary_pos_emb,
                 cu_seqlens=self._qsa_cu_seqlens,
-                materialized_rope=getattr(self.config, "qwen3_8_next_materialized_rope", False),
+                materialized_rope=materialized_rope,
             )
             seq_start = torch.arange(seq, device=positions.device) - positions
             r = self.compress_ratio

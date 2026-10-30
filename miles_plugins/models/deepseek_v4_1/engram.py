@@ -280,7 +280,9 @@ class DeepSeekV41Engram(MegatronModule):
     def hash_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         batch, seqlen = input_ids.shape
         compressed = self.token_map[input_ids]
-        if getattr(self.config, "v41_vision_enabled", False):
+        if getattr(
+            self.config, "v41_vision_enabled", False
+        ):  # config-access-exempt: V4.1 configs built outside get_dsv41_spec omit the image extension
             compressed = compressed.masked_fill(input_ids == self.config.v41_image_token_id, -1)
         positions = torch.arange(seqlen, device=input_ids.device).expand(batch, seqlen)
         tokens, blocked = [], torch.zeros_like(positions, dtype=torch.bool)
@@ -359,7 +361,9 @@ class DeepSeekV41Engram(MegatronModule):
         out = engram_gate(x, kv, self.q_weight, self.k_weight, self.eps, self.clamp_value).view(
             seqlen, bsz, self.hc_mult * self.dim
         )
-        if getattr(self.config, "v41_vision_enabled", False):
+        if getattr(
+            self.config, "v41_vision_enabled", False
+        ):  # config-access-exempt: V4.1 configs built outside get_dsv41_spec omit the image extension
             # Images neither join n-grams nor receive an Engram residual.
             image_mask = (input_ids == self.config.v41_image_token_id).transpose(0, 1).unsqueeze(-1)
             out = torch.where(image_mask, hidden_states, out)
