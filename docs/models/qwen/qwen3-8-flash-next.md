@@ -346,6 +346,80 @@ The validation set was also used in earlier debugging; this is one run, without
 new matched image-removal/swapping controls or a multiple-seed estimate. The
 earlier experiments below preserve their own protocols and are separate runs.
 
+### Five-Epoch Joint Language And Visual SFT
+
+A separate run starts from the **original base model**, enables language and
+visual updates, and trains 160 updates on the same 1024 image questions. Only
+the saved final step 160 was evaluated. The
+[training protocol](../../assets/images/qwen3-8-flash-next-joint-sft/joint160-training-protocol.json)
+was recorded before training. The retained original-base and visual-only
+predictions use identical ordered scene IDs, questions, labels, image pixels,
+expanded input tokens, assistant prefills and evaluation settings.
+
+| Fixed scene set | Original base | Visual-only step 160 | Joint saved step 160 |
+| --- | ---: | ---: | ---: |
+| Training, 1024 scenes | 448/1024 (43.75%) | 511/1024 (49.90%) | **778/1024 (75.98%)** |
+| Validation, 256 scenes | 113/256 (44.14%) | 125/256 (48.83%) | **189/256 (73.83%)** |
+
+![Final saved joint model compared with original and visual-only models](https://raw.githubusercontent.com/leviking98z-rgb/miles/refs/heads/feat/qwen38-next-joint-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-joint-sft/joint160-evaluation.png)
+
+Against the original baseline, joint SFT gains **32.23 percentage points** on
+training and **29.69 points** on validation. Validation has 88 wrong-to-right
+and 12 right-to-wrong changes. Of its net 76 additional correct answers, 75 are
+from examples with valid formats at both endpoints and one from a validity
+transition. All 1280 joint answers have valid integer formats. The same held-out
+questions improve by net 64 answers / 25.00 points over visual-only SFT.
+
+The [result and protocol evidence](../../assets/images/qwen3-8-flash-next-joint-sft/joint160-results.json),
+[1024 training pairs](../../assets/images/qwen3-8-flash-next-joint-sft/joint160-training1024-pairs.jsonl)
+and [256 validation pairs](../../assets/images/qwen3-8-flash-next-joint-sft/joint160-validation256-pairs.jsonl)
+retain the measured counts and changes. Exact integer scoring remains
+`integer_last_final_line_v2`. Thinking is enabled at `low`; native SGLang uses
+greedy decoding, 16384 output tokens, context 32768, TP8/EP8, batch size 256
+and CUDA graphs, without constrained decoding or a closed-thinking prefill.
+
+This run uses four eight-GPU nodes, **TP8/DP4/PP1/EP8/ETP1**, global batch 32,
+micro-batch 1, LR `1e-6` constant, Adam `(0.9, 0.98)`, weight decay zero,
+gradient clipping at 1, BF16 model weights and full FP32 CPU-offloaded optimizer
+state. Its 160 updates use fresh Adam continuously, unlike the visual-only run's
+reset at update 64. Language and visual hashes changed in all 32 final rank audits.
+PLE remains immutable; the discrete QSA indexer and unused MTP are not trained.
+Assistant targets contain native answer-boundary tokens and the integer answer;
+there are no supervised reasoning traces. Joint parameter training therefore
+does not establish a reasoning-trace training result.
+
+![All 160 measured joint SFT loss points and epoch means](https://raw.githubusercontent.com/leviking98z-rgb/miles/refs/heads/feat/qwen38-next-joint-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-joint-sft/joint160-training-loss.png)
+
+Epoch mean losses are **0.21623, 0.09650, 0.06366, 0.04577, 0.04758**; the
+last logged loss is 0.05182. These are 160 actual batch losses, without smoothing.
+The [measured CPU/CUDA profile](../../assets/images/qwen3-8-flash-next-joint-sft/joint160-performance-summary.json)
+separates CPU regions and GPU intervals; their overlaps must not be added as
+disjoint wall-time percentages. A live four-to-eight CPU-thread trial reduced
+the observed step median by only 3.18% on different batches. It was
+[reverted to four threads](../../assets/images/qwen3-8-flash-next-joint-sft/joint160-thread-tuning-decision.json)
+without changing optimizer state. No stable throughput improvement is claimed.
+
+**Saved-model qualification is separate from live-model restoration.** The
+160 training updates completed, but the subsequent exact native reload check
+failed on nonzero TP ranks; only four TP0 ranks returned successful reload
+receipts. The original job's failure and strict checks are retained. Its cause
+has not been localized. These scores evaluate an explicitly separate
+`--saved-checkpoint-only` full-model export. The
+[export validation receipt](../../assets/images/qwen3-8-flash-next-joint-sft/joint160-export-validation.json)
+records all 32 final training audits, all 1496 converted tensors passing finite
+checks and exact HF readback, and unchanged native shard inventory. The receipt
+explicitly sets `live_model_roundtrip_qualified=false`. It does not qualify
+optimizer resume or exact restoration of the original live model. Do not use a
+visual-only snapshot overlay to export a jointly updated decoder.
+
+Training source is `d52a4c118fedcdd0af52dab0c110111267000581`; the full-model
+exporter/evaluator is `b7c8f0ebe2879d196773984508bb913f63cd120c`, with 64 focused
+CPU tests passing on the native training environment. Rebuild both figures with
+`python -m tools.plot_qwen38_joint160_results`. Validation was reused during
+debugging; this is one run with no independent test set or matched image-removal
+controls. The visual-only and joint training schedules also differ, so the
+comparison does not isolate language unfreezing as the only cause.
+
 ### Scope And Qualification
 
 `scripts/run_qwen3_8_next_vision_sft.py` implements image SFT for the **complete

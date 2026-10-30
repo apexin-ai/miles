@@ -1,0 +1,361 @@
+{
+  "complete": true,
+  "ranks": [
+    {
+      "rank": 0,
+      "trace_sha256": "dff6141435feba18c560180ab52f0396564c7319b9ad4fd902eac863a65ff821",
+      "events": 7852564,
+      "trace_categories": {
+        "user_annotation": 19486,
+        "cpu_op": 3446146,
+        "overhead": 1306,
+        "kernel": 846263,
+        "cuda_runtime": 3055896,
+        "gpu_memcpy": 41882,
+        "cuda_driver": 407262,
+        "gpu_memset": 14832,
+        "gpu_user_annotation": 19490,
+        "Trace": 1
+      },
+      "profiled_steps": 2,
+      "wall_seconds": 57.28375752197265,
+      "cpu_region_seconds": {
+        "forward_backward": 34.608608377929684,
+        "audit": 3.6470421953125,
+        "optimizer": 11.86747458642578
+      },
+      "cpu_region_percent": {
+        "forward_backward": 60.416093278543514,
+        "audit": 6.3666252932405545,
+        "optimizer": 20.716997452329668
+      },
+      "cpu_other_seconds": 7.160632362304682,
+      "cuda_active_seconds": {
+        "other_kernels": 5.58198611328125,
+        "memory": 5.046767900390625,
+        "nccl": 5.632395979003906
+      },
+      "cuda_union_active_seconds": 16.25915189501953,
+      "cuda_idle_seconds": 41.02460562695312,
+      "cuda_nccl_other_kernel_overlap_seconds": 0.00152501318359375,
+      "top_cuda_kernels_by_summed_seconds": [
+        [
+          "ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          2.8424625199999736
+        ],
+        [
+          "ncclDevKernel_ReduceScatter_Sum_f32_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          1.760220286
+        ],
+        [
+          "ncclDevKernel_SendRecv(ncclDevKernelArgsStorage<4096ul>)",
+          0.6011073210000026
+        ],
+        [
+          "void sgemm_largek_lds64<true, false, 6, 3, 4, 5, 2, 66>(float*, float const*, float const*, int, int, int, int, int, int, float const*, float const*, float, float, int, int, int*, int*)",
+          0.45181862200000034
+        ],
+        [
+          "void cutlass::Kernel2<cutlass_80_simt_sgemm_128x32_8x5_tn_align1>(cutlass_80_simt_sgemm_128x32_8x5_tn_align1::Params)",
+          0.27497872700000014
+        ],
+        [
+          "nvjet_sm103_tst_32x64_64x16_4x1_v_bz_TNN",
+          0.25091765499998175
+        ],
+        [
+          "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(int, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1>)",
+          0.22781618700000308
+        ],
+        [
+          "nvjet_sm103_tss_128x192_64x6_2x1_2cta_v_badd_NTT",
+          0.22214300300000925
+        ],
+        [
+          "void at::native::unrolled_elementwise_kernel<at::native::CUDAFunctor_add<float>, std::array<char*, 3ul>, 4, TrivialOffsetCalculator<2, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<2>, at::native::memory::StoreWithCast<1> >(int, at::native::CUDAFunctor_add<float>, std::array<char*, 3ul>, TrivialOffsetCalculator<2, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<2>, at::native::memory::StoreWithCast<1>)",
+          0.22193394399999916
+        ],
+        [
+          "nvjet_sm103_tst_24x64_64x16_4x1_v_bz_TNN",
+          0.18465023699998684
+        ],
+        [
+          "ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          0.16485548599999975
+        ],
+        [
+          "void cutlass::Kernel2<cutlass_80_simt_sgemm_64x64_8x5_nn_align1>(cutlass_80_simt_sgemm_64x64_8x5_nn_align1::Params)",
+          0.16484718699999995
+        ]
+      ],
+      "caveat": "Selected rank per node; GPU category unions overlap and must not be added as wall-time shares. CPU forward/backward includes synchronization."
+    },
+    {
+      "rank": 8,
+      "trace_sha256": "4403ebdf4cc4ded4624190f2eb2be6d14251bc50f04278e36e336ba49d917594",
+      "events": 7839214,
+      "trace_categories": {
+        "user_annotation": 19486,
+        "cpu_op": 3438196,
+        "kernel": 843832,
+        "overhead": 1299,
+        "cuda_runtime": 3053062,
+        "gpu_memcpy": 41170,
+        "cuda_driver": 407846,
+        "gpu_memset": 14832,
+        "gpu_user_annotation": 19490,
+        "Trace": 1
+      },
+      "profiled_steps": 2,
+      "wall_seconds": 57.2831608828125,
+      "cpu_region_seconds": {
+        "forward_backward": 34.78437893212891,
+        "audit": 3.4739361044921875,
+        "optimizer": 10.824536404785157
+      },
+      "cpu_region_percent": {
+        "forward_backward": 60.72356761752261,
+        "audit": 6.064497927408407,
+        "optimizer": 18.89654173750911
+      },
+      "cpu_other_seconds": 8.200309441406255,
+      "cuda_active_seconds": {
+        "other_kernels": 5.554036109863281,
+        "memory": 4.280908585449219,
+        "nccl": 6.988962424316406
+      },
+      "cuda_union_active_seconds": 16.82280229980469,
+      "cuda_idle_seconds": 40.46035858300782,
+      "cuda_nccl_other_kernel_overlap_seconds": 0.0007754462890625,
+      "top_cuda_kernels_by_summed_seconds": [
+        [
+          "ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          3.9571233339999603
+        ],
+        [
+          "ncclDevKernel_ReduceScatter_Sum_f32_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          2.21187133
+        ],
+        [
+          "void sgemm_largek_lds64<true, false, 6, 3, 4, 5, 2, 66>(float*, float const*, float const*, int, int, int, int, int, int, float const*, float const*, float, float, int, int, int*, int*)",
+          0.4584547750000001
+        ],
+        [
+          "ncclDevKernel_SendRecv(ncclDevKernelArgsStorage<4096ul>)",
+          0.3266591440000003
+        ],
+        [
+          "void cutlass::Kernel2<cutlass_80_simt_sgemm_128x32_8x5_tn_align1>(cutlass_80_simt_sgemm_128x32_8x5_tn_align1::Params)",
+          0.275627166
+        ],
+        [
+          "nvjet_sm103_tst_32x64_64x16_4x1_v_bz_TNN",
+          0.24597471999998236
+        ],
+        [
+          "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(int, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1>)",
+          0.2236219290000017
+        ],
+        [
+          "void at::native::unrolled_elementwise_kernel<at::native::CUDAFunctor_add<float>, std::array<char*, 3ul>, 4, TrivialOffsetCalculator<2, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<2>, at::native::memory::StoreWithCast<1> >(int, at::native::CUDAFunctor_add<float>, std::array<char*, 3ul>, TrivialOffsetCalculator<2, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<2>, at::native::memory::StoreWithCast<1>)",
+          0.2184465659999982
+        ],
+        [
+          "nvjet_sm103_tss_128x192_64x6_2x1_2cta_v_badd_NTT",
+          0.21704874100000318
+        ],
+        [
+          "ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          0.18580480099999955
+        ],
+        [
+          "nvjet_sm103_tst_24x64_64x16_4x1_v_bz_TNN",
+          0.18326429599999594
+        ],
+        [
+          "void cutlass::Kernel2<cutlass_80_simt_sgemm_64x64_8x5_nn_align1>(cutlass_80_simt_sgemm_64x64_8x5_nn_align1::Params)",
+          0.1632422170000002
+        ]
+      ],
+      "caveat": "Selected rank per node; GPU category unions overlap and must not be added as wall-time shares. CPU forward/backward includes synchronization."
+    },
+    {
+      "rank": 16,
+      "trace_sha256": "2554637216625978bc9547a6890aa48188d38a865bbb1bbb651146022dafdcc3",
+      "events": 7810451,
+      "trace_categories": {
+        "user_annotation": 19486,
+        "cpu_op": 3437976,
+        "kernel": 839768,
+        "overhead": 1192,
+        "cuda_runtime": 3032182,
+        "gpu_memcpy": 41150,
+        "cuda_driver": 404374,
+        "gpu_memset": 14832,
+        "gpu_user_annotation": 19490,
+        "Trace": 1
+      },
+      "profiled_steps": 2,
+      "wall_seconds": 57.2830265390625,
+      "cpu_region_seconds": {
+        "forward_backward": 34.6234791328125,
+        "audit": 3.63185963671875,
+        "optimizer": 11.121540225585937
+      },
+      "cpu_region_percent": {
+        "forward_backward": 60.44282438394212,
+        "audit": 6.340202074068325,
+        "optimizer": 19.415070916341904
+      },
+      "cpu_other_seconds": 7.906147543945309,
+      "cuda_active_seconds": {
+        "other_kernels": 5.628324915527344,
+        "memory": 4.596761075195312,
+        "nccl": 6.191190690429687
+      },
+      "cuda_union_active_seconds": 16.415333234375,
+      "cuda_idle_seconds": 40.86769330468749,
+      "cuda_nccl_other_kernel_overlap_seconds": 0.00077006689453125,
+      "top_cuda_kernels_by_summed_seconds": [
+        [
+          "ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          3.141126974000022
+        ],
+        [
+          "ncclDevKernel_ReduceScatter_Sum_f32_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          2.0775126850000003
+        ],
+        [
+          "ncclDevKernel_SendRecv(ncclDevKernelArgsStorage<4096ul>)",
+          0.4865474229999984
+        ],
+        [
+          "void sgemm_largek_lds64<true, false, 6, 3, 4, 5, 2, 66>(float*, float const*, float const*, int, int, int, int, int, int, float const*, float const*, float, float, int, int, int*, int*)",
+          0.45758822699999896
+        ],
+        [
+          "void cutlass::Kernel2<cutlass_80_simt_sgemm_128x32_8x5_tn_align1>(cutlass_80_simt_sgemm_128x32_8x5_tn_align1::Params)",
+          0.2780221590000004
+        ],
+        [
+          "nvjet_sm103_tst_32x64_64x16_4x1_v_bz_TNN",
+          0.24835911299998242
+        ],
+        [
+          "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(int, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1>)",
+          0.22971654799999813
+        ],
+        [
+          "void at::native::unrolled_elementwise_kernel<at::native::CUDAFunctor_add<float>, std::array<char*, 3ul>, 4, TrivialOffsetCalculator<2, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<2>, at::native::memory::StoreWithCast<1> >(int, at::native::CUDAFunctor_add<float>, std::array<char*, 3ul>, TrivialOffsetCalculator<2, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<2>, at::native::memory::StoreWithCast<1>)",
+          0.22393049000000034
+        ],
+        [
+          "nvjet_sm103_tss_128x192_64x6_2x1_2cta_v_badd_NTT",
+          0.21918598500000955
+        ],
+        [
+          "ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          0.2065896830000005
+        ],
+        [
+          "nvjet_sm103_tst_24x64_64x16_4x1_v_bz_TNN",
+          0.18382952899998456
+        ],
+        [
+          "void cutlass::Kernel2<cutlass_80_simt_sgemm_64x64_8x5_nn_align1>(cutlass_80_simt_sgemm_64x64_8x5_nn_align1::Params)",
+          0.16451619900000017
+        ]
+      ],
+      "caveat": "Selected rank per node; GPU category unions overlap and must not be added as wall-time shares. CPU forward/backward includes synchronization."
+    },
+    {
+      "rank": 24,
+      "trace_sha256": "2ff53de1628b03b422baee1c0d8a92c4262e2d3a7d74370be8e25594dc5f2074",
+      "events": 7822207,
+      "trace_categories": {
+        "user_annotation": 19486,
+        "cpu_op": 3436524,
+        "cuda_runtime": 3041809,
+        "overhead": 1300,
+        "kernel": 841725,
+        "gpu_memcpy": 41018,
+        "cuda_driver": 406022,
+        "gpu_memset": 14832,
+        "gpu_user_annotation": 19490,
+        "Trace": 1
+      },
+      "profiled_steps": 2,
+      "wall_seconds": 57.28317645898437,
+      "cpu_region_seconds": {
+        "forward_backward": 34.630068748046874,
+        "audit": 3.592420052246094,
+        "optimizer": 10.665270768066407
+      },
+      "cpu_region_percent": {
+        "forward_backward": 60.454169773288555,
+        "audit": 6.271335275581865,
+        "optimizer": 18.618504467368187
+      },
+      "cpu_other_seconds": 8.395416890624993,
+      "cuda_active_seconds": {
+        "other_kernels": 5.527761883300781,
+        "memory": 4.163352672851563,
+        "nccl": 6.973517072265625
+      },
+      "cuda_union_active_seconds": 16.6640023359375,
+      "cuda_idle_seconds": 40.619174123046875,
+      "cuda_nccl_other_kernel_overlap_seconds": 0.00045802490234375,
+      "top_cuda_kernels_by_summed_seconds": [
+        [
+          "ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          3.8187116230000124
+        ],
+        [
+          "ncclDevKernel_ReduceScatter_Sum_f32_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          2.145969365
+        ],
+        [
+          "ncclDevKernel_SendRecv(ncclDevKernelArgsStorage<4096ul>)",
+          0.4648424319999996
+        ],
+        [
+          "void sgemm_largek_lds64<true, false, 6, 3, 4, 5, 2, 66>(float*, float const*, float const*, int, int, int, int, int, int, float const*, float const*, float, float, int, int, int*, int*)",
+          0.4489606120000012
+        ],
+        [
+          "void cutlass::Kernel2<cutlass_80_simt_sgemm_128x32_8x5_tn_align1>(cutlass_80_simt_sgemm_128x32_8x5_tn_align1::Params)",
+          0.27572254499999915
+        ],
+        [
+          "nvjet_sm103_tst_32x64_64x16_4x1_v_bz_TNN",
+          0.24734796599997913
+        ],
+        [
+          "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(int, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1>)",
+          0.2246650780000013
+        ],
+        [
+          "nvjet_sm103_tss_128x192_64x6_2x1_2cta_v_badd_NTT",
+          0.21870055500001045
+        ],
+        [
+          "void at::native::unrolled_elementwise_kernel<at::native::CUDAFunctor_add<float>, std::array<char*, 3ul>, 4, TrivialOffsetCalculator<2, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<2>, at::native::memory::StoreWithCast<1> >(int, at::native::CUDAFunctor_add<float>, std::array<char*, 3ul>, TrivialOffsetCalculator<2, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<2>, at::native::memory::StoreWithCast<1>)",
+          0.21803509299999801
+        ],
+        [
+          "ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+          0.19116225400000064
+        ],
+        [
+          "nvjet_sm103_tst_24x64_64x16_4x1_v_bz_TNN",
+          0.18136366499999135
+        ],
+        [
+          "void cutlass::Kernel2<cutlass_80_simt_sgemm_64x64_8x5_nn_align1>(cutlass_80_simt_sgemm_64x64_8x5_nn_align1::Params)",
+          0.16057065500000012
+        ]
+      ],
+      "caveat": "Selected rank per node; GPU category unions overlap and must not be added as wall-time shares. CPU forward/backward includes synchronization."
+    }
+  ]
+}
