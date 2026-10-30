@@ -68,12 +68,14 @@ def _train(scheduler, increments) -> list[tuple[float, float, float]]:
     return seen
 
 
-def _load(tmp_path: Path, scheduler, *, iteration: int, saved_state: dict | None, finetune: bool = False):
+def _load(
+    tmp_path: Path, scheduler, *, iteration: int, saved_state: dict | None, finetune: bool = False, tracker: str | None = None
+):
     from miles.backends.megatron_utils.model import load_model_state
 
     load_dir = tmp_path / "ckpt"
     load_dir.mkdir(exist_ok=True)
-    (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
+    (load_dir / "latest_checkpointed_iteration.txt").write_text(tracker or str(iteration))
 
     def megatron_load(model, optimizer, opt_param_scheduler, **kwargs):
         if saved_state is not None:
@@ -138,11 +140,30 @@ class TestResumedScheduleMatchesUninterrupted:
         assert scheduler.load_state_dict == original
 
 
+    def test_a_checkpoint_saved_after_rollout_0_resumes_the_schedule(self, tmp_path: Path) -> None:
+        """iteration is the zero-based rollout id: rollout 0 has trained and its schedule continues."""
+        uninterrupted = _train(_new_scheduler(False), _INCREMENTS)
+        first = _new_scheduler(False)
+        before = _train(first, _INCREMENTS[:2])
+        resumed = _new_scheduler(False)
+        output = _load(tmp_path, resumed, iteration=0, saved_state=first.state_dict())
+        assert output.start_rollout_id == 1
+        assert before + _train(resumed, _INCREMENTS[2:]) == uninterrupted
+
+
 class TestLoadsThatDoNotRestoreTheScheduler:
-    def test_a_trained_checkpoint_without_scheduler_state_is_refused(self, tmp_path: Path) -> None:
-        """--no-load-optim / --no-save-optim: the LR progress is unknown, so do not guess iteration * GBS."""
+    @pytest.mark.parametrize("iteration", [5, 0])
+    def test_a_trained_checkpoint_without_scheduler_state_is_refused(self, tmp_path: Path, iteration: int) -> None:
+        """--no-load-optim / --no-save-optim: the LR progress is unknown, so do not guess iteration * GBS.
+        CRV-FIX-011: a checkpoint written after rollout 0 has trained too."""
         with pytest.raises(RuntimeError, match="no LR scheduler state"):
-            _load(tmp_path, _new_scheduler(True), iteration=5, saved_state=None)
+            _load(tmp_path, _new_scheduler(True), iteration=iteration, saved_state=None)
+
+    def test_a_release_checkpoint_starts_the_schedule_at_step_zero(self, tmp_path: Path) -> None:
+        """A converted (release) checkpoint is untrained: Megatron loads it at iteration 0 without optimizer state."""
+        scheduler = _new_scheduler(True)
+        _load(tmp_path, scheduler, iteration=0, saved_state=None, tracker="release")
+        assert scheduler.num_steps == 0
 
     def test_finetune_starts_a_new_schedule_at_step_zero(self, tmp_path: Path) -> None:
         """--finetune is the explicit new-stage policy: iteration 0, nothing restored, no error."""
