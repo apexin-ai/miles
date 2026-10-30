@@ -98,6 +98,13 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
 
     _apply_qwen3_8_next_config(config, text_config)
     config.qwen3_8_next_hf_checkpoint = args.hf_checkpoint
+    if args.position_embedding_type == "mrope":
+        rope = text_config.rope_parameters
+        if list(args.mrope_section) != list(rope["mrope_section"]):
+            raise ValueError("Qwen image mRoPE sections must match the native checkpoint")
+        # This model requires the checkpoint's axis interleaving, not the text-RoPE default.
+        config.mrope_interleaved = rope["mrope_interleaved"]
+    config.qwen3_8_next_materialized_rope = args.position_embedding_type == "mrope"
 
     if getattr(config, "virtual_pipeline_model_parallel_size", None):
         raise NotImplementedError(

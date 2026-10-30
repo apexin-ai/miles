@@ -1,0 +1,68 @@
+{
+  "name": "vision32-format-dev-v2",
+  "formal_quality_curve": false,
+  "training_changed": false,
+  "language_frozen": true,
+  "validation_requested": false,
+  "source_commit": "8886ead689fd489d2c97cc650ed715779b223c82",
+  "training_source_commit": "9e1cb86174cca03279c55db263cc40f8b08fe467",
+  "worker_sha256": "53124f2f5864b3f21642b2ef0da73266918d33ba6f36d5d2a975076046e32e87",
+  "evaluator_sha256": "7c477fa5a257e2af1cc6ddb3f33a48ae0f7db0aaa6b614cb5458464232be4142",
+  "scorer": "integer_first_final_line_v1",
+  "scorer_sha256": "51daa947bd1cb3f56f32705950486de66751d626ee0e6535b7052d1db627d19f",
+  "selection_basis": "Development-only 16k/xhigh baseline and updates8/24/32 remain0/32; final32 closes25/32 thinking blocks but all25 final bodies are invalid. No validation metrics used.",
+  "phases": {
+    "quality": {
+      "fixed_updates": [
+        0,
+        32
+      ],
+      "splits": [
+        "development"
+      ],
+      "controls": [
+        "image"
+      ],
+      "tp_size": 8,
+      "batch_size": 32,
+      "max_new_tokens": 16384,
+      "context_length": 32768,
+      "enable_thinking": true,
+      "reasoning_effort": "low",
+      "final_answer_format": "integer-only",
+      "enable_cuda_graph": false,
+      "limit": 0,
+      "temperature": 0,
+      "top_p": 1
+    },
+    "graph-smoke": {
+      "fixed_updates": [
+        0
+      ],
+      "splits": [
+        "development"
+      ],
+      "controls": [
+        "image"
+      ],
+      "tp_size": 8,
+      "batch_size": 32,
+      "max_new_tokens": 32,
+      "context_length": 32768,
+      "enable_thinking": true,
+      "reasoning_effort": "low",
+      "final_answer_format": "integer-only",
+      "enable_cuda_graph": true,
+      "limit": 2,
+      "temperature": 0,
+      "top_p": 1
+    }
+  },
+  "qualification_criteria": {
+    "thinking_closed_min": 31,
+    "strict_final_format_valid_min": 31,
+    "n": 32,
+    "selection_uses": "output validity and latency, before held-out metrics"
+  },
+  "focused_tests": "standalone eval module under inference runtime; training remains separately qualified under its original training runtime"
+}

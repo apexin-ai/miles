@@ -45,6 +45,8 @@ _LAYER_PATTERN = re.compile(r"module\.module\.decoder\.layers\.(\d+)\.(.+)")
 
 
 def convert_qwen3_8_next_to_hf(args, name, param):
+    if name.startswith("module.module.vision_model."):
+        return [("model.visual." + name.removeprefix("module.module.vision_model."), param)]
     if name in _HEAD_CONTRACTION_MAPPING:
         return [(_HEAD_CONTRACTION_MAPPING[name], param)]
 

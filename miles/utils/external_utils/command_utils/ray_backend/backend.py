@@ -36,7 +36,8 @@ class RayCommandBackend(BaseCommandBackend):
             None if config.external_mooncake else self._resolve_mooncake_master_port(request.train_args)
         )
 
-        self._clean_up_previous_run(external_ray=external_ray)
+        if not config.skip_process_cleanup:
+            self._clean_up_previous_run(external_ray=external_ray)
 
         if not external_ray:
             self.exec_command_cpu(

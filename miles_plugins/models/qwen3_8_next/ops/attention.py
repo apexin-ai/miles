@@ -121,7 +121,13 @@ class Qwen38NextAttention(SelfAttention):
         if rotary_pos_emb is None:
             raise RuntimeError("the QSA indexer reuses the attention RoPE, but no rotary_pos_emb was passed")
         with torch.no_grad():
-            selection = self.indexer(indexer_states[:, 0], positions, rotary_pos_emb, cu_seqlens=self._qsa_cu_seqlens)
+            selection = self.indexer(
+                indexer_states[:, 0],
+                positions,
+                rotary_pos_emb,
+                cu_seqlens=self._qsa_cu_seqlens,
+                materialized_rope=getattr(self.config, "qwen3_8_next_materialized_rope", False),
+            )
             seq_start = torch.arange(seq, device=positions.device) - positions
             r = self.compress_ratio
             tail_in_seq = (positions + 1) // r * r

@@ -66,6 +66,7 @@ class CommandUtilConfig:
 @dataclass
 class ExecuteTrainConfig(CommandUtilConfig):
     cuda_core_dump: bool = False
+    skip_process_cleanup: bool = False
     num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"

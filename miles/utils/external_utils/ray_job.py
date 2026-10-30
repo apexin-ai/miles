@@ -18,6 +18,10 @@ def run_ray_job(
     *, entrypoint: str, runtime_env: dict, job_lifetime: Literal["independent", "launcher"] = "independent"
 ) -> None:
     """Submit and follow a job; launcher-owned jobs stop when the launcher exits."""
+    if driver_address := os.environ.get("MILES_RAY_DRIVER_ADDRESS"):
+        # Ray Jobs discovers its driver address again, which can select another
+        # local cluster. Bind the entrypoint after that environment is constructed.
+        entrypoint = f"env RAY_ADDRESS={shlex.quote(driver_address)} {entrypoint}"
     if job_lifetime == "independent":
         exec_command_cpu(
             "export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "

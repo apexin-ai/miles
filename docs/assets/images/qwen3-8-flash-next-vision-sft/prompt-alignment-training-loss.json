@@ -1,0 +1,241 @@
+{
+  "complete": true,
+  "source_log": "/workspace/jlw/miles-q38-vision-sft-20261030/logs/train-vision32-prompt-v2-a04.log",
+  "source_log_sha256": "21b7312620662127a5a0f9f424a20a3156a2b647b99e8aa7ab3a77fbc4d52865",
+  "run_id": "vision32-prompt-v2",
+  "updates": 32,
+  "first_loss": 0.4407019138336182,
+  "last_loss": 0.2923450469970703,
+  "min_loss": 0.28029789924621584,
+  "max_loss": 0.4407019138336182,
+  "min_grad_norm": 10.02153214670206,
+  "max_grad_norm": 128.92555537256763,
+  "different_batch_each_step": true,
+  "not_held_out_loss": true,
+  "points": [
+    {
+      "update": 1,
+      "logged_step": 0,
+      "loss": 0.4407019138336182,
+      "grad_norm": 25.672414689245002,
+      "source_line": 2090
+    },
+    {
+      "update": 2,
+      "logged_step": 1,
+      "loss": 0.35192840099334716,
+      "grad_norm": 64.18290894608353,
+      "source_line": 2136
+    },
+    {
+      "update": 3,
+      "logged_step": 2,
+      "loss": 0.4290307998657227,
+      "grad_norm": 22.25881200590145,
+      "source_line": 2176
+    },
+    {
+      "update": 4,
+      "logged_step": 3,
+      "loss": 0.40851526260375975,
+      "grad_norm": 30.943012648064528,
+      "source_line": 2216
+    },
+    {
+      "update": 5,
+      "logged_step": 4,
+      "loss": 0.30618810653686523,
+      "grad_norm": 21.27046994886815,
+      "source_line": 2256
+    },
+    {
+      "update": 6,
+      "logged_step": 5,
+      "loss": 0.3941211700439453,
+      "grad_norm": 16.96374145552572,
+      "source_line": 2296
+    },
+    {
+      "update": 7,
+      "logged_step": 6,
+      "loss": 0.3440171957015991,
+      "grad_norm": 31.508497272809205,
+      "source_line": 2336
+    },
+    {
+      "update": 8,
+      "logged_step": 7,
+      "loss": 0.37080850068086424,
+      "grad_norm": 54.874007856919384,
+      "source_line": 2378
+    },
+    {
+      "update": 9,
+      "logged_step": 8,
+      "loss": 0.28029789924621584,
+      "grad_norm": 12.610337004427533,
+      "source_line": 2433
+    },
+    {
+      "update": 10,
+      "logged_step": 9,
+      "loss": 0.32027926445007326,
+      "grad_norm": 70.00194612250077,
+      "source_line": 2473
+    },
+    {
+      "update": 11,
+      "logged_step": 10,
+      "loss": 0.38449769020080565,
+      "grad_norm": 21.287464102839667,
+      "source_line": 2513
+    },
+    {
+      "update": 12,
+      "logged_step": 11,
+      "loss": 0.28406558036804197,
+      "grad_norm": 20.84053016969353,
+      "source_line": 2554
+    },
+    {
+      "update": 13,
+      "logged_step": 12,
+      "loss": 0.37284135818481445,
+      "grad_norm": 30.01562093310748,
+      "source_line": 2594
+    },
+    {
+      "update": 14,
+      "logged_step": 13,
+      "loss": 0.3480640172958374,
+      "grad_norm": 15.612436355204542,
+      "source_line": 2634
+    },
+    {
+      "update": 15,
+      "logged_step": 14,
+      "loss": 0.4269127368927002,
+      "grad_norm": 18.08050758797086,
+      "source_line": 2674
+    },
+    {
+      "update": 16,
+      "logged_step": 15,
+      "loss": 0.32935755252838134,
+      "grad_norm": 14.615026480422042,
+      "source_line": 2714
+    },
+    {
+      "update": 17,
+      "logged_step": 16,
+      "loss": 0.31332237720489503,
+      "grad_norm": 16.4612239311221,
+      "source_line": 2764
+    },
+    {
+      "update": 18,
+      "logged_step": 17,
+      "loss": 0.36162700653076174,
+      "grad_norm": 35.4806027139522,
+      "source_line": 2804
+    },
+    {
+      "update": 19,
+      "logged_step": 18,
+      "loss": 0.28904902935028076,
+      "grad_norm": 128.92555537256763,
+      "source_line": 2844
+    },
+    {
+      "update": 20,
+      "logged_step": 19,
+      "loss": 0.34872446000946233,
+      "grad_norm": 16.872024839004023,
+      "source_line": 2884
+    },
+    {
+      "update": 21,
+      "logged_step": 20,
+      "loss": 0.32142009735107424,
+      "grad_norm": 14.812222377573708,
+      "source_line": 2924
+    },
+    {
+      "update": 22,
+      "logged_step": 21,
+      "loss": 0.2934995651245117,
+      "grad_norm": 18.946557626609575,
+      "source_line": 2964
+    },
+    {
+      "update": 23,
+      "logged_step": 22,
+      "loss": 0.2993523120880127,
+      "grad_norm": 31.36036273824362,
+      "source_line": 3004
+    },
+    {
+      "update": 24,
+      "logged_step": 23,
+      "loss": 0.36877410411834716,
+      "grad_norm": 18.547942853104527,
+      "source_line": 3044
+    },
+    {
+      "update": 25,
+      "logged_step": 24,
+      "loss": 0.2964508056640625,
+      "grad_norm": 38.58901160183103,
+      "source_line": 3092
+    },
+    {
+      "update": 26,
+      "logged_step": 25,
+      "loss": 0.3256561279296875,
+      "grad_norm": 21.407949293866285,
+      "source_line": 3136
+    },
+    {
+      "update": 27,
+      "logged_step": 26,
+      "loss": 0.3030428409576416,
+      "grad_norm": 12.129240258082172,
+      "source_line": 3176
+    },
+    {
+      "update": 28,
+      "logged_step": 27,
+      "loss": 0.32409212589263914,
+      "grad_norm": 12.035736911909272,
+      "source_line": 3216
+    },
+    {
+      "update": 29,
+      "logged_step": 28,
+      "loss": 0.30480060577392576,
+      "grad_norm": 10.02153214670206,
+      "source_line": 3256
+    },
+    {
+      "update": 30,
+      "logged_step": 29,
+      "loss": 0.3322230339050293,
+      "grad_norm": 13.391412949942902,
+      "source_line": 3296
+    },
+    {
+      "update": 31,
+      "logged_step": 30,
+      "loss": 0.3216055631637573,
+      "grad_norm": 11.765201555917654,
+      "source_line": 3336
+    },
+    {
+      "update": 32,
+      "logged_step": 31,
+      "loss": 0.2923450469970703,
+      "grad_norm": 15.865876226744705,
+      "source_line": 3376
+    }
+  ]
+}
