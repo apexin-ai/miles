@@ -189,3 +189,57 @@ class TestRawExportEndToEnd:
         with pytest.raises(ExpertPackingError, match="left incomplete"):
             self._export(tmp_path, buckets)
         assert not (tmp_path / "export").exists()
+
+
+def _bucketed_gather_worker(rank: int, world_size: int, port: int, base_dir: str, out_dir: str) -> None:
+    """Each bucket does a collective (stands in for the TP/EP weight gather); rank 0 writes."""
+    import datetime
+    import os
+
+    import torch.distributed as dist
+
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = str(port)
+    dist.init_process_group("gloo", rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=30))
+    gathered = []
+
+    class Iterator:
+        placement = SimpleNamespace(is_full_gather=True)
+
+        def iter_hf_weights(self, weights):
+            for i in range(3):
+                t = torch.ones(1)
+                dist.all_reduce(t)
+                gathered.append(int(t.item()))
+                yield [(f"{EMBED}{i}", torch.ones(2))]
+
+    result = {"rank": rank}
+    try:
+        SnapshotPublisher(Iterator()).write_model(Path(out_dir) / f"rank{rank}", weights={}, hf_checkpoint=base_dir)
+        result["error"] = None
+    except Exception as exc:  # noqa: BLE001 - the test records which rank failed and why
+        result["error"] = type(exc).__name__
+    after = torch.ones(1)
+    dist.all_reduce(after)
+    result |= {"gathers": gathered, "next_collective": int(after.item())}
+    (Path(out_dir) / f"rank{rank}.json").write_text(json.dumps(result))
+    dist.destroy_process_group()
+
+
+def test_a_broken_base_index_fails_rank0_only_after_every_rank_finished_the_gathers(tmp_path) -> None:
+    """CRV-int round 23 P1-INT-5: the writer must not skip the collective weight gathers."""
+    from tests.fast.dist_utils import find_free_port
+
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / hf_passthrough.INDEX).write_text("{not json")
+    out = tmp_path / "out"
+    for rank in range(2):
+        (out / f"rank{rank}").mkdir(parents=True)
+    torch.multiprocessing.spawn(
+        _bucketed_gather_worker, args=(2, find_free_port(), str(base), str(out)), nprocs=2, join=True
+    )
+    results = [json.loads((out / f"rank{rank}.json").read_text()) for rank in range(2)]
+    assert results[0]["error"] == "JSONDecodeError"
+    assert results[1]["error"] is None
+    assert all(r["gathers"] == [2, 2, 2] and r["next_collective"] == 2 for r in results)

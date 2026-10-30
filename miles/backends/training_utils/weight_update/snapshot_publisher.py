@@ -69,7 +69,13 @@ class SnapshotPublisher:
         shard_index = 0
         write_error = None
         # base checkpoints that store MoE experts fused get the same fused keys back
-        packer = ExpertPacker.for_base(hf_checkpoint) if is_writer and Path(hf_checkpoint).is_dir() else None
+        packer = None
+        if is_writer and Path(hf_checkpoint).is_dir():
+            try:
+                packer = ExpertPacker.for_base(hf_checkpoint)
+            except Exception as exc:
+                # Raised only after every rank drained the iterator: its weight gathers are collective.
+                write_error = exc
         for hf_named_tensors in self._iterator.iter_hf_weights(weights):
             if not is_writer or write_error is not None:
                 continue
