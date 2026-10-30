@@ -50,6 +50,7 @@
 | `3d5b8c28` | gdn-tp-sync 改写（`752ca5c8..0dda275b`）作为一个提交合入（集成分支不改写已合入提交） | `test_tp_replica_check.py`、`test_gdn_tp_sync.py` |
 | `f75e2e2b` | ple-provenance 与 save 的 try/finally 冲突：`on_save` 在 try 内 `save_checkpoint` 之后，`on_load` 在 `check_tp_replicas` 之后 | `test_ple_provenance.py` 15 passed |
 | `f1ba67ce` | `test_qsa_indexer_frozen.py` 的 fixture 清理自己创建的 Gloo 组（CRV P2-INT-3） | frozen→monitor 顺序：修前 1 failed，修后 10 passed |
+| `2b5a2bc6` | raw HF 导出把逐专家 gate/up/down 打包成基座的 `mlp.experts.gate_up_proj [E,2I,H]`、`down_proj [E,H,I]`（CRV P1-INT-4；`hf_expert_packing.py`，接在 `SnapshotPublisher.write_model`） | `test_hf_expert_packing.py` 9 项（含真实 converter → save_hf_model → hf_passthrough 端到端）；修前端到端抛 `ExportIncomplete` |
 
 ## 已知限制
 
@@ -68,6 +69,7 @@
 | 1 | `921d1dfb`（INT）+ `apex/q38-gdn-tp-sync`（FIX-B `a07b184c`、`752ca5c8`） | `595134d1` | 失败集合与基线相同；自带测试 35 passed |
 | 2–3 | FIX-A：`cp-guard`、`indexer-freeze`、`indexer-tiled`、`indexer-monitor`、`qsa-bitmap-packed`、`ple-sp-boundary`、`fused-logprobs`、`loss-sentinel`；FIX-B：`sched-resume`（`b054c85f`）；gdn 改写差异；cp-guard 测试修复 | `3d5b8c28` | 失败集合与基线相同；新测试合集 179 passed；逐提交自带测试全部通过 |
 | 4 | FIX-B：`sched-resume`（`06663c28`）、`export-complete`、`ple-provenance`、`mbridge-cache`；FIX-A：`qsa-bitmap-packed`（`90787901`）；fixture 修复 | `f1ba67ce` | 失败集合与基线相同（在 `34b68a3f` 跑全集，`f1ba67ce` 只改一个测试文件，单独验证）；新测试合集 85 passed |
+| 5 | INT：`2b5a2bc6`（专家 packed 导出） | `2b5a2bc6` | 失败集合与基线相同；`weight_update/` 等自带测试 494 passed |
 
 ## CPU 测试
 
