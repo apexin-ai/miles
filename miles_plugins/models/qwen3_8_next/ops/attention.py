@@ -28,36 +28,40 @@ class Qwen38NextQSACoreAttention(MegatronModule):
         selection = getattr(
             self._owner, "_qsa_selection", None
         )  # config-access-exempt: the owner attaches sparse-attention state only during its forward
-        if selection is None:
-            raise RuntimeError(
-                "QSA core attention ran with no selection published. "
-                "Qwen38NextAttention.forward sets it before delegating; reaching here "
-                "means core_attention was called out of band."
-            )
         block_form = getattr(
             self._owner, "_qsa_block_form", None
         )  # config-access-exempt: the owner attaches sparse-attention state only during its forward
         if query.dim() == 3:
-            if block_form is not None:
-                sel_bitmap, lo, hi, blk_base, tok_base, block_first, block_last, blk = block_form
-                return qsa_block_sparse_attention(
-                    query,
-                    key,
-                    value,
-                    sel_bitmap,
-                    lo,
-                    hi,
-                    blk_base,
-                    tok_base,
-                    block_first,
-                    block_last,
-                    self.softmax_scale,
-                    blk,
-                ).reshape(query.shape[0], -1)
-            return qsa_sparse_attention(query, key, value, selection, self.softmax_scale).reshape(query.shape[0], -1)
+            if block_form is None:
+                raise RuntimeError(
+                    "QSA core attention ran on a thd query with no block form published. "
+                    "Qwen38NextAttention.forward sets it before delegating; reaching here "
+                    "means core_attention was called out of band."
+                )
+            sel_bitmap, lo, hi, blk_base, tok_base, block_first, block_last, blk = block_form
+            return qsa_block_sparse_attention(
+                query,
+                key,
+                value,
+                sel_bitmap,
+                lo,
+                hi,
+                blk_base,
+                tok_base,
+                block_first,
+                block_last,
+                self.softmax_scale,
+                blk,
+            ).reshape(query.shape[0], -1)
 
         if query.dim() != 4:
             raise RuntimeError(f"QSA core attention expected a 3D (thd) or 4D (sbhd) query, got {tuple(query.shape)}")
+        if selection is None:
+            raise RuntimeError(
+                "QSA core attention ran on an sbhd query with no selection published. "
+                "Qwen38NextAttention.forward sets it before delegating; reaching here "
+                "means core_attention was called out of band."
+            )
 
         s, b, hq, d = query.shape
         out = [
@@ -132,30 +136,22 @@ class Qwen38NextAttention(SelfAttention):
             self.config, "qwen3_8_next_materialized_rope", False
         )  # config-access-exempt: set only by the Qwen3.8 spec, absent on generic test configs
         with torch.no_grad():
-            selection = self.indexer(
-                indexer_states[:, 0],
-                positions,
-                rotary_pos_emb,
-                cu_seqlens=self._qsa_cu_seqlens,
-                materialized_rope=materialized_rope,
-            )
-            seq_start = torch.arange(seq, device=positions.device) - positions
-            r = self.compress_ratio
-            tail_in_seq = (positions + 1) // r * r
-            offs = torch.arange(r, device=positions.device)
-            tail_pos = tail_in_seq.unsqueeze(1) + offs.unsqueeze(0)  # in-seq
-            tail_idx = seq_start.unsqueeze(1) + tail_pos  # pack index
-            tail_idx = torch.where(
-                tail_pos <= positions.unsqueeze(1),
-                tail_idx,
-                torch.full_like(tail_idx, -1),
-            )
-            merged = torch.cat([selection, tail_idx.to(selection.dtype)], dim=1)
-            pack_pos = torch.arange(seq, device=positions.device).unsqueeze(1)
-            seg_lo = seq_start.unsqueeze(1)
-            ok = (merged >= seg_lo) & (merged <= pack_pos) & (merged >= 0)
-            self._qsa_selection = torch.where(ok, merged, torch.full_like(merged, -1))
-            self._qsa_block_form = self._publish_block_form(self._qsa_selection, positions, seq_start, seq)
+            if packed is not None:
+                # thd: the kernel reads only the block bitmap, built tile by tile
+                self._qsa_selection = None
+                self._qsa_block_form = qsa_block_form(
+                    self.indexer,
+                    indexer_states[:, 0],
+                    positions,
+                    rotary_pos_emb,
+                    self._qsa_cu_seqlens,
+                    materialized_rope=materialized_rope,
+                )
+            else:
+                self._qsa_selection = self._token_selection(
+                    indexer_states[:, 0], positions, rotary_pos_emb, materialized_rope
+                )
+                self._qsa_block_form = None
         try:
             return super().forward(hidden_states, *args, **kwargs)
         finally:
@@ -163,29 +159,74 @@ class Qwen38NextAttention(SelfAttention):
             self._qsa_cu_seqlens = None
             self._qsa_block_form = None
 
-    def _publish_block_form(self, selection: Tensor, positions: Tensor, seq_start: Tensor, seq: int):
-        """Selection rows -> the block form the tensor-core kernel consumes.
+    def _token_selection(
+        self, indexer_states: Tensor, positions: Tensor, rotary_pos_emb: Tensor, materialized_rope: bool
+    ) -> Tensor:
+        """Indexer tokens plus the query's own partial block, ``[T, budget + ratio]``, ``-1`` unused."""
+        seq = positions.shape[0]
+        selection = self.indexer(
+            indexer_states,
+            positions,
+            rotary_pos_emb,
+            cu_seqlens=self._qsa_cu_seqlens,
+            materialized_rope=materialized_rope,
+        )
+        seq_start = torch.arange(seq, device=positions.device) - positions
+        r = self.compress_ratio
+        tail_in_seq = (positions + 1) // r * r
+        offs = torch.arange(r, device=positions.device)
+        tail_pos = tail_in_seq.unsqueeze(1) + offs.unsqueeze(0)  # in-seq
+        tail_idx = seq_start.unsqueeze(1) + tail_pos  # pack index
+        tail_idx = torch.where(
+            tail_pos <= positions.unsqueeze(1),
+            tail_idx,
+            torch.full_like(tail_idx, -1),
+        )
+        merged = torch.cat([selection, tail_idx.to(selection.dtype)], dim=1)
+        pack_pos = torch.arange(seq, device=positions.device).unsqueeze(1)
+        seg_lo = seq_start.unsqueeze(1)
+        ok = (merged >= seg_lo) & (merged <= pack_pos) & (merged >= 0)
+        return torch.where(ok, merged, torch.full_like(merged, -1))
 
-        Block ids come from the indexer's per-sequence grid (``PackedBlockLayout``); a
-        ceil(seq_start / ratio) base collides across sequences for some lengths.
-        """
-        ratio = self.compress_ratio
-        cu = self._qsa_cu_seqlens
-        if cu is None or cu.numel() <= 2:
-            cu = torch.tensor([0, seq], device=selection.device)
-        layout = PackedBlockLayout(cu, positions, ratio)
-        blk_base = layout.token_block_start.to(torch.int32)
-        tok_base = layout.token_start.to(torch.int32)
-        num_blocks = layout.num_blocks
 
-        sel_bitmap = torch.zeros(seq, num_blocks, dtype=torch.uint8, device=selection.device)
-        valid = selection >= 0
-        if bool(valid.any()):
-            rows = torch.arange(seq, device=selection.device).unsqueeze(1).expand_as(selection)
-            blk = blk_base.unsqueeze(1).long() + (selection - tok_base.unsqueeze(1)).div(ratio, rounding_mode="floor")
-            sel_bitmap[rows[valid], blk[valid].long().clamp_(0, num_blocks - 1)] = 1
-        lo = tok_base
-        hi = (positions + seq_start).to(torch.int32)
-        block_first = layout.block_first_token.to(torch.int32)
-        block_last = layout.block_last_token.to(torch.int32)
-        return sel_bitmap, lo, hi, blk_base, tok_base, block_first, block_last, ratio
+def qsa_block_form(
+    indexer: Qwen38NextQSAIndexer,
+    indexer_states: Tensor,
+    positions: Tensor,
+    rotary_pos_emb: Tensor,
+    cu_seqlens: Tensor | None,
+    materialized_rope: bool = False,
+):
+    """Indexer selection -> the block form the tensor-core kernel consumes.
+
+    The bitmap marks each query's indexer blocks plus the block holding the query while
+    that block is still partial (the indexer only ranks complete blocks). Block ids come
+    from the per-sequence grid (``PackedBlockLayout``); a ceil(seq_start / ratio) base
+    collides across sequences for some lengths.
+    """
+    ratio = indexer.compress_ratio
+    seq = positions.shape[0]
+    device = positions.device
+    cu = cu_seqlens
+    if cu is None or cu.numel() <= 2:
+        cu = torch.tensor([0, seq], device=device)
+    layout = PackedBlockLayout(cu, positions, ratio)
+    num_blocks = layout.num_blocks
+
+    sel_bitmap = torch.zeros(seq, num_blocks, dtype=torch.uint8, device=device)
+    for start, end, block_idx in indexer.iter_selected_blocks(
+        indexer_states, positions, rotary_pos_emb, cu_seqlens, materialized_rope=materialized_rope
+    ):
+        valid = block_idx >= 0
+        rows = torch.arange(start, end, device=device).unsqueeze(1).expand_as(block_idx)
+        sel_bitmap[rows[valid], block_idx[valid]] = 1
+    partial = (positions + 1) % ratio != 0
+    sel_bitmap[torch.arange(seq, device=device)[partial], layout.token_block[partial]] = 1
+
+    seq_start = torch.arange(seq, device=device) - positions
+    blk_base = layout.token_block_start.to(torch.int32)
+    tok_base = layout.token_start.to(torch.int32)
+    hi = (positions + seq_start).to(torch.int32)
+    block_first = layout.block_first_token.to(torch.int32)
+    block_last = layout.block_last_token.to(torch.int32)
+    return sel_bitmap, tok_base, hi, blk_base, tok_base, block_first, block_last, ratio

@@ -5,6 +5,7 @@ pre-block norm), and a leftover norm would load at init values.
 """
 
 import copy
+import os
 
 import torch
 from megatron.core.extensions.transformer_engine import TEColumnParallelLinear
@@ -23,6 +24,7 @@ from miles_plugins.models.qwen3_8_next.hyper_connection import (
     Qwen38NextPLEHyperConnection,
 )
 from miles_plugins.models.qwen3_8_next.ops.attention import Qwen38NextAttention
+from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import DEFAULT_TILE_BYTES as DEFAULT_INDEXER_TILE_BYTES
 
 
 def _hc_spec(*, with_ple: bool = False):
@@ -82,6 +84,10 @@ def _apply_qwen3_8_next_config(config, text_config) -> None:
     config.qwen3_8_next_indexer_n_heads = text_config.indexer_n_heads
     config.qwen3_8_next_indexer_head_dim = text_config.indexer_head_dim
     config.qwen3_8_next_indexer_kv_heads = text_config.indexer_kv_heads
+    # bytes of fp32 score one indexer query tile may hold; the full [T, T/4, heads] score is 9T^2 bytes
+    config.qwen3_8_next_indexer_tile_bytes = int(
+        os.environ.get("MILES_QWEN38_INDEXER_TILE_BYTES", DEFAULT_INDEXER_TILE_BYTES)
+    )
 
 
 def get_qwen3_8_next_spec(args, config, vp_stage=None):

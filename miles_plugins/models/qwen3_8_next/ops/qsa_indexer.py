@@ -118,6 +118,65 @@ def packed_block_causal_mask(query_positions: Tensor, layout: PackedBlockLayout,
     return (blocks >= lo) & (blocks < first_invalid)
 
 
+DEFAULT_TILE_BYTES = 1 << 30
+# fp32 bytes held per (query row, block column) while a tile is scored: the
+# [rows, cols, heads] einsum output (heads = 4) plus the summed logits
+_TILE_BYTES_PER_CELL = 20
+
+
+def plan_query_tiles(
+    block_lo: list[int], block_hi: list[int], tile_bytes: int, bytes_per_cell: int = _TILE_BYTES_PER_CELL
+) -> list[tuple[int, int]]:
+    """Split query rows into ``[start, end)`` tiles whose score window fits ``tile_bytes``.
+
+    Row ``i`` may only see blocks ``[block_lo[i], block_hi[i])``; both are nondecreasing
+    in ``i``. A tile ``[s, e)`` scores blocks ``[block_lo[s], block_hi[e - 1])``.
+    """
+    rows = len(block_lo)
+    cap = max(1, tile_bytes // bytes_per_cell)
+    tiles = []
+    start = 0
+    while start < rows:
+        width = max(1, block_hi[start] - block_lo[start])
+        n = max(1, min(rows - start, cap // width))
+        while n > 1 and n * max(1, block_hi[start + n - 1] - block_lo[start]) > cap:
+            n = max(1, min(n - 1, cap // max(1, block_hi[start + n - 1] - block_lo[start])))
+        tiles.append((start, start + n))
+        start += n
+    return tiles
+
+
+def select_topk_blocks(logits: Tensor, k: int) -> tuple[Tensor, Tensor]:
+    """``torch.topk`` over the last dim with a fixed tie rule: higher score, then lower index.
+
+    ``torch.topk`` leaves which of several equal scores it keeps unspecified, and the
+    choice can change with the tensor shape, so a tiled scorer would not reproduce an
+    untiled one. Ties at ``-inf`` (invalid blocks) are left as they are; the caller maps
+    those to ``-1``.
+    """
+    values, idx = torch.topk(logits, k, dim=-1)
+    if k == 0:
+        return values, idx
+    kth = values[:, -1:]
+    tied = ((logits >= kth).sum(dim=-1) > k) & torch.isfinite(kth.squeeze(-1))
+    if bool(tied.any()):
+        rows = tied.nonzero().squeeze(-1)
+        sub = logits[rows]
+        sub_kth = kth[rows]
+        above = sub > sub_kth
+        at = sub == sub_kth
+        need = k - above.sum(dim=-1, keepdim=True)
+        keep = above | (at & (at.cumsum(dim=-1, dtype=torch.int32) <= need))
+        sub_idx = keep.nonzero()[:, 1].view(-1, k)
+        idx[rows] = sub_idx
+        values[rows] = sub.gather(-1, sub_idx)
+    # order: score descending, then block index ascending
+    idx, order = idx.sort(dim=-1)
+    values = values.gather(-1, order)
+    values, order = values.sort(dim=-1, descending=True, stable=True)
+    return values, idx.gather(-1, order)
+
+
 class Qwen38NextQSAIndexer(MegatronModule):
     """Selects the sparse-attention budget for one full-attention layer."""
 
@@ -131,6 +190,9 @@ class Qwen38NextQSAIndexer(MegatronModule):
         self.compress_ratio = config.qwen3_8_next_indexer_compress_ratio
         self.block_topk = self.token_topk // self.compress_ratio
         self.norm_eps = config.layernorm_epsilon
+        self.tile_bytes = getattr(
+            config, "qwen3_8_next_indexer_tile_bytes", DEFAULT_TILE_BYTES
+        )  # config-access-exempt: optional knob, absent from older configs
 
         self.index_qk_proj = TELinear(
             config.hidden_size,
@@ -188,21 +250,58 @@ class Qwen38NextQSAIndexer(MegatronModule):
         block_k = apply_indexer_rope(block_k.unsqueeze(1), rotary_pos_emb, block_positions).squeeze(1)
         return q, block_k
 
-    def score_blocks(
+    def iter_selected_blocks(
         self,
-        q: Tensor,
-        block_k: Tensor,
-        query_positions: Tensor,
-        layout: PackedBlockLayout | None = None,
-    ) -> Tensor:
-        """``[T, num_blocks]`` fp32 logits, invalid blocks at ``-inf``."""
-        scores = torch.einsum("mhd,nd->mnh", q.float(), block_k.float())
-        logits = torch.relu(scores).sum(dim=-1) / math.sqrt(self.head_dim)
+        hidden_states: Tensor,
+        positions: Tensor,
+        rotary_pos_emb: Tensor,
+        cu_seqlens: Tensor | None = None,
+        materialized_rope: bool = False,
+    ):
+        """Yield ``(start, end, block_idx)`` per query tile; ``block_idx`` is ``[end - start, k]``.
+
+        Block ids index the packed block grid (``PackedBlockLayout``), ``-1`` where unused,
+        ordered by score then block id. Each tile scores only the blocks its rows can see
+        and is reduced to its top-k before the next one starts, so the full ``[T, blocks]``
+        score never exists: peak is about ``tile_bytes``.
+        """
+        layout = self.layout_for(positions, cu_seqlens)
+        q, block_k = self.project_qk(
+            hidden_states, positions, rotary_pos_emb, layout=layout, materialized_rope=materialized_rope
+        )
+        num_blocks = block_k.shape[0]
+        k = min(self.block_topk, num_blocks)
         if layout is None:
-            valid = block_causal_mask(query_positions, block_k.shape[0], self.compress_ratio)
+            row_lo = torch.zeros_like(positions)
         else:
-            valid = packed_block_causal_mask(query_positions, layout, self.compress_ratio)
-        return logits.masked_fill(~valid, float("-inf"))
+            row_lo = layout.token_block_start
+        row_hi = row_lo + (positions + 1) // self.compress_ratio
+        lo_list, hi_list = row_lo.tolist(), row_hi.tolist()
+        block_k = block_k.float()
+        scale = math.sqrt(self.head_dim)
+        for start, end in plan_query_tiles(lo_list, hi_list, self.tile_bytes):
+            col_lo, col_hi = lo_list[start], hi_list[end - 1]
+            width = col_hi - col_lo
+            block_idx = torch.full((end - start, k), -1, dtype=torch.long, device=q.device)
+            if width > 0:
+                scores = torch.einsum("mhd,nd->mnh", q[start:end].float(), block_k[col_lo:col_hi])
+                logits = scores.relu_().sum(dim=-1)
+                del scores
+                logits.div_(scale)
+                cols = torch.arange(col_lo, col_hi, device=q.device).unsqueeze(0)
+                valid = (cols >= row_lo[start:end].unsqueeze(1)) & (cols < row_hi[start:end].unsqueeze(1))
+                logits.masked_fill_(~valid, float("-inf"))
+                del valid
+                kk = min(k, width)
+                values, idx = select_topk_blocks(logits, kk)
+                del logits
+                block_idx[:, :kk] = torch.where(values == float("-inf"), -1, idx + col_lo)
+            yield start, end, block_idx
+
+    def layout_for(self, positions: Tensor, cu_seqlens: Tensor | None) -> PackedBlockLayout | None:
+        if cu_seqlens is not None and cu_seqlens.numel() > 2:
+            return PackedBlockLayout(cu_seqlens, positions, self.compress_ratio)
+        return None
 
     def forward(
         self,
@@ -218,30 +317,30 @@ class Qwen38NextQSAIndexer(MegatronModule):
         the packed buffer, so a packed batch must pass ``cu_seqlens``. ``rotary_pos_emb``
         is the attention's RoPE table, see ``apply_indexer_rope``.
         """
-        layout = None
-        if cu_seqlens is not None and cu_seqlens.numel() > 2:
-            layout = PackedBlockLayout(cu_seqlens, positions, self.compress_ratio)
-
-        q, block_k = self.project_qk(
-            hidden_states, positions, rotary_pos_emb, layout=layout, materialized_rope=materialized_rope
-        )
-        logits = self.score_blocks(q, block_k, positions, layout=layout)
-
-        k = min(self.block_topk, logits.shape[-1])
-        block_scores, block_idx = torch.topk(logits, k, dim=-1)
-        block_idx = block_idx.masked_fill(block_scores == float("-inf"), -1)
-
-        offsets = torch.arange(self.compress_ratio, device=block_idx.device)
-        if layout is None:
-            tokens = block_idx.unsqueeze(-1) * self.compress_ratio + offsets
-        else:
-            block_local = block_idx - layout.token_block_start.unsqueeze(-1)
-            tokens = layout.token_start.unsqueeze(-1).unsqueeze(-1) + (
-                block_local.unsqueeze(-1) * self.compress_ratio + offsets
-            )
-        tokens = tokens.masked_fill(block_idx.unsqueeze(-1) < 0, -1).flatten(-2)
-        limit = positions if layout is None else layout.token_start + positions
-        tokens = tokens.masked_fill(tokens > limit.unsqueeze(-1), -1)
-        if layout is not None:
-            tokens = tokens.masked_fill(tokens < layout.token_start.unsqueeze(-1), -1)
-        return tokens[..., : self.token_topk].to(torch.int32)
+        layout = self.layout_for(positions, cu_seqlens)
+        offsets = torch.arange(self.compress_ratio, device=positions.device)
+        out = None
+        for start, end, block_idx in self.iter_selected_blocks(
+            hidden_states, positions, rotary_pos_emb, cu_seqlens, materialized_rope=materialized_rope
+        ):
+            if layout is None:
+                tokens = block_idx.unsqueeze(-1) * self.compress_ratio + offsets
+                limit = positions[start:end]
+            else:
+                block_local = block_idx - layout.token_block_start[start:end].unsqueeze(-1)
+                token_start = layout.token_start[start:end]
+                tokens = token_start.unsqueeze(-1).unsqueeze(-1) + (
+                    block_local.unsqueeze(-1) * self.compress_ratio + offsets
+                )
+                limit = token_start + positions[start:end]
+            tokens = tokens.masked_fill(block_idx.unsqueeze(-1) < 0, -1).flatten(-2)
+            tokens = tokens.masked_fill(tokens > limit.unsqueeze(-1), -1)
+            if layout is not None:
+                tokens = tokens.masked_fill(tokens < token_start.unsqueeze(-1), -1)
+            tokens = tokens[..., : self.token_topk].to(torch.int32)
+            if out is None:
+                out = tokens.new_empty(positions.shape[0], tokens.shape[-1])
+            out[start:end] = tokens
+        if out is None:
+            out = torch.empty(0, 0, dtype=torch.int32, device=positions.device)
+        return out
