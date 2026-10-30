@@ -5,7 +5,7 @@ import gc
 import logging
 import math
 from collections.abc import Callable, Sequence
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from functools import partial
 from pathlib import Path
 
@@ -1045,6 +1045,86 @@ def load_model_state(
         or "local_checkpoint_manager" in (checkpointing_context or {})
     )
     explicit_selection = args.backend.ckpt_step is not None or args.backend.exit_on_missing_checkpoint
+    with _record_scheduler_restore(opt_param_scheduler) as scheduler_restored:
+        iteration, restored_trained_iteration, adapter_iteration = _load_weights_and_training_state(
+            args,
+            model=model,
+            optimizer=optimizer,
+            opt_param_scheduler=opt_param_scheduler,
+            role=role,
+            checkpointing_context=checkpointing_context,
+            load_ctx=load_ctx,
+            explicit_selection=explicit_selection,
+        )
+
+    check_peak_gpu_memory_after_load(args)
+    clear_memory()
+
+    check_model_hashes(args, model, iteration)
+
+    # A restored scheduler already carries the exact progress of every successful update (dynamic batch
+    # sizes and skipped steps included); stepping it again by iteration*GBS doubled the LR progress.
+    # Without a restore there is no record of that progress, so continuing a trained run is refused.
+    if opt_param_scheduler is not None and not scheduler_restored:
+        if iteration > 0:
+            raise RuntimeError(
+                f"Loaded trained iteration {iteration} but no LR scheduler state (--no-load-optim, or the "
+                "checkpoint was saved with --no-save-optim). The LR progress cannot be reconstructed: resume "
+                "with the optimizer state, or pass --finetune to start a new LR schedule from step 0."
+            )
+        # write the step-0 LR/WD into the param groups, which still hold the previous run's values on a reload
+        opt_param_scheduler.step(increment=0)
+
+    if not restored_trained_iteration:
+        assert iteration == 0, f"Weight initialization returned a trained iteration: {iteration}"
+        start_rollout_id = 0
+    elif resume_from_ckpt or explicit_selection or adapter_iteration is not None:
+        start_rollout_id = iteration + 1
+    else:
+        start_rollout_id = 0
+
+    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)
+
+
+@contextmanager
+def _record_scheduler_restore(opt_param_scheduler: OptimizerParamScheduler | None):
+    """Yield a list that is non-empty once a checkpoint load restored the scheduler state.
+
+    The restore is made absolute: OptimizerParamScheduler.load_state_dict steps by the saved count on top
+    of the current one, so the count is reset first.
+    """
+    restored: list[dict] = []
+    original = getattr(
+        opt_param_scheduler, "load_state_dict", None
+    )  # config-access-exempt: schedulers without load_state_dict cannot be restored by a load
+    if original is None:
+        yield restored
+        return
+
+    def load_state_dict(state_dict: dict) -> None:
+        opt_param_scheduler.num_steps = 0
+        original(state_dict)
+        restored.append(state_dict)
+
+    opt_param_scheduler.load_state_dict = load_state_dict
+    try:
+        yield restored
+    finally:
+        opt_param_scheduler.load_state_dict = original
+
+
+def _load_weights_and_training_state(
+    args: TrainerConfig,
+    *,
+    model: list[DDP],
+    optimizer: MegatronOptimizer | None,
+    opt_param_scheduler: OptimizerParamScheduler | None,
+    role: str,
+    checkpointing_context: dict | None,
+    load_ctx,
+    explicit_selection: bool,
+) -> tuple[int, bool, int | None]:
+    load_dir = args.backend.load
     if load_dir is None or explicit_selection or _has_loadable_ckpt(load_dir):
         with load_ctx:
             iteration, restored_trained_iteration = load_checkpoint(
@@ -1069,23 +1149,4 @@ def load_model_state(
         if adapter_iteration is not None:
             iteration = adapter_iteration
             restored_trained_iteration = True
-
-    check_peak_gpu_memory_after_load(args)
-    clear_memory()
-
-    check_model_hashes(args, model, iteration)
-
-    # Megatron checkpoint loads can restore scheduler state directly. In that
-    # case, stepping by the checkpoint iteration here would double-count.
-    if opt_param_scheduler is not None and not (args.backend.use_checkpoint_opt_param_scheduler and iteration > 0):
-        opt_param_scheduler.step(increment=iteration * args.backend.global_batch_size)
-
-    if not restored_trained_iteration:
-        assert iteration == 0, f"Weight initialization returned a trained iteration: {iteration}"
-        start_rollout_id = 0
-    elif resume_from_ckpt or explicit_selection or adapter_iteration is not None:
-        start_rollout_id = iteration + 1
-    else:
-        start_rollout_id = 0
-
-    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)
+    return iteration, restored_trained_iteration, adapter_iteration

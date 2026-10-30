@@ -155,6 +155,10 @@ def _watch_load(actor_module, monkeypatch, *, args: Namespace, iteration: int) -
     def fake_load_checkpoint(*_args: Any, **_kwargs: Any) -> _CheckpointLoadResult:
         seen["args_during_load"] = vars(args.backend).copy()
         seen["checkpointing_context"] = _kwargs["checkpointing_context"]
+        scheduler = _args[2]
+        if scheduler is not None and iteration > 0 and not args.backend.finetune:
+            # a Megatron checkpoint written with the optimizer restores the scheduler too
+            scheduler.load_state_dict({"num_steps": _SAVED_SCHEDULER_STEPS})
         return _CheckpointLoadResult(
             iteration=iteration,
             restored_trained_iteration=not args.backend.finetune or iteration > 0,
@@ -299,6 +303,13 @@ class _Scheduler:
     def step(self, *, increment: int) -> None:
         self.num_steps += increment
 
+    def load_state_dict(self, state: dict) -> None:
+        # Megatron's OptimizerParamScheduler adds the saved count to the current one
+        self.step(increment=state["num_steps"])
+
+
+_SAVED_SCHEDULER_STEPS = 400
+
 
 class TestLoadStateScheduler:
     @pytest.mark.parametrize("saved_checkpoint", [True, False])
@@ -325,7 +336,7 @@ class TestLoadStateScheduler:
 
         _reload(actor)
 
-        assert scheduler.num_steps == 0
+        assert scheduler.num_steps == (_SAVED_SCHEDULER_STEPS if saved_checkpoint else 0)
 
 
 class TestTheCheckpointAReloadRollsBackTo:
