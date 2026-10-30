@@ -27,6 +27,7 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.megatron_utils.tp_replica_check import check_tp_replicas
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.loss.objective import loss_function
@@ -941,6 +942,7 @@ def save(
             (e.g. ``{'local_checkpoint_manager': manager}`` for in-memory checkpoints).
         non_persistent_ckpt (bool): If True, save a non-persistent (in-memory) checkpoint.
     """
+    check_tp_replicas(model, optimizer, where=f"save iteration {iteration}")
     hashes = None
     if args.ci_test and args.ci_save_model_hash:
         hashes = compute_model_hashes_by_layer(model)
@@ -1074,6 +1076,7 @@ def load_model_state(
     clear_memory()
 
     check_model_hashes(args, model, iteration)
+    check_tp_replicas(model, optimizer, where=f"load iteration {iteration}")
 
     # Megatron checkpoint loads can restore scheduler state directly. In that
     # case, stepping by the checkpoint iteration here would double-count.
