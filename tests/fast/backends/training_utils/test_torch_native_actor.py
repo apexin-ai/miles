@@ -161,7 +161,7 @@ def _per_token_mean_nll(model: torch.nn.Module, samples: list[tuple[torch.Tensor
         response = tokens[-len(mask) :]
         log_probs = model(tokens)[-len(mask) - 1 : -1].log_softmax(-1).gather(-1, response[:, None]).squeeze(-1)
         nll = nll - (log_probs * mask).sum()
-        num_tokens += max(int(mask.sum()), 1)
+        num_tokens += int(mask.sum())
     return nll / num_tokens
 
 
@@ -240,6 +240,90 @@ def _train_one_dp_rank(rank: int, world_size: int, port: int) -> None:
 def test_per_token_loss_gradient_is_the_mean_over_every_token_of_the_step():
     """Torch-native per-token gradients match Megatron's: the step's DP-global token mean, not a token sum."""
     run_multiprocess(_train_one_dp_rank)
+
+
+# step 0 is supervised on rank 0 only; step 1 has no supervised token on any rank
+_UNSUPERVISED_STEP_ROLLOUTS = (
+    ((2, [1, 1]), (3, [0, 0]), (2, [0, 0, 0])),
+    ((4, [0, 0, 0]), (1, [0, 0]), (3, [0, 0])),
+)
+
+
+def _skip_unsupervised_step_on_one_dp_rank(rank: int, world_size: int, port: int) -> None:
+    init_gloo(rank, world_size, port=port)
+    trivial = GroupInfo(rank=0, size=1, group=None)
+    dp = GroupInfo(rank=rank, size=world_size, group=dist.group.WORLD)
+    set_parallel_state(
+        ParallelState(
+            intra_dp=dp,
+            intra_dp_cp=dp,
+            cp=trivial,
+            tp=trivial,
+            pp=trivial,
+            ep=trivial,
+            etp=trivial,
+            indep_dp=trivial,
+            is_pp_last_stage=True,
+        )
+    )
+    torch.manual_seed(0)
+    model = torch.nn.Embedding(_VOCAB_SIZE, _VOCAB_SIZE)
+    # weight decay moves the weights even when every gradient is zero
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.1, weight_decay=0.1)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 1.0 / (step + 1))
+    applied_weights = []
+
+    def apply_step() -> StepMetrics:
+        dist.all_reduce(model.weight.grad)
+        model.weight.grad /= world_size
+        optimizer.step()
+        scheduler.step()
+        applied_weights.append(model.weight.detach().clone())
+        return StepMetrics(grad_norm=1.0)
+
+    actor = _Provider()
+    actor.args = make_args(
+        loss_type="sft_loss",
+        calculate_per_token_loss=True,
+        use_sampling_support_replay=False,
+        data_pad_size_multiplier=1,
+        ci_test=False,
+    )
+    generator = torch.Generator().manual_seed(rank)
+    samples = [
+        (torch.randint(_VOCAB_SIZE, (prompt_len + len(mask),), generator=generator), torch.tensor(mask))
+        for prompt_len, mask in _UNSUPERVISED_STEP_ROLLOUTS[rank]
+    ]
+    rollout_data = {
+        "tokens": [tokens for tokens, _ in samples],
+        "loss_masks": [mask for _, mask in samples],
+        "total_lengths": [len(tokens) for tokens, _ in samples],
+        "response_lengths": [len(mask) for _, mask in samples],
+    }
+    runner = LinearStepRunner(
+        lambda batch: model(torch.cat(batch["tokens"])).unsqueeze(0),
+        lambda: model.zero_grad(set_to_none=True),
+        apply_step,
+    )
+    logged_steps = []
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(base_module, "get_batch", _cpu_batch)
+        patch.setattr(base_module, "aggregate_train_losses", lambda losses: {})
+        patch.setattr(base_module, "log_train_step", lambda **kwargs: logged_steps.append(kwargs))
+        actor._optimizer_steps(runner, DataIterator(rollout_data, micro_batch_size=1), _NUM_MICROBATCHES, rollout_id=0)
+
+    # the step supervised only on rank 0 still updates every rank; the unsupervised step updates none
+    assert len(applied_weights) == 1
+    assert scheduler.last_epoch == 1
+    assert torch.equal(model.weight.detach(), applied_weights[0])
+    assert model.weight.grad is None
+    assert [step["extra_metrics"] for step in logged_steps] == [{}, {"skipped_unsupervised_step": 1.0}]
+    assert logged_steps[1]["grad_norm"] == 0.0
+
+
+def test_a_step_without_any_supervised_token_is_skipped_on_every_rank():
+    """A globally unsupervised step skips the optimizer and the scheduler on all DP ranks and clears its grads."""
+    run_multiprocess(_skip_unsupervised_step_on_one_dp_rank)
 
 
 def test_moving_optimizer_state_does_not_grow_state_for_parameters_that_have_none():
