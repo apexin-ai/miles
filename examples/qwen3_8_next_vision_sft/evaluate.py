@@ -40,6 +40,19 @@ def _native_name(name):
     return name.replace("model.visual.", "visual.").replace("attn.qkv.", "attn.qkv_proj.")
 
 
+def _clear_visual_embedding_cache():
+    # Native flush_cache resets KV/Mamba pools; image embeddings have a separate cache.
+    from sglang.srt.managers import mm_schedule
+
+    cache = mm_schedule.embedding_cache
+    entries = len(cache) if cache is not None else 0
+    if cache is not None:
+        cache.clear()
+        if len(cache) or cache.current_size:
+            raise ValueError("Visual embeddings survived a visual weight update")
+    print(json.dumps({"event": "visual-embedding-cache-cleared", "entries": entries}), flush=True)
+
+
 def load_visual_and_verify(model, named_tensors):
     """SGLang's opt-in weight-loader hook; verify every native TP shard after load."""
     from sglang.srt.model_loader.weight_utils import default_weight_loader
@@ -61,6 +74,7 @@ def load_visual_and_verify(model, named_tensors):
             loader(expected, mapped[name])
             if not torch.equal(parameter, expected) or not torch.isfinite(parameter).all():
                 raise ValueError(f"Native visual shard failed exact readback: {name}")
+    _clear_visual_embedding_cache()
     print(json.dumps({"event": "visual-load-verified", "tensors": len(parameters)}), flush=True)
 
 
@@ -104,6 +118,7 @@ def _prepare(
     enable_thinking,
     reasoning_effort="xhigh",
     final_answer_format="dataset",
+    empty_thinking_prefill=False,
 ):
     question = row["messages"][0]["content"].replace("<image>", "")
     images, pixel_hash = [], None
@@ -133,6 +148,11 @@ def _prepare(
     _, header, prefill = text.rpartition("<|im_start|>assistant\n")
     if not header or prefill not in ("<think>\n", "<think>\n\n</think>\n\n"):
         raise ValueError("Unexpected native Qwen assistant generation prefix")
+    if empty_thinking_prefill and prefill == "<think>\n":
+        # Keep the template's reasoning/system instructions while matching the native
+        # empty-thinking assistant prefix used before the supervised SFT integer.
+        text += "\n</think>\n\n"
+        prefill = "<think>\n\n</think>\n\n"
     if not images:
         ids = processor.tokenizer.encode(text, add_special_tokens=False)
         return ids, None, pixel_hash, prefill
@@ -175,6 +195,7 @@ def _evaluate_split(engine, processor, config, rows, output, *, args, split, upd
                         enable_thinking=args.enable_thinking,
                         reasoning_effort=args.reasoning_effort,
                         final_answer_format=args.final_answer_format,
+                        empty_thinking_prefill=getattr(args, "empty_thinking_prefill", False),
                     )
                     for row, other in zip(batch, image_rows, strict=True)
                 ]
@@ -283,6 +304,11 @@ def main():
     parser.add_argument("--enable-thinking", action="store_true")
     parser.add_argument("--reasoning-effort", choices=["xhigh", "medium", "low"], default="xhigh")
     parser.add_argument("--final-answer-format", choices=["dataset", "integer-only"], default="dataset")
+    parser.add_argument(
+        "--empty-thinking-prefill",
+        action="store_true",
+        help="Close native thinking before generation while retaining template reasoning/system instructions",
+    )
     parser.add_argument("--enable-cuda-graph", action="store_true", help="Opt in to native decode graph capture")
     parser.add_argument("--mem-fraction-static", type=float, default=0.6)
     parser.add_argument("--limit", type=int, default=0, help="Bring-up only; not a held-out quality result")

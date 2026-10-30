@@ -212,6 +212,57 @@ def test_visual_updates_obey_native_session_lifecycle(failure):
     assert calls == (["begin"] if failure == "begin" else ["begin", "load", "end"])
 
 
+def test_visual_update_discards_native_cached_image_embeddings(monkeypatch):
+    from examples.qwen3_8_next_vision_sft.evaluate import _clear_visual_embedding_cache
+    from sglang.srt.managers import mm_schedule
+    from sglang.srt.mem_cache.multimodal_cache import EmbeddingResult, MultiModalStaticCache
+
+    cache = MultiModalStaticCache(1024)
+    assert cache.set(17, EmbeddingResult(embedding=torch.ones(2)))
+    assert cache.get_single(17) is not None
+    monkeypatch.setattr(mm_schedule, "embedding_cache", cache)
+    _clear_visual_embedding_cache()
+    assert cache.get_single(17) is None
+    assert cache.current_size == 0
+    # Reusing the same image identity must accept features from the new visual state.
+    assert cache.set(17, EmbeddingResult(embedding=torch.full((2,), 2.0)))
+    assert torch.equal(cache.get_single(17).embedding, torch.full((2,), 2.0))
+
+
+@pytest.mark.parametrize("thinking", [False, True])
+def test_empty_thinking_prefill_preserves_native_system_reasoning_options(thinking):
+    from examples.qwen3_8_next_vision_sft.evaluate import _prepare
+
+    captured = {}
+    native = "<think>\n" if thinking else "<think>\n\n</think>\n\n"
+
+    def template(messages, **kwargs):
+        captured.update(messages=messages, options=kwargs)
+        return "<|im_start|>system\nnative reasoning instructions<|im_end|>\n<|im_start|>assistant\n" + native
+
+    def encode(text, **kwargs):
+        captured["text"] = text
+        return [1, 2]
+
+    row = {"messages": [{"content": "How many?"}]}
+    result = _prepare(
+        SimpleNamespace(tokenizer=SimpleNamespace(apply_chat_template=template, encode=encode)),
+        {},
+        row,
+        row,
+        control="no_image",
+        enable_thinking=thinking,
+        reasoning_effort="xhigh",
+        empty_thinking_prefill=True,
+    )
+    assert result[3] == "<think>\n\n</think>\n\n"
+    assert captured["text"].endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n")
+    assert captured["text"].count("</think>") == 1
+    assert captured["options"]["enable_thinking"] is thinking
+    assert captured["options"]["reasoning_effort"] == "xhigh"
+    assert captured["messages"] == [{"role": "user", "content": "How many?"}]
+
+
 @pytest.mark.parametrize(
     "thinking,generated,correct,invalid",
     [(True, "Counted two.\n</think>\n\n2", 1, 0), (True, "Still counting: 2", 0, 1), (False, "2", 1, 0)],
