@@ -131,7 +131,13 @@ def plan_query_tiles(
 
     Row ``i`` may only see blocks ``[block_lo[i], block_hi[i])``; both are nondecreasing
     in ``i``. A tile ``[s, e)`` scores blocks ``[block_lo[s], block_hi[e - 1])``.
+
+    The budget binds every tile of two or more rows. A tile never has fewer than one row,
+    so a single row wider than the budget is scored alone: ``bytes_per_cell`` x its visible
+    blocks, 1.25 MiB for a 262K-token row.
     """
+    if tile_bytes <= 0:
+        raise ValueError(f"indexer tile budget must be positive, got {tile_bytes} bytes")
     rows = len(block_lo)
     cap = max(1, tile_bytes // bytes_per_cell)
     tiles = []

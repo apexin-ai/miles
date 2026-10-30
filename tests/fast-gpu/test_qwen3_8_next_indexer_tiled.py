@@ -13,7 +13,12 @@ register_cuda_ci(
 import pytest
 import torch
 
-from tests.fast.test_qsa_indexer_tiled import _packed_positions, _reference_block_form, _reference_forward
+from tests.fast.test_qsa_indexer_tiled import (
+    _packed_positions,
+    _reference_block_form,
+    _reference_forward,
+    check_block_selection,
+)
 
 GiB = 1 << 30
 HIDDEN = 2560
@@ -65,17 +70,13 @@ def _peak(fn):
 
 
 def _row_mismatch(got_bitmap, want_bitmap, logits, k):
-    """Rows whose bitmaps differ, split into exact ties, fp near-ties and real mismatches."""
-    values = torch.topk(logits, k + 1 if logits.shape[-1] > k else k, dim=-1).values
-    kth = values[:, k - 1 : k]
-    exact_tie = torch.isfinite(kth.squeeze(-1)) & ((logits >= kth).sum(-1) > k)
-    if values.shape[-1] > k:
-        gap = (values[:, k - 1] - values[:, k]).abs()
-        near_tie = torch.isfinite(values[:, k]) & (gap <= 1e-5 * values[:, k - 1].abs().clamp_min(1e-6))
-    else:
-        near_tie = torch.zeros_like(exact_tie)
-    differ = (got_bitmap != want_bitmap).any(dim=-1)
-    return int((differ & exact_tie).sum()), int((differ & near_tie & ~exact_tie).sum()), int((differ & ~exact_tie & ~near_tie).sum())
+    """Rows whose bitmap differs from the untiled one, split into exact k-th-score ties and
+    fp near ties. ``check_block_selection`` fails on anything else (missing strictly-better
+    block, wrong count, block below the band, difference outside the candidates)."""
+    exact = check_block_selection(got_bitmap, want_bitmap, logits, k, tol=1e-5, lowest_index=False)
+    kth = torch.topk(logits, k, dim=-1).values[:, -1:]
+    tied = torch.isfinite(kth.squeeze(-1)) & ((logits == kth).sum(-1) > 1)
+    return int((exact & tied).sum()), int((exact & ~tied).sum()), 0
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
