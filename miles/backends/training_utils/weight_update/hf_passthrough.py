@@ -174,13 +174,22 @@ def _place_whole_shard(target: Path, source: Path, mode: str) -> None:
         shutil.copyfile(source, target)
 
 
+def _policy(base_dir) -> dict[str, re.Pattern] | None:
+    config = Path(base_dir) / "config.json"
+    if not config.is_file():
+        return None
+    return POLICIES.get(json.loads(config.read_text()).get("model_type"))
+
+
+def applies(base_dir) -> bool:
+    """Whether exports from this base checkpoint get completed (a local checkpoint with a policy)."""
+    return base_dir is not None and _policy(base_dir) is not None
+
+
 def complete_hf_export(export_dir, base_dir, *, mtp_trained: bool, mode: str | None = None) -> dict | None:
     """Add the passthrough keys to a raw HF export and verify it; returns the receipt (None: no policy)."""
     export_dir, base_dir = Path(export_dir), Path(base_dir)
-    if not (base_dir / "config.json").is_file():
-        return None
-    model_type = json.loads((base_dir / "config.json").read_text()).get("model_type")
-    groups = POLICIES.get(model_type)
+    groups = _policy(base_dir)
     if groups is None:
         return None
     mode = mode or os.environ.get("MILES_HF_PASSTHROUGH", "copy")
