@@ -14,6 +14,7 @@ declares those parts and the checkpoint cannot be served.
 - base shards holding only passthrough keys are copied whole (``MILES_HF_PASSTHROUGH=hardlink`` links them
   instead, for an immutable base on the same filesystem); passthrough keys of mixed shards are copied byte
   for byte into ``passthrough-NNNNN.safetensors``;
+- every shard read or written must hold exactly the bytes its header declares (no truncation, gap or overlap);
 - every passthrough tensor's raw bytes are hashed in the export and in the base and must match.
 
 ``python -m miles.backends.training_utils.weight_update.hf_passthrough <export> <base> [--expect-unchanged RE]``
@@ -24,6 +25,7 @@ identical, and at least one exported key must have changed. It prints how many k
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -48,6 +50,12 @@ QWEN38_GROUPS = {
 }
 # HF model_type -> key groups that may be passed through from the base checkpoint
 POLICIES = {"qwen4_exp": QWEN38_GROUPS}
+_DTYPE_BYTES = {
+    "BOOL": 1, "U8": 1, "I8": 1, "F8_E4M3": 1, "F8_E5M2": 1, "F8_E8M0": 1,
+    "I16": 2, "U16": 2, "F16": 2, "BF16": 2,
+    "I32": 4, "U32": 4, "F32": 4,
+    "I64": 8, "U64": 8, "F64": 8,
+}  # fmt: skip
 
 
 class ExportIncomplete(RuntimeError):
@@ -131,6 +139,27 @@ def plan(base_map: dict[str, str], export_map: dict[str, str], groups: dict[str,
     return selected
 
 
+def check_payloads(directory: Path, files) -> None:
+    """Each shard's tensors tile its data section exactly, each with the size its dtype and shape declare."""
+    problems = []
+    for name, (data_start, header) in _headers(directory, files).items():
+        size = (directory / name).stat().st_size - data_start
+        spans = sorted((entry["data_offsets"], key, entry) for key, entry in header.items())
+        end = 0
+        for (begin, stop), key, entry in spans:
+            itemsize = _DTYPE_BYTES.get(entry["dtype"])
+            if begin != end:
+                problems.append(f"{name}: {key} starts at {begin}, previous tensor ends at {end}")
+            elif itemsize is not None and stop - begin != itemsize * math.prod(entry["shape"]):
+                expected = itemsize * math.prod(entry["shape"])
+                problems.append(f"{name}: {key} spans {stop - begin} bytes, {entry['dtype']}{entry['shape']} is {expected}")
+            end = max(end, stop)
+        if end != size:
+            problems.append(f"{name}: header declares {end} data bytes, the file holds {size} (truncated or padded)")
+    if problems:
+        raise ExportIncomplete(f"{len(problems)} safetensors payload problems in {directory}: {problems[:5]}")
+
+
 def _check_dtype_and_shape(base_dir, base_map, export_dir, export_map) -> None:
     base_headers = _headers(base_dir, base_map.values())
     export_headers = _headers(export_dir, export_map.values())
@@ -161,6 +190,8 @@ def _write_raw_shard(target: Path, source: Path, keys) -> None:
             remaining = end - begin
             while remaining:
                 chunk = src.read(min(_READ, remaining))
+                if not chunk:
+                    raise ExportIncomplete(f"{source} ends {remaining} bytes before the end of {key}")
                 dst.write(chunk)
                 remaining -= len(chunk)
 
@@ -186,12 +217,23 @@ def applies(base_dir) -> bool:
     return base_dir is not None and _policy(base_dir) is not None
 
 
-def complete_hf_export(export_dir, base_dir, *, mtp_trained: bool, mode: str | None = None) -> dict | None:
-    """Add the passthrough keys to a raw HF export and verify it; returns the receipt (None: no policy)."""
-    export_dir, base_dir = Path(export_dir), Path(base_dir)
-    groups = _policy(base_dir)
+def complete_hf_export(
+    export_dir, base_dir, *, mtp_trained: bool, mode: str | None = None, required: bool = False
+) -> dict | None:
+    """Add the passthrough keys to a raw HF export and verify it; returns the receipt (None: no policy).
+
+    ``required``: the run is known to train a model with a policy, so a base that no longer has one (config.json
+    gone or changed, the directory gone) is an error rather than a plain export.
+    """
+    groups = _policy(base_dir) if base_dir is not None else None
     if groups is None:
+        if required:
+            raise ExportIncomplete(
+                f"this run trained from a base whose export must be completed, but {base_dir} no longer has a "
+                "config.json with a passthrough policy; restore the base checkpoint the run started from"
+            )
         return None
+    export_dir, base_dir = Path(export_dir), Path(base_dir)
     mode = mode or os.environ.get("MILES_HF_PASSTHROUGH", "copy")
     if mode not in ("copy", "hardlink"):
         raise ValueError(f"MILES_HF_PASSTHROUGH must be copy or hardlink, got {mode!r}")
@@ -200,6 +242,8 @@ def complete_hf_export(export_dir, base_dir, *, mtp_trained: bool, mode: str | N
     passthrough = passthrough_groups(groups, export_map, mtp_trained=mtp_trained)
     selected = plan(base_map, export_map, groups, passthrough)
     _check_dtype_and_shape(base_dir, base_map, export_dir, export_map)
+    check_payloads(base_dir, base_map.values())
+    check_payloads(export_dir, export_map.values())
 
     by_file = defaultdict(set)
     for key, filename in base_map.items():
@@ -222,6 +266,7 @@ def complete_hf_export(export_dir, base_dir, *, mtp_trained: bool, mode: str | N
 
     if set(new_map) != set(base_map):
         raise ExportIncomplete("completed export keys differ from the base keys")
+    check_payloads(export_dir, new_map.values())
     headers = _headers(export_dir, new_map.values())
     total_size = sum(
         entry["data_offsets"][1] - entry["data_offsets"][0] for _, header in headers.values() for entry in header.values()
@@ -262,6 +307,8 @@ def verify_export(export_dir, base_dir, *, expect_unchanged=()) -> dict:
             f"keys differ: missing {sorted(set(base_map) - set(export_map))[:5]}, extra {sorted(set(export_map) - set(base_map))[:5]}"
         )
     _check_dtype_and_shape(base_dir, base_map, export_dir, export_map)
+    check_payloads(base_dir, base_map.values())
+    check_payloads(export_dir, export_map.values())
     receipt = json.loads((export_dir / RECEIPT).read_text())
     passthrough = set(receipt["passthrough_sha256"])
     exported_hashes = tensor_hashes(export_dir, export_map, export_map)
