@@ -155,3 +155,62 @@ def test_tile_index_pair_is_consistent_both_ways():
     forward = {(qt, int(klist[qt, i])) for qt in range(kcnt.numel()) for i in range(int(kcnt[qt]))}
     backward = {(int(qlist[kt, i]), kt) for kt in range(qcnt.numel()) for i in range(int(qcnt[kt]))}
     assert forward == backward
+
+
+def test_bitmap_rows_past_int32_byte_offsets():
+    """262K packed tokens (247145 + 14999): the last rows' bitmap offsets pass 2^31 bytes.
+
+    Forward and dq of those rows must match an fp64 reference built from the same bitmap.
+    """
+    lens = [247145, 14999]
+    T = sum(lens)
+    hq, hkv, d = 1, 1, 64
+    g = torch.Generator(device="cuda").manual_seed(7)
+    q = torch.randn(T, hq, d, device="cuda", dtype=torch.bfloat16, generator=g)
+    k = torch.randn(T, hkv, d, device="cuda", dtype=torch.bfloat16, generator=g)
+    v = torch.randn(T, hkv, d, device="cuda", dtype=torch.bfloat16, generator=g)
+
+    starts = torch.tensor([0, lens[0]], device="cuda")
+    nblk = [-(-n // BLK) for n in lens]
+    rows = torch.arange(T, device="cuda")
+    doc = (rows >= lens[0]).long()
+    tok_base = starts[doc].to(torch.int32)
+    blk_base = torch.tensor([0, nblk[0]], device="cuda")[doc].to(torch.int32)
+    pos = rows - tok_base
+    num_blocks = sum(nblk)
+    firsts, lasts = [], []
+    for s0, n in zip([0, lens[0]], lens, strict=True):
+        f = torch.arange(s0, s0 + n, BLK, device="cuda")
+        firsts.append(f)
+        lasts.append((f + BLK).clamp_max(s0 + n) - 1)
+    block_first, block_last = torch.cat(firsts), torch.cat(lasts)
+
+    # each row: its own block plus up to 3 random earlier blocks of its document
+    own = blk_base.long() + pos // BLK
+    picks = [own] + [blk_base.long() + (torch.rand(T, device="cuda", generator=g) * (pos // BLK + 1)).long() for _ in range(3)]
+    nbytes = -(-num_blocks // 8)
+    sel = torch.zeros(T, nbytes, dtype=torch.uint8, device="cuda")
+    for b in picks:
+        sel[rows, b >> 3] |= (1 << (b & 7)).to(torch.uint8)
+    assert (T - 1) * nbytes > 2**31
+
+    hi = rows.to(torch.int32)
+    qq = q.clone().requires_grad_(True)
+    out = qsa_block_sparse_attention(
+        qq, k, v, sel, tok_base, hi, blk_base, tok_base, block_first.to(torch.int32), block_last.to(torch.int32), SCALE, BLK
+    )
+    tail = torch.arange(T - 40, T, device="cuda")
+    gout = torch.zeros_like(out)
+    gout[tail] = torch.randn(40, hq, d, device="cuda", dtype=out.dtype, generator=g)
+    out.backward(gout)
+
+    for t in tail.tolist():
+        keys = torch.arange(int(tok_base[t]), t + 1, device="cuda")
+        kb = blk_base[t].long() + (keys - tok_base[t]) // BLK
+        keys = keys[((sel[t, kb >> 3] >> (kb & 7).to(torch.uint8)) & 1) != 0]
+        qt = q[t, 0].double().requires_grad_(True)
+        s = k[keys, 0].double() @ qt * SCALE
+        ref = torch.softmax(s, 0) @ v[keys, 0].double()
+        assert (out[t, 0].double() - ref).abs().max() < 2e-2, t
+        ref.backward(gout[t, 0].double())
+        assert (qq.grad[t, 0].double() - qt.grad).abs().max() < 2e-2 * max(1.0, qt.grad.abs().max().item()), t

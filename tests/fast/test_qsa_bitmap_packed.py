@@ -56,3 +56,19 @@ def test_selection_bitmap_is_packed_block_flags():
         unpack_block_bitmap(packed, 5),
         torch.tensor([[1, 0, 1, 0, 0], [0, 0, 0, 0, 0], [0, 1, 0, 0, 1]], dtype=torch.uint8),
     )
+
+
+def test_every_bitmap_load_widens_the_row_before_the_stride():
+    """At 262K tokens a packed row is ~8 KiB, so row x stride passes 2^31: int32 wraps negative.
+
+    The widening must happen before the multiply (``offs_q.to(tl.int64) * stride_st``);
+    converting the product is too late. Kernels only run on GPU, so pin it in the source.
+    """
+    import inspect
+
+    from miles.kernels.attention.qsa import block_sparse_attention
+
+    src = inspect.getsource(block_sparse_attention)
+    loads = [line.strip() for line in src.splitlines() if line.strip().startswith("SEL +")]
+    assert len(loads) == 3
+    assert all(line.startswith("SEL + offs_q[:, None].to(tl.int64) * stride_st") for line in loads), loads
