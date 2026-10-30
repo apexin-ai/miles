@@ -16,6 +16,7 @@ from tests.fast.fixtures.args_fixtures import make_trainer_args
 from miles.backends.megatron_utils import model as model_module
 from miles.backends.megatron_utils import ple_provenance
 from miles.backends.megatron_utils.ple_provenance import PleProvenanceError, check_export, compute_manifest, on_load, on_save
+from miles.backends.training_utils.weight_update.hf_passthrough import ExportIncomplete
 
 PLE_SHARD_FILE = "model-00002-of-00004.safetensors"
 
@@ -165,6 +166,56 @@ class TestFreshStartAndExport:
         model_module.save(args=args, iteration=12, model=[torch.nn.Linear(2, 2)], optimizer=None, opt_param_scheduler=None)
         saved = json.loads((tmp_path / "ckpt" / "iter_0000012" / "ple_provenance.json").read_text())
         assert saved["ple"] == compute_manifest(base)["ple"]
+
+
+class TestExportOfABoundRun:
+    """CRV-FIX-018: a run bound to a PLE table at load must complete its export, whatever the base's config says now."""
+
+    def _export(self, base: Path, tmp_path: Path, monkeypatch) -> Path:
+        from types import SimpleNamespace
+
+        from tests.fast.backends.training_utils.weight_update.test_hf_passthrough import TRAINED, _tensor, _write
+
+        from miles.backends.megatron_utils import hf_export
+
+        class Publisher:
+            def write_model(self, path, *, weights, hf_checkpoint):
+                _write(Path(path), {"model-00001.safetensors": sorted(TRAINED)}, {k: _tensor(k, 1) for k in TRAINED})
+
+        monkeypatch.setattr(hf_export, "named_params_and_buffers", lambda *a, **k: [])
+        monkeypatch.setattr(hf_export, "is_lora_model", lambda model: False)
+        rank0 = SimpleNamespace(rank=0)
+        monkeypatch.setattr(hf_export, "get_parallel_state", lambda: SimpleNamespace(effective_dp_cp=rank0, tp=rank0))
+        args = SimpleNamespace(
+            megatron_to_hf_mode="raw",
+            hf_checkpoint=str(base),
+            enable_mtp_training=False,
+            save_hf=str(tmp_path / "hf" / "rollout-{rollout_id}"),
+        )
+        hf_export.save_hf_model(args, 3, [torch.nn.Linear(2, 2)], publisher=Publisher(), raise_on_error=True)
+        return tmp_path / "hf" / "rollout-3"
+
+    @pytest.mark.parametrize("change", ["remove_config", "other_model_type", "remove_base"])
+    def test_a_base_that_lost_its_policy_fails_the_export(self, tmp_path, monkeypatch, change) -> None:
+        base = _make_base(tmp_path / "base")
+        on_load(base, load_dir=None, iteration=0, resumed=False)
+        if change == "remove_config":
+            (base / "config.json").unlink()
+        elif change == "other_model_type":
+            (base / "config.json").write_text(json.dumps({"model_type": "qwen3_moe"}))
+        else:
+            shutil.rmtree(base)
+        with pytest.raises(ExportIncomplete, match="no longer has a config.json with a passthrough policy"):
+            self._export(base, tmp_path, monkeypatch)
+        assert not (tmp_path / "hf" / "rollout-3" / ".complete").exists()
+
+    def test_the_unchanged_base_completes_and_checks_the_ple_bytes(self, tmp_path, monkeypatch) -> None:
+        """Positive control: same run, base intact."""
+        base = _make_base(tmp_path / "base")
+        on_load(base, load_dir=None, iteration=0, resumed=False)
+        export = self._export(base, tmp_path, monkeypatch)
+        assert (export / ".complete").exists()
+        assert "ple_table" in json.loads((export / "passthrough.json").read_text())["passthrough_groups"]
 
 
 def _distributed_worker(rank: int, world_size: int, port: int, *, base: str, out: str) -> None:
