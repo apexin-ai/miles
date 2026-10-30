@@ -374,6 +374,15 @@ machine. It starts the full native SGLang model and evaluates the source baselin
 plus each explicitly supplied visual snapshot. A visual-only update is accepted
 only after every training rank closes its unchanged-language audit. Native visual
 weight loading is checked by exact TP-shard readback before generation.
+The loader also clears SGLang's separate multimodal embedding cache on every
+visual update. Flushing KV/Mamba state alone does not invalidate image features;
+reusing those features would compare checkpoints with stale visual embeddings.
+
+For empty-reasoning SFT targets, `--enable-thinking --empty-thinking-prefill`
+retains the native template's system/reasoning instructions and closes its
+assistant thinking block before generating the integer. Disabling thinking in
+the template can also change system instructions, so it is a separate protocol.
+All compared checkpoints must use the same prefill, reasoning effort and format.
 
 ```bash
 python -m examples.qwen3_8_next_vision_sft.evaluate \
