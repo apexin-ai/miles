@@ -1,0 +1,60 @@
+{
+  "schema": "qwen38-joint160-four-node-v1",
+  "run_id": "joint160-prompt-v2-4n-a01",
+  "base_checkpoint": "/workspace/jlw/miles-q38-vision-sft-20261030/checkpoints/Qwen3.8-Flash-Next",
+  "base_update": 0,
+  "continued_updates": 160,
+  "cumulative_updates": 160,
+  "cumulative_epochs": 5,
+  "optimizer_state": "fresh-from-original-base",
+  "optimizer_precision": "fp32-master-grad-first-and-second-moments",
+  "cpu_offload_fraction": 1.0,
+  "dataset": "/workspace/jlw/miles-q38-vision-sft-20261030/data/geometry-v1/sft_exact.jsonl",
+  "dataset_sha256": "40f2159076083a73d38b9cc800a8a3702b68a302824571b5166c0531402ffb1d",
+  "dataset_rows": 1024,
+  "language_frozen": false,
+  "vision_trainable": "full",
+  "enable_thinking": true,
+  "reasoning_effort": "low",
+  "final_answer_format": "integer-only",
+  "reasoning_trace_targets": false,
+  "lr": 1e-06,
+  "weight_decay": 0.0,
+  "global_batch_size": 32,
+  "micro_batch_size": 1,
+  "topology": {
+    "nodes": 4,
+    "gpus_per_node": 8,
+    "tp": 8,
+    "dp": 4,
+    "pp": 1,
+    "ep": 8
+  },
+  "make_vocab_size_divisible_by": 64,
+  "padded_vocab_size": 248320,
+  "node_ips": [
+    "172.16.0.83",
+    "172.16.0.103",
+    "172.16.0.105",
+    "172.16.0.96"
+  ],
+  "local_snapshot_updates": [
+    0,
+    32,
+    64,
+    96,
+    128,
+    160
+  ],
+  "native_checkpoint_interval": 32,
+  "evaluation_updates": [
+    160
+  ],
+  "evaluation_training_rows": 1024,
+  "evaluation_validation_rows": 256,
+  "evaluation_scoring_protocol": "integer_last_final_line_v2",
+  "evaluation_max_new_tokens": 16384,
+  "evaluation_requires_full_model_export": true,
+  "source_revision": "d52a4c118fedcdd0af52dab0c110111267000581",
+  "preregistered_at": "2026-10-30T10:56:07.251862+00:00"
+}
