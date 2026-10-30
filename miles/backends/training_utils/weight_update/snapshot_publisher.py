@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
+from miles.backends.training_utils.weight_update.hf_expert_packing import ExpertPacker
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.utils.lora.utils import AdapterSpec, get_adapter_target_modules
 
@@ -67,23 +68,34 @@ class SnapshotPublisher:
         total_size = 0
         shard_index = 0
         write_error = None
+        # base checkpoints that store MoE experts fused get the same fused keys back
+        packer = ExpertPacker.for_base(hf_checkpoint) if is_writer and Path(hf_checkpoint).is_dir() else None
         for hf_named_tensors in self._iterator.iter_hf_weights(weights):
             if not is_writer or write_error is not None:
                 continue
-            shard_index += 1
-            shard_name = f"model-{shard_index:05d}.safetensors"
             shard_tensors = {}
-            for name, tensor in hf_named_tensors:
-                shard_tensors[name] = tensor.detach().to("cpu").contiguous()
-                weight_map[name] = shard_name
-                total_size += shard_tensors[name].numel() * shard_tensors[name].element_size()
             try:
+                for name, tensor in hf_named_tensors:
+                    for out_name, out_tensor in packer.feed(name, tensor) if packer else [(name, tensor)]:
+                        shard_tensors[out_name] = out_tensor.detach().to("cpu").contiguous()
+                if not shard_tensors:
+                    continue  # every tensor of this bucket is buffered for an expert layer
+                shard_index += 1
+                shard_name = f"model-{shard_index:05d}.safetensors"
+                for name, tensor in shard_tensors.items():
+                    weight_map[name] = shard_name
+                    total_size += tensor.numel() * tensor.element_size()
                 safetensors.torch.save_file(shard_tensors, path / shard_name)
             except Exception as exc:
                 # Peers must finish the remaining weight gathers before reporting a write failure.
                 write_error = exc
             del shard_tensors
 
+        if write_error is None and packer is not None:
+            try:
+                packer.finish()
+            except Exception as exc:
+                write_error = exc
         if write_error is not None:
             raise write_error
         if is_writer:
