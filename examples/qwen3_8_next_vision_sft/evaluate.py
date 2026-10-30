@@ -288,11 +288,31 @@ def _full_model_receipt(model, update):
         raise ValueError("The joint model config differs from its original base")
     if receipt["native_metadata_sha256"] != _sha(Path(receipt["checkpoint"]) / ".metadata"):
         raise ValueError("The native checkpoint metadata changed after full-model export")
-    ranks = receipt["closed_rank_audits"]
-    if not ranks or {row["rank"] for row in ranks} != set(range(len(ranks))):
-        raise ValueError("The full-model export has incomplete closed rank audits")
-    if any(not row["complete_parameter_sha256"] for row in ranks):
-        raise ValueError("The full-model export has an empty native parameter hash")
+    mode = receipt.get("validation_mode", "live-model-roundtrip")
+    if mode == "saved-checkpoint":
+        ranks = receipt["training_rank_audits"]
+        saved = receipt["saved_checkpoint_validation"]
+        if receipt["live_model_roundtrip_qualified"] is not False or not receipt["limitation"]:
+            raise ValueError("Saved-model evaluation must disclose unqualified live restoration")
+        if not saved["complete"] or saved["finite_tensors"] != receipt["native_export_tensors"] or saved["exact_hf_readback_tensors"] != receipt["native_export_tensors"]:
+            raise ValueError("The saved model has incomplete finite-tensor or exact export checks")
+        native_paths = {".metadata", *(path.name for path in Path(receipt["checkpoint"]).glob("*.distcp"))}
+        if len(native_paths) < 2 or set(saved["native_files"]) != native_paths:
+            raise ValueError("The saved model receipt omits native checkpoint files")
+        for name, expected in saved["native_files"].items():
+            stat = (Path(receipt["checkpoint"]) / name).stat()
+            if {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns} != expected:
+                raise ValueError("The saved native checkpoint changed after export")
+        if not ranks or {row["rank"] for row in ranks} != set(range(len(ranks))) or any(row["world_size"] != len(ranks) or row["update"] != update for row in ranks):
+            raise ValueError("The saved model has incomplete final training rank audits")
+    elif mode == "live-model-roundtrip":
+        ranks = receipt["closed_rank_audits"]
+        if not ranks or {row["rank"] for row in ranks} != set(range(len(ranks))):
+            raise ValueError("The full-model export has incomplete closed rank audits")
+        if any(not row["complete_parameter_sha256"] for row in ranks):
+            raise ValueError("The full-model export has an empty native parameter hash")
+    else:
+        raise ValueError("Unknown full-model export validation mode")
     return receipt
 
 

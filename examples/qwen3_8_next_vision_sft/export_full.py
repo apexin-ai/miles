@@ -117,6 +117,48 @@ def _closed_audit(directory, iteration):
     return records
 
 
+def _saved_training_audit(directory, iteration):
+    initial = [json.loads(path.read_text()) for path in directory.glob("rank-*-initial.json")]
+    world = initial[0]["world_size"] if initial else 0
+    if not world or len(initial) != world or {row["rank"] for row in initial} != set(range(world)):
+        raise ValueError("Saved-model export requires complete training rank audits")
+    records = []
+    for before in initial:
+        rank = before["rank"]
+        after = json.loads((directory / f"rank-{rank:03d}-update-{iteration + 1:06d}.json").read_text())
+        if after["rank"] != rank or after["update"] != iteration + 1 or before["language_frozen"]:
+            raise ValueError("Saved-model export has the wrong training rank, update or scope")
+        if before["language_sha256"] != after["initial_language_sha256"] or not after["final_language_sha256"]:
+            raise ValueError("The saved-model training language audit is incomplete")
+        if before["language_sha256"] == after["final_language_sha256"] or before["visual_sha256"] == after["visual_sha256"]:
+            raise ValueError("The saved joint model requires both language and visual changes")
+        for probes in (after["parameters"], after["language_parameters"]):
+            if not probes or not any(row["gradient_nonzero"] for row in probes):
+                raise ValueError("The saved-model training audit has no active gradient probes")
+            if any(not row["gradient_finite"] or not row["weight_finite"] for row in probes):
+                raise ValueError("The saved-model training audit contains nonfinite probes")
+        records.append({"rank": rank, "world_size": world, "update": after["update"], "language_sha256": after["final_language_sha256"], "visual_sha256": after["visual_sha256"]})
+    if len({row["visual_sha256"] for row in records}) != 1:
+        raise ValueError("The final visual replicas disagree")
+    return records
+
+
+def _checkpoint_inventory(checkpoint):
+    paths = sorted([checkpoint / ".metadata", *checkpoint.glob("*.distcp")])
+    if len(paths) < 2:
+        raise ValueError("The saved native checkpoint contains no model shards")
+    return {path.name: {"size": path.stat().st_size, "mtime_ns": path.stat().st_mtime_ns} for path in paths}
+
+
+def _verify_saved_tensors(converted):
+    for name, value in converted.items():
+        flat = value.flatten()
+        for start in range(0, flat.numel(), 4 * 1024**2):
+            if not torch.isfinite(flat[start : start + 4 * 1024**2]).all():
+                raise ValueError(f"The saved checkpoint contains a nonfinite tensor: {name}")
+    return len(converted)
+
+
 def _write_shards(base, output, converted, index, by_file, missing):
     total_size = 0
     shared = []
@@ -151,6 +193,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--audit-dir", type=Path)
     parser.add_argument("--plan-only", action="store_true")
+    parser.add_argument("--saved-checkpoint-only", action="store_true", help="Qualify the saved model independently; explicitly does not qualify live-model restoration")
     args = parser.parse_args()
     if args.output.exists():
         parser.error("Refusing to replace an existing export or plan")
@@ -170,17 +213,30 @@ def main():
         "native_export_tensors": len(converted),
         "unchanged_passthrough_keys": sorted(missing),
         "tensor_shapes": {name: list(value.shape) for name, value in converted.items()},
+        "validation_mode": "saved-checkpoint" if args.saved_checkpoint_only else "live-model-roundtrip",
     }
     if args.plan_only:
         args.output.write_text(json.dumps(receipt, indent=2) + "\n")
         print(json.dumps({key: value for key, value in receipt.items() if key != "tensor_shapes"}))
         return
     iteration = int(args.checkpoint.name.removeprefix("iter_"))
-    receipt["closed_rank_audits"] = _closed_audit(args.audit_dir, iteration)
+    inventory = _checkpoint_inventory(args.checkpoint)
+    if args.saved_checkpoint_only:
+        receipt["training_rank_audits"] = _saved_training_audit(args.audit_dir, iteration)
+        receipt["closed_rank_audits"] = [json.loads(path.read_text()) for path in sorted((args.audit_dir / "checkpoint-reload").glob("rank-*.json"))]
+        receipt["live_model_roundtrip_qualified"] = False
+        receipt["limitation"] = "This validates the model saved at the requested update. Live-model restoration did not qualify and remains a separate unresolved investigation."
+    else:
+        receipt["closed_rank_audits"] = _closed_audit(args.audit_dir, iteration)
+        receipt["live_model_roundtrip_qualified"] = True
     stage = args.output.with_name(args.output.name + ".incomplete")
     stage.mkdir()
     converted = _convert(_model_args(args.base_model), _native_tensors(args.checkpoint, meta=False))
+    finite_count = _verify_saved_tensors(converted)
     receipt["shared_immutable_source_shards"] = _write_shards(args.base_model, stage, converted, index, by_file, missing)
+    if _checkpoint_inventory(args.checkpoint) != inventory:
+        raise ValueError("The saved native checkpoint changed during model export")
+    receipt["saved_checkpoint_validation"] = {"complete": True, "finite_tensors": finite_count, "exact_hf_readback_tensors": len(converted), "native_files": inventory}
     receipt.update(complete=True, model_only=True, optimizer_resume_qualified=False, hf_index_sha256=_sha(stage / "model.safetensors.index.json"), update=iteration + 1)
     (stage / "joint-export.json").write_text(json.dumps(receipt, indent=2) + "\n")
     stage.rename(args.output)
