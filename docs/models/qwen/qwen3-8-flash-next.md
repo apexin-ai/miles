@@ -757,6 +757,35 @@ targets. Joint evaluation requires a complete exported model containing both
 updated decoder and visual weights. The visual-snapshot evaluator rejects joint
 snapshots because replacing vision weights alone would omit the decoder update.
 
+The complete exporter checks the native tensor inventory against every original
+HF tensor shape. It keeps the native fused expert layout and passes through only
+the immutable PLE table/metadata and the original MTP module, which this SFT
+recipe does not train. Missing decoder or visual tensors cause an error. It
+requires closed joint audits and the complete native model-only reload receipts,
+then checks every rewritten HF tensor by exact readback. Shards containing only
+immutable assets are hard-linked within the same project filesystem; keep the
+original assets immutable. The export is a model checkpoint, without Adam state.
+
+For a 160-update joint run, export and evaluate the complete model as follows:
+
+```bash
+python -m examples.qwen3_8_next_vision_sft.export_full \
+  --checkpoint "$RUN/checkpoints/iter_0000159" \
+  --base-model "$BASE" --audit-dir "$RUN/audit" --output "$FULL_MODEL"
+python -m examples.qwen3_8_next_vision_sft.evaluate \
+  --model "$FULL_MODEL" --model-update 160 \
+  --data "$EVAL_DATA" --output "$EVAL_OUTPUT" \
+  --splits training validation --controls image \
+  --tp-size 8 --batch-size 256 --max-new-tokens 16384 --context-length 32768 \
+  --enable-thinking --reasoning-effort low --final-answer-format integer-only \
+  --enable-cuda-graph
+```
+
+`--plan-only --output PLAN.json` validates the export mapping on meta tensors
+without loading the complete checkpoint weights. `--model-update` requires the
+closed full-model export receipt and verifies the model index, config and native
+checkpoint metadata before starting inference.
+
 Run the evaluator on the same allocated GPU node after training, not on a control
 machine. It starts the full native SGLang model and evaluates the source baseline
 plus each explicitly supplied visual snapshot. A visual-only update is accepted

@@ -82,9 +82,7 @@ def _update_visual(engine, tensors):
     if not success:
         raise ValueError(f"Cannot begin inference weight update: {message}")
     try:
-        success, message = engine.update_weights_from_tensor(
-            list(tensors.items()), load_format=_LOADER, flush_cache=True
-        )
+        success, message = engine.update_weights_from_tensor(list(tensors.items()), load_format=_LOADER, flush_cache=True)
         if not success:
             raise ValueError(f"Inference visual update failed: {message}")
     finally:
@@ -130,9 +128,7 @@ def _prepare(
         if pixel_hash != image_row["image_pixel_sha256"]:
             raise ValueError("Evaluation image pixels differ from the pinned scene")
         images.append(image)
-    messages = normalize_image_messages(
-        [{"role": "user", "content": ("<image>" * len(images)) + question}], len(images)
-    )
+    messages = normalize_image_messages([{"role": "user", "content": ("<image>" * len(images)) + question}], len(images))
     messages = apply_final_answer_format(messages, final_answer_format)
     text = processor.tokenizer.apply_chat_template(
         messages,
@@ -227,9 +223,7 @@ def _evaluate_split(engine, processor, config, rows, output, *, args, split, upd
                         "update": update,
                         "question": row["messages"][0]["content"],
                         "answer": row["answer"],
-                        "image_id": (
-                            None if control == "no_image" else (other if control == "swapped_image" else row)["id"]
-                        ),
+                        "image_id": (None if control == "no_image" else (other if control == "swapped_image" else row)["id"]),
                         "input_ids_sha256": hashlib.sha256(json.dumps(encoded[0]).encode()).hexdigest(),
                         "image_pixel_sha256": encoded[2],
                         "prompt_tokens": len(encoded[0]),
@@ -284,9 +278,28 @@ def _load_snapshot(path, args):
     return receipt["update"], load_file(str(target)), receipt
 
 
+def _full_model_receipt(model, update):
+    receipt = json.loads((model / "joint-export.json").read_text())
+    if not receipt["complete"] or receipt["plan_only"] or receipt["update"] != update:
+        raise ValueError("The complete joint model export has the wrong update or is unfinished")
+    if receipt["hf_index_sha256"] != _sha(model / "model.safetensors.index.json"):
+        raise ValueError("The joint model index differs from its export receipt")
+    if receipt["source_config_sha256"] != _sha(model / "config.json"):
+        raise ValueError("The joint model config differs from its original base")
+    if receipt["native_metadata_sha256"] != _sha(Path(receipt["checkpoint"]) / ".metadata"):
+        raise ValueError("The native checkpoint metadata changed after full-model export")
+    ranks = receipt["closed_rank_audits"]
+    if not ranks or {row["rank"] for row in ranks} != set(range(len(ranks))):
+        raise ValueError("The full-model export has incomplete closed rank audits")
+    if any(not row["complete_parameter_sha256"] for row in ranks):
+        raise ValueError("The full-model export has an empty native parameter hash")
+    return receipt
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--model-update", type=int, default=0, help="Update of a complete exported joint model; requires its closed export receipt")
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--splits", nargs="+", default=["development", "validation"])
@@ -311,18 +324,19 @@ def main():
         help="Close native thinking before generation while retaining template reasoning/system instructions",
     )
     parser.add_argument("--enable-cuda-graph", action="store_true", help="Opt in to native decode graph capture")
-    parser.add_argument(
-        "--constrain-integer-answer", action="store_true", help="Use native regex decoding for a signed integer"
-    )
+    parser.add_argument("--constrain-integer-answer", action="store_true", help="Use native regex decoding for a signed integer")
     parser.add_argument("--mem-fraction-static", type=float, default=0.6)
     parser.add_argument("--limit", type=int, default=0, help="Bring-up only; not a held-out quality result")
     args = parser.parse_args()
-    if min(args.tp_size, args.batch_size, args.max_new_tokens) < 1 or args.limit < 0:
+    if min(args.tp_size, args.batch_size, args.max_new_tokens) < 1 or min(args.limit, args.model_update) < 0:
         parser.error("Invalid device, batch or token counts")
+    if args.model_update and args.visual_snapshots:
+        parser.error("A complete joint model must be evaluated without visual-only snapshot replacements")
     if args.skip_baseline and not args.visual_snapshots:
         parser.error("--skip-baseline requires at least one visual snapshot")
     if args.constrain_integer_answer and args.enable_thinking and not args.empty_thinking_prefill:
         parser.error("--constrain-integer-answer requires disabled thinking or --empty-thinking-prefill")
+    full_model_receipt = _full_model_receipt(args.model, args.model_update) if args.model_update else None
     args.output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     processor, config = _processor(str(args.model))
@@ -333,12 +347,9 @@ def main():
         raise ValueError("Cannot evaluate an empty split")
     manifest = {
         "complete": False,
-        "args": {
-            key: str(value) if isinstance(value, Path) else value
-            for key, value in vars(args).items()
-            if key != "visual_snapshots"
-        },
+        "args": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items() if key != "visual_snapshots"},
         "visual_snapshots": list(map(str, args.visual_snapshots)),
+        "full_model_export": full_model_receipt,
         "model_files_sha256": {
             name: _sha(args.model / name)
             for name in (
@@ -351,10 +362,7 @@ def main():
         },
         "data_files_sha256": {split: _sha(args.data / f"{split}.jsonl") for split in args.splits},
         "evaluator_sha256": _sha(__file__),
-        "packages": {
-            name: importlib.metadata.version(name)
-            for name in ("torch", "transformers", "sglang-kernel", "flashinfer-python")
-        },
+        "packages": {name: importlib.metadata.version(name) for name in ("torch", "transformers", "sglang-kernel", "flashinfer-python")},
         "protocol": PROTOCOL,
         "scorer_sha256": _sha(Path(__file__).with_name("score.py")),
         "results": [],
@@ -382,7 +390,7 @@ def main():
         decode_log_interval=200,
     )
     try:
-        checkpoints = ([] if args.skip_baseline else [(0, None)]) + [(None, path) for path in args.visual_snapshots]
+        checkpoints = ([] if args.skip_baseline else [(args.model_update, None)]) + [(None, path) for path in args.visual_snapshots]
         for update, path in checkpoints:
             if path is None:
                 tensors, receipt = _source_visual(args.model), None
