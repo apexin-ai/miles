@@ -4,7 +4,8 @@ Every rank of a TP group holds its own copy of each TP-replicated parameter (nor
 Qwen3.8 GDN, ...) and of the optimizer state for its shard of it. A checkpoint stores the TP-rank-0
 copy only, so a copy that drifted on another rank changes silently on reload. This check compares,
 bit for bit against TP rank 0, every replicated parameter and everything the optimizer keeps for it
-(the fp32 master shard, Adam moments, the step count, an offloaded optimizer's CPU master). It fails
+(the fp32 master shard, Adam moments, the per-param or per-group step count, an offloaded optimizer's
+CPU master). It fails
 on any difference and names the tensors, their dtype and the max |diff| per TP rank.
 
 ``MILES_TP_REPLICA_CHECK=0`` turns the check off. ``MILES_TENSOR_DIGEST_DIR=<dir>`` also writes the
@@ -19,6 +20,7 @@ import numbers
 import os
 import re
 import sys
+import uuid
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -31,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 _CHUNK = 1 << 28  # bytes per broadcast
 _MAX_REPORTED = 8
+_dump_run_id: str | None = None
 
 
 def is_tp_replicated(param: torch.Tensor) -> bool:
@@ -93,7 +96,8 @@ def _as_tensor(value) -> torch.Tensor | None:
 def named_tensors(
     model: Sequence[torch.nn.Module], optimizer=None, *, replicated_only: bool
 ) -> Iterator[tuple[str, torch.Tensor]]:
-    """Parameters, then each optimizer-stepped tensor and every state entry (tensors and numbers) per param.
+    """Parameters, then each optimizer-stepped tensor, every state entry (tensors and numbers) and the step of
+    its param group per param.
 
     Raises if the optimizer steps a tensor that cannot be traced back to a model param: a check that
     silently skipped optimizer state would report agreement it never verified.
@@ -131,6 +135,12 @@ def named_tensors(
                     if tensor is None:
                         raise RuntimeError(f"{name}: optimizer state {key!r} has unsupported type {type(value).__name__}")
                     yield f"{name}#{key}", tensor
+                if "step" in group:
+                    # TE / Apex FusedAdam keep one step count per param group, not per param
+                    tensor = _as_tensor(group["step"])
+                    if tensor is None:
+                        raise RuntimeError(f"{name}: param group step has unsupported type {type(group['step']).__name__}")
+                    yield f"{name}#group.step", tensor
 
 
 def _collective_device(group) -> torch.device:
@@ -216,16 +226,32 @@ def check_tp_replicas(model: Sequence[torch.nn.Module], optimizer=None, *, where
     )
 
 
+def _dump_tag(where: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", where)
+
+
+def _run_id() -> str:
+    """One id per training process group, so a dump directory mixing two runs is detected."""
+    global _dump_run_id
+    if _dump_run_id is None:
+        ids = [uuid.uuid4().hex]
+        if dist.is_initialized():
+            dist.broadcast_object_list(ids, src=0)
+        _dump_run_id = ids[0]
+    return _dump_run_id
+
+
 def _maybe_dump_digests(model, optimizer, *, where: str) -> None:
     root = os.environ.get("MILES_TENSOR_DIGEST_DIR")
     if not root:
         return
     rank = dist.get_rank() if dist.is_initialized() else 0
     world = dist.get_world_size() if dist.is_initialized() else 1
-    out = Path(root) / re.sub(r"[^A-Za-z0-9_.-]+", "_", where)
+    run = _run_id()
+    out = Path(root) / _dump_tag(where)
     out.mkdir(parents=True, exist_ok=True)
     tensors = {name: hash_tensor_sha256(t) for name, t in named_tensors(model, optimizer, replicated_only=False)}
-    record = {"rank": rank, "world_size": world, "where": where, "tensors": tensors}
+    record = {"rank": rank, "world_size": world, "run": run, "where": where, "tensors": tensors}
     tmp = out / f".rank{rank:05d}.json.tmp"
     tmp.write_text(json.dumps(record, sort_keys=True))
     tmp.replace(out / f"rank{rank:05d}.json")
@@ -241,6 +267,12 @@ def _load_dump(directory: Path) -> tuple[dict[int, dict], list[str]]:
     if not records:
         return {}, [f"{directory} holds no rank dumps"]
     problems = []
+    runs = {r.get("run") for r in records.values()}
+    if len(runs) != 1:
+        problems.append(f"{directory}: rank dumps come from {len(runs)} different runs (a reused directory)")
+    stale = sorted(rank for rank, r in records.items() if _dump_tag(r["where"]) != directory.name)
+    if stale:
+        problems.append(f"{directory}: rank dumps {stale[:8]} were written for another tag")
     worlds = {r["world_size"] for r in records.values()}
     if len(worlds) != 1:
         problems.append(f"{directory}: rank dumps disagree on world size {sorted(worlds)}")
