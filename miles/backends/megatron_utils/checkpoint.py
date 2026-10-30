@@ -255,6 +255,15 @@ def assert_linear_attn_checkpoint_is_current(load_dir: str) -> None:
         )
 
 
+def is_release_checkpoint(load_path: str | Path | None, ckpt_step: int | None) -> bool:
+    """Whether Megatron reads ``load_path`` as a release (converted, untrained) checkpoint."""
+    if load_path is None or ckpt_step is not None:
+        return False
+    path = Path(load_path)
+    tracker = path / "latest_checkpointed_iteration.txt"
+    return path.name == "release" or (tracker.is_file() and tracker.read_text().strip() == "release")
+
+
 def _is_megatron_checkpoint(path: str | Path) -> bool:
     return (Path(path) / "latest_checkpointed_iteration.txt").is_file() or bool(
         re.fullmatch(r"iter_\d{7}", Path(path).name)

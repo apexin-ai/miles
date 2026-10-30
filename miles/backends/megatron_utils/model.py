@@ -57,7 +57,7 @@ from miles.utils.types import SampleLineage
 
 from ...utils.misc import filter_keys
 from ..training_utils.parallel import get_parallel_state
-from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
+from .checkpoint import is_release_checkpoint, load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
     check_model_hashes,
     check_peak_gpu_memory_after_load,
@@ -1080,7 +1080,7 @@ def load_model_state(
     )
     explicit_selection = args.backend.ckpt_step is not None or args.backend.exit_on_missing_checkpoint
     with _record_scheduler_restore(opt_param_scheduler) as scheduler_restored:
-        iteration, restored_trained_iteration, adapter_iteration = _load_weights_and_training_state(
+        iteration, restored_trained_iteration, adapter_iteration, trained_checkpoint = _load_weights_and_training_state(
             args,
             model=model,
             optimizer=optimizer,
@@ -1099,9 +1099,10 @@ def load_model_state(
 
     # A restored scheduler already carries the exact progress of every successful update (dynamic batch
     # sizes and skipped steps included); stepping it again by iteration*GBS doubled the LR progress.
-    # Without a restore there is no record of that progress, so continuing a trained run is refused.
+    # Without a restore there is no record of that progress, so continuing a trained run is refused,
+    # rollout 0 included (iteration is the zero-based rollout id of a checkpoint written after training).
     if opt_param_scheduler is not None and not scheduler_restored:
-        if iteration > 0:
+        if trained_checkpoint or iteration > 0:
             raise RuntimeError(
                 f"Loaded trained iteration {iteration} but no LR scheduler state (--no-load-optim, or the "
                 "checkpoint was saved with --no-save-optim). The LR progress cannot be reconstructed: resume "
@@ -1158,8 +1159,14 @@ def _load_weights_and_training_state(
     checkpointing_context: dict | None,
     load_ctx,
     explicit_selection: bool,
-) -> tuple[int, bool, int | None]:
+) -> tuple[int, bool, int | None, bool]:
+    """(iteration, restored_trained_iteration, adapter_iteration, trained_checkpoint).
+
+    trained_checkpoint: the load continued a run that had trained (a Megatron checkpoint that is not a
+    release and not read with --finetune, or a LoRA training state), whatever its iteration.
+    """
     load_dir = args.backend.load
+    trained_checkpoint = False
     if load_dir is None or explicit_selection or _has_loadable_ckpt(load_dir):
         with load_ctx:
             iteration, restored_trained_iteration = load_checkpoint(
@@ -1170,6 +1177,7 @@ def _load_weights_and_training_state(
                 args=args,
                 skip_load_to_model_and_opt=False,
             )
+        trained_checkpoint = restored_trained_iteration and not is_release_checkpoint(load_dir, args.backend.ckpt_step)
     else:
         if is_first_replica_megatron_main_rank():
             logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
@@ -1184,4 +1192,5 @@ def _load_weights_and_training_state(
         if adapter_iteration is not None:
             iteration = adapter_iteration
             restored_trained_iteration = True
-    return iteration, restored_trained_iteration, adapter_iteration
+            trained_checkpoint = True
+    return iteration, restored_trained_iteration, adapter_iteration, trained_checkpoint
