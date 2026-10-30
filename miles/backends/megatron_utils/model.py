@@ -26,6 +26,7 @@ from megatron.training.training import get_model
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
+from miles.backends.megatron_utils import ple_provenance
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
@@ -963,6 +964,8 @@ def save(
             checkpointing_context=checkpointing_context,
             non_persistent_ckpt=non_persistent_ckpt,
         )
+    if not non_persistent_ckpt:
+        ple_provenance.on_save(args.backend.save, iteration)
 
     if hashes is not None:
         save_model_hashes(args, model, iteration, hashes)
@@ -1074,6 +1077,10 @@ def load_model_state(
     clear_memory()
 
     check_model_hashes(args, model, iteration)
+    # the frozen PLE table is re-read from --hf-checkpoint on every start; bind it to this run's checkpoints
+    ple_provenance.on_load(
+        args.hf_checkpoint, load_dir=args.backend.load, iteration=iteration, resumed=restored_trained_iteration
+    )
 
     # Megatron checkpoint loads can restore scheduler state directly. In that
     # case, stepping by the checkpoint iteration here would double-count.
