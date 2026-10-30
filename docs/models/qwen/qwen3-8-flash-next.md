@@ -427,6 +427,27 @@ pixels, grids and image mRoPE agree with training. The native open-versus-comple
 assistant newline still has its existing BPE boundary difference. Prompt mismatch
 is a hypothesis; no quality gain is claimed for this new run before evaluation.
 
+The aligned-prompt run has now completed all 32 updates. Its
+[training qualification](../../assets/images/qwen3-8-flash-next-vision-sft/prompt-alignment-training-qualification.json)
+verifies identical initial weights to the original run, unchanged decoder hashes
+on all eight ranks, finite nonzero gradient probes for all 333 visual tensors,
+matching visual replicas, and exact native model-only reload on every rank.
+Sampled BF16 values changed in 218 visual tensors on the final update. Its complete
+final visual hash is
+`b77bf409ad6d111c244b22e266ee124e55d425cae80f022521fe543fd945216a`.
+The actual training source is `bc8e69fbbe614b54fea7577ef2f60978ff7f39c5`;
+the additional change after prompt qualification fixes Ray Jobs driver address
+selection on a node with another Ray runtime. It does not change model math or
+the training recipe. The training evidence archive has SHA256
+`45583f8ebbeb3b36104bd4e6f802293089857a91c8c04454e4adb6d7a1870450`.
+
+A fresh unchanged-model baseline for this follow-up scored 113/256, versus
+111/256 in the previous engine run. All 256 questions, labels, images and expanded
+input IDs matched exactly. Ten answers changed from wrong to right and eight in
+the reverse direction; only 114 raw prediction strings were identical. The new
+curve uses the fresh 113/256 baseline. These two observations demonstrate runtime
+variation, not a confidence interval or an improvement from training.
+
 ### Data And Launch
 
 The example reuses the archived `geometric_stack_count` scenes referenced by
