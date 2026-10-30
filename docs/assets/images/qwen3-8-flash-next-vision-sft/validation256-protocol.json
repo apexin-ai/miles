@@ -1,0 +1,39 @@
+{
+  "name": "vision32-validation256-v1",
+  "fixed_before_reading_holdout_results": true,
+  "development_selection": "Choose native low reasoning to reduce unfinished thinking; final checkpoint fixed by 32-update training recipe. No holdout checkpoint selection.",
+  "updates": [
+    0,
+    8,
+    16,
+    24,
+    32
+  ],
+  "primary_comparison": [
+    0,
+    32
+  ],
+  "n": 256,
+  "validation_sha256": "6f9b21c2cefe866a6b259c11ca9a0969b190494772cf46ba35ec9f025739376e",
+  "training_protocol_sha256": "5ca5c2a3174c2b09664ef0f605fd9fb7eb223fa83b90a2e97f887db473be27db",
+  "source_commit": "8886ead689fd489d2c97cc650ed715779b223c82",
+  "evaluator_sha256": "7c477fa5a257e2af1cc6ddb3f33a48ae0f7db0aaa6b614cb5458464232be4142",
+  "tp_size": 8,
+  "batch_size": 256,
+  "max_new_tokens": 16384,
+  "context_length": 32768,
+  "enable_thinking": true,
+  "reasoning_effort": "low",
+  "final_answer_format": "integer-only (prompt instruction only)",
+  "constrained_decoding": false,
+  "enable_cuda_graph": true,
+  "acceleration": "Native decode CUDA graphs and batch256, identical for baseline and all visual snapshots; separate runtime from batch32/eager development diagnosis",
+  "scorer": "integer_first_final_line_v1",
+  "language_frozen": true,
+  "data_changed": false,
+  "labels_changed": false,
+  "controls": [
+    "image"
+  ],
+  "negative_controls": "No-image and swapped-image remain separate follow-up evaluations; image-only curve makes no pure-recognition causal claim."
+}

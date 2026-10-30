@@ -324,6 +324,34 @@ uses 16384 new tokens and context 32768 for the same baseline and visual snapsho
 It keeps language frozen and leaves training weights, images and scoring unchanged.
 An effect from increasing the budget must be distinguished from a training gain.
 
+A separate [32-scene development protocol](../../assets/images/qwen3-8-flash-next-vision-sft/low-thinking-development-protocol.json)
+keeps thinking enabled with native `low` effort, 16384 output tokens, context
+32768 and the same integer-only system instruction on both checkpoints. That
+instruction is prompt text; these runs use no regex or other constrained decoding.
+The [qualified development comparison](../../assets/images/qwen3-8-flash-next-vision-sft/low-thinking-development-qualification.json)
+strictly re-scores all raw predictions and verifies identical expanded inputs,
+image pixels, questions, labels, scorer, source and runtime package versions.
+
+| Vision update | Correct / 32 | Invalid final answers |
+| --- | --- | --- |
+| 0 | 9 | 14 |
+| 32 | 12 | 10 |
+
+Seven predictions change from wrong to right, and four from right to wrong.
+Among the 13 scenes with valid answers at both checkpoints, correct answers
+increase from six to eight. This is a development result only: always answering
+one also scores 12/32, and matched no-image/swapped-image controls have not closed.
+It does not establish broad visual recognition improvement.
+
+The [fixed 256-scene validation protocol](../../assets/images/qwen3-8-flash-next-vision-sft/validation256-protocol.json)
+was recorded before reading held-out results. It evaluates visual updates
+0/8/16/24/32 with the same low reasoning, output instruction, 16384-token budget
+and strict scorer. Its runtime uses batch size 256 and native decode CUDA graphs
+consistently across workers; the development runs above used batch size 32 and
+eager decoding. Each worker loads one checkpoint in a fresh engine. The primary
+comparison is the original baseline versus the fixed final update 32, with no
+checkpoint selected from the held-out curve. Validation results remain pending.
+
 ### Data And Launch
 
 The example reuses the archived `geometric_stack_count` scenes referenced by
