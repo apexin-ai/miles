@@ -2,6 +2,7 @@
 
 import ast
 import gc
+import json
 import re
 import sys
 import weakref
@@ -13,6 +14,7 @@ import torch
 from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModel, Qwen3VLVisionModel
 
+from miles_plugins.models.qwen3_8_next import vision_audit
 from miles_plugins.models.qwen3_8_next.vision import set_visual_scope
 from miles_plugins.models.qwen3_8_next.vision_inputs import (
     INTEGER_FINAL_INSTRUCTION,
@@ -29,6 +31,67 @@ _CONFIG = {
     "vision_end_token_id": 9003,
     "vision_config": {"spatial_merge_size": 2},
 }
+
+
+def test_joint_probe_selection_is_bounded_and_includes_decoder_endpoints():
+    trainable = SimpleNamespace(requires_grad=True)
+    frozen = SimpleNamespace(requires_grad=False)
+    parameters = [("vision_model.weight", trainable), ("frozen.weight", frozen)]
+    parameters += [(f"decoder.{i}.weight", trainable) for i in range(40)]
+    names = vision_audit._language_probe_names(parameters)
+    assert len(names) == len(set(names)) == 16
+    assert names[0] == "decoder.0.weight" and names[-1] == "decoder.39.weight"
+    assert all(name.startswith("decoder.") for name in names)
+
+
+@pytest.mark.parametrize("frozen,update_language", [(False, True), (False, False), (True, False), (True, True)])
+def test_final_audit_distinguishes_joint_updates_from_frozen_language(tmp_path, monkeypatch, frozen, update_language):
+    model = torch.nn.Module()
+    model.vision_model = torch.nn.Linear(2, 2, bias=False)
+    model.language_model = torch.nn.Linear(2, 2, bias=False)
+    model.language_model.requires_grad_(not frozen)
+    checkpoint = tmp_path / "hf"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text("{}")
+    (checkpoint / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {"model.visual.weight": "visual.safetensors"}}))
+    args = SimpleNamespace(
+        qwen38_audit_dir=str(tmp_path / "audit"),
+        qwen38_freeze_language=frozen,
+        hf_checkpoint=str(checkpoint),
+        num_rollout=1,
+        rollout_batch_size=2,
+        n_samples_per_prompt=1,
+        global_batch_size=2,
+        qwen38_visual_snapshot_interval=0,
+    )
+    monkeypatch.setattr(vision_audit, "_runtime_identity", lambda: {})
+    monkeypatch.setattr(vision_audit.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(vision_audit.dist, "get_world_size", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(vision_audit, "_gradient_samples", lambda optimizer, p, indices: torch.ones(len(indices)))
+
+    class Optimizer:
+        def step(self):
+            with torch.no_grad():
+                model.vision_model.weight.add_(0.1)
+                if update_language:
+                    model.language_model.weight.add_(0.1)
+            return True, 1.0, 0
+
+    optimizer = Optimizer()
+    vision_audit.before_step(args, 0, 0, [model], optimizer, None)
+    if frozen == update_language:
+        message = "Frozen decoder weights changed" if frozen else "trainable decoder did not change"
+        with pytest.raises(ValueError, match=message):
+            optimizer.step()
+        return
+    optimizer.step()
+    record = json.loads((tmp_path / "audit/rank-000-update-000001.json").read_text())
+    changed = record["initial_language_sha256"] != record["final_language_sha256"]
+    assert changed is not frozen
+    assert bool(record["language_parameters"]) is not frozen
+    if not frozen:
+        assert all(row["gradient_nonzero"] and row["delta_nonzero"] for row in record["language_parameters"])
 
 
 def _positions(ids, grids):
@@ -103,9 +166,7 @@ def test_tp_visual_gradient_slices_sum_to_the_unsharded_gradient():
     decoder = torch.randn(16, 1, 8, requires_grad=True)
     images = torch.randn(3, 8, requires_grad=True)
     positions = torch.tensor([2, 3, 4])
-    expected = torch.autograd.grad(
-        scatter_image_embeddings(decoder, positions, images).square().sum(), (decoder, images)
-    )
+    expected = torch.autograd.grad(scatter_image_embeddings(decoder, positions, images).square().sum(), (decoder, images))
     image_grads, decoder_grads = [], []
     for rank in range(4):
         shard = decoder.detach()[rank * 4 : (rank + 1) * 4].requires_grad_()
@@ -163,10 +224,7 @@ class _Tokenizer:
         for message in messages:
             content = message["content"]
             if isinstance(content, list):
-                content = "".join(
-                    "<|vision_start|><|image_pad|><|vision_end|>" if item["type"] == "image" else item["text"]
-                    for item in content
-                )
+                content = "".join("<|vision_start|><|image_pad|><|vision_end|>" if item["type"] == "image" else item["text"] for item in content)
             result += f"[START]{message['role']}\n{content}[END]\n"
         return result + ("[START]assistant\n" if add_generation_prompt else "")
 
@@ -323,9 +381,7 @@ def test_hf_expert_reads_reuse_bounded_source_mappings(monkeypatch):
         reads.append(name)
         return torch.ones(2)
 
-    monkeypatch.setattr(
-        Qwen3_5Bridge, "_get_safetensor_io", lambda self, path: SimpleNamespace(load_one_hf_weight=load)
-    )
+    monkeypatch.setattr(Qwen3_5Bridge, "_get_safetensor_io", lambda self, path: SimpleNamespace(load_one_hf_weight=load))
     bridge = Qwen38NextBridge.__new__(Qwen38NextBridge)
     io = bridge._get_safetensor_io("unused")
     gate = io.load_one_hf_weight("gate")

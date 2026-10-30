@@ -310,7 +310,8 @@ The [rank and source audit](../../assets/images/qwen3-8-flash-next-vision-sft/u1
 covers **333 visual tensors / 448,931,056 parameters**, all 32 final rank audits,
 unchanged complete language hashes, identical visual replica hashes and 32
 successful native model-only reload checks. All 25 inventoried model, bridge,
-launcher and evaluator source files match this published checkout. The final
+launcher and evaluator source files match commit
+[`2aa7a69d`](https://github.com/leviking98z-rgb/miles/commit/2aa7a69d6855bb4293b5273a930e25cdafd6f7fa). The final
 complete visual parameter hash is
 `619d90d4c362f100e86b65bc94ac41fc46c486ea46ae80a7cc9be0359c283d2f`.
 The native checkpoint iteration is 95, corresponding to the 96th continuation
@@ -738,12 +739,23 @@ from the held-out curve.
 
 The opt-in audit writes per-rank parameter inventories, finite reduced-gradient
 probes, actual parameter-change probes, and imported runtime source paths/hashes.
-Frozen-language mode hashes all registered decoder parameters before and after
-training. Visual snapshots require
+Both modes hash all registered decoder parameters before and after training.
+Frozen-language mode requires the hashes to remain equal. Joint mode requires
+the decoder hash to change and additionally records reduced-gradient and actual
+weight-change probes for up to 16 trainable decoder tensors spread across the
+parameter inventory. It fails if all sampled decoder gradients are zero.
+Visual snapshots require
 identical full visual hashes on all replicas and an exact safetensors readback.
 These visual snapshots are **evaluation-only and nonresumable**. Native Megatron
 checkpoints are saved separately; optimizer/data-cursor resume is not established
 by a model-only save or a visual snapshot.
+
+For joint language-and-vision SFT, omit `--freeze-language`. This preserves the
+same image data, thinking setting and assistant targets while changing the
+trainable parameter scope. It does not add reasoning traces to integer-only
+targets. Joint evaluation requires a complete exported model containing both
+updated decoder and visual weights. The visual-snapshot evaluator rejects joint
+snapshots because replacing vision weights alone would omit the decoder update.
 
 Run the evaluator on the same allocated GPU node after training, not on a control
 machine. It starts the full native SGLang model and evaluates the source baseline
