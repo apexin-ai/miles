@@ -1,0 +1,1483 @@
+{
+  "complete": true,
+  "scope": "actual visual tower, baseline and final; SGLang TP1; no decoder parity claim",
+  "runtime_reports": {
+    "training-hf": {
+      "phase": "training-hf",
+      "torch": "2.11.0+cu130",
+      "transformers": "5.8.1",
+      "model_config_sha256": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+      "inputs_sha256": "eb5728dfd41e660d0dd2da8771395e9a35821351845b0d793aecb903249a68e7",
+      "trained_visual_sha256": "40a20bf0153c540d3e64aa900a846e351cb53a5b3f59e4889f18ed9f5b51eaa2",
+      "cases": [
+        {
+          "id": "distillation-geometric_stack_count-00000",
+          "update": 0,
+          "index": 0,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00001",
+          "update": 0,
+          "index": 1,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00002",
+          "update": 0,
+          "index": 2,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00003",
+          "update": 0,
+          "index": 3,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00000",
+          "update": 0,
+          "index": 4,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00001",
+          "update": 0,
+          "index": 5,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00002",
+          "update": 0,
+          "index": 6,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00003",
+          "update": 0,
+          "index": 7,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00000",
+          "update": 32,
+          "index": 0,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00001",
+          "update": 32,
+          "index": 1,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00002",
+          "update": 32,
+          "index": 2,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00003",
+          "update": 32,
+          "index": 3,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00000",
+          "update": 32,
+          "index": 4,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00001",
+          "update": 32,
+          "index": 5,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00002",
+          "update": 32,
+          "index": 6,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00003",
+          "update": 32,
+          "index": 7,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        }
+      ],
+      "complete": true,
+      "scope": "standalone actual visual tower; SGLang TP1; no decoder/generation quality claim",
+      "attention_implementation": "sdpa",
+      "outputs_sha256": "638bde9960b4df463d13ed40db66b8545ae9f33413e1523ca2563864af469eaf"
+    },
+    "inference-hf": {
+      "phase": "inference-hf",
+      "torch": "2.13.0+cu130",
+      "transformers": "5.12.1",
+      "model_config_sha256": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+      "inputs_sha256": "eb5728dfd41e660d0dd2da8771395e9a35821351845b0d793aecb903249a68e7",
+      "trained_visual_sha256": "40a20bf0153c540d3e64aa900a846e351cb53a5b3f59e4889f18ed9f5b51eaa2",
+      "cases": [
+        {
+          "id": "distillation-geometric_stack_count-00000",
+          "update": 0,
+          "index": 0,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00001",
+          "update": 0,
+          "index": 1,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00002",
+          "update": 0,
+          "index": 2,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00003",
+          "update": 0,
+          "index": 3,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00000",
+          "update": 0,
+          "index": 4,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00001",
+          "update": 0,
+          "index": 5,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00002",
+          "update": 0,
+          "index": 6,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00003",
+          "update": 0,
+          "index": 7,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00000",
+          "update": 32,
+          "index": 0,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00001",
+          "update": 32,
+          "index": 1,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00002",
+          "update": 32,
+          "index": 2,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00003",
+          "update": 32,
+          "index": 3,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00000",
+          "update": 32,
+          "index": 4,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00001",
+          "update": 32,
+          "index": 5,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00002",
+          "update": 32,
+          "index": 6,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00003",
+          "update": 32,
+          "index": 7,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        }
+      ],
+      "complete": true,
+      "scope": "standalone actual visual tower; SGLang TP1; no decoder/generation quality claim",
+      "attention_implementation": "sdpa",
+      "outputs_sha256": "c516e691c9e8f35a17ca313b3b2ef0b626c830543fd466899793d6a26f73edd1"
+    },
+    "inference-sglang": {
+      "phase": "inference-sglang",
+      "torch": "2.13.0+cu130",
+      "transformers": "5.12.1",
+      "model_config_sha256": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+      "inputs_sha256": "eb5728dfd41e660d0dd2da8771395e9a35821351845b0d793aecb903249a68e7",
+      "trained_visual_sha256": "40a20bf0153c540d3e64aa900a846e351cb53a5b3f59e4889f18ed9f5b51eaa2",
+      "cases": [
+        {
+          "id": "distillation-geometric_stack_count-00000",
+          "update": 0,
+          "index": 0,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00001",
+          "update": 0,
+          "index": 1,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00002",
+          "update": 0,
+          "index": 2,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00003",
+          "update": 0,
+          "index": 3,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00000",
+          "update": 0,
+          "index": 4,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00001",
+          "update": 0,
+          "index": 5,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00002",
+          "update": 0,
+          "index": 6,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00003",
+          "update": 0,
+          "index": 7,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00000",
+          "update": 32,
+          "index": 0,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00001",
+          "update": 32,
+          "index": 1,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00002",
+          "update": 32,
+          "index": 2,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "distillation-geometric_stack_count-00003",
+          "update": 32,
+          "index": 3,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00000",
+          "update": 32,
+          "index": 4,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00001",
+          "update": 32,
+          "index": 5,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00002",
+          "update": 32,
+          "index": 6,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        },
+        {
+          "id": "development-geometric_stack_count-00003",
+          "update": 32,
+          "index": 7,
+          "grid": [
+            [
+              1,
+              32,
+              48
+            ]
+          ],
+          "shape": [
+            384,
+            2560
+          ],
+          "finite": true
+        }
+      ],
+      "complete": true,
+      "scope": "standalone actual visual tower; SGLang TP1; no decoder/generation quality claim",
+      "mm_attention_backend": null,
+      "precise_embedding_interpolation": false,
+      "outputs_sha256": "44c224e8bc1afec22e8f19056e72b258d563aea68bbd03811eed4e4c93d6de2d"
+    }
+  },
+  "comparisons": [
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_0_case_0",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0126953125,
+      "rms_error": 0.0008389754220843315,
+      "relative_rms_error": 0.02411397360265255,
+      "cosine": 0.9996725916862488
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_0_case_0_block0",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": false,
+      "max_abs": 0.0625,
+      "rms_error": 0.0013114247703924775,
+      "relative_rms_error": 0.002237362088635564,
+      "cosine": 0.9999813437461853
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_0_case_0_blocklast",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": false,
+      "max_abs": 816.0,
+      "rms_error": 2.3019285202026367,
+      "relative_rms_error": 0.016838349401950836,
+      "cosine": 1.0002927780151367
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_0_case_0_patch",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": true,
+      "max_abs": 0.0,
+      "rms_error": 0.0,
+      "relative_rms_error": 0.0,
+      "cosine": 1.0000125169754028
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_0_case_1",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.01611328125,
+      "rms_error": 0.0008168943459168077,
+      "relative_rms_error": 0.02570788562297821,
+      "cosine": 0.9996305704116821
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_0_case_2",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.028076171875,
+      "rms_error": 0.0009947371436282992,
+      "relative_rms_error": 0.029127493500709534,
+      "cosine": 0.9995434284210205
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_0_case_3",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.01904296875,
+      "rms_error": 0.0007972829625941813,
+      "relative_rms_error": 0.022766493260860443,
+      "cosine": 0.9997057914733887
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_0_case_4",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.02685546875,
+      "rms_error": 0.000970566354226321,
+      "relative_rms_error": 0.02961437590420246,
+      "cosine": 0.9995230436325073
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_0_case_5",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.03515625,
+      "rms_error": 0.0013222633861005306,
+      "relative_rms_error": 0.034120891243219376,
+      "cosine": 0.9993839263916016
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_0_case_6",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.08966064453125,
+      "rms_error": 0.0016133466269820929,
+      "relative_rms_error": 0.04675113037228584,
+      "cosine": 0.9988714456558228
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_0_case_7",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0869140625,
+      "rms_error": 0.0020167131442576647,
+      "relative_rms_error": 0.05009986460208893,
+      "cosine": 0.9987075328826904
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_32_case_0",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0611572265625,
+      "rms_error": 0.001554749789647758,
+      "relative_rms_error": 0.043721992522478104,
+      "cosine": 0.9990087747573853
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_32_case_0_block0",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": false,
+      "max_abs": 0.0625,
+      "rms_error": 0.001460880390368402,
+      "relative_rms_error": 0.0024957817513495684,
+      "cosine": 0.9999778866767883
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_32_case_0_blocklast",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": false,
+      "max_abs": 2432.0,
+      "rms_error": 4.652185440063477,
+      "relative_rms_error": 0.032955557107925415,
+      "cosine": 0.9998749494552612
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_32_case_0_patch",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": true,
+      "max_abs": 0.0,
+      "rms_error": 0.0,
+      "relative_rms_error": 0.0,
+      "cosine": 1.0000249147415161
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_32_case_1",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0439453125,
+      "rms_error": 0.00127764034550637,
+      "relative_rms_error": 0.03945406153798103,
+      "cosine": 0.9991964101791382
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_32_case_2",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0244140625,
+      "rms_error": 0.0008601148147135973,
+      "relative_rms_error": 0.024544071406126022,
+      "cosine": 0.9996634125709534
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_32_case_3",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.01171875,
+      "rms_error": 0.0007170620374381542,
+      "relative_rms_error": 0.02003069594502449,
+      "cosine": 0.9997648596763611
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_32_case_4",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0283203125,
+      "rms_error": 0.001013067550957203,
+      "relative_rms_error": 0.03002854436635971,
+      "cosine": 0.9995103478431702
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_32_case_5",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0341796875,
+      "rms_error": 0.0014059252571314573,
+      "relative_rms_error": 0.033742789179086685,
+      "cosine": 0.9994052648544312
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_32_case_6",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.048828125,
+      "rms_error": 0.0012687529670074582,
+      "relative_rms_error": 0.03565605357289314,
+      "cosine": 0.9993294477462769
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-hf",
+      "tensor": "update_32_case_7",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.044921875,
+      "rms_error": 0.0016583077376708388,
+      "relative_rms_error": 0.03741895407438278,
+      "cosine": 0.9992666244506836
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_0_case_0",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.033203125,
+      "rms_error": 0.0012531134998425841,
+      "relative_rms_error": 0.03601720184087753,
+      "cosine": 0.9993153810501099
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_0_case_0_block0",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": false,
+      "max_abs": 0.0625,
+      "rms_error": 0.0022618465591222048,
+      "relative_rms_error": 0.0038588333409279585,
+      "cosine": 0.9999757409095764
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_0_case_0_blocklast",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": false,
+      "max_abs": 1536.0,
+      "rms_error": 4.120746612548828,
+      "relative_rms_error": 0.030142800882458687,
+      "cosine": 0.9999799728393555
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_0_case_0_patch",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": false,
+      "max_abs": 0.0625,
+      "rms_error": 0.0010012509301304817,
+      "relative_rms_error": 0.002193074207752943,
+      "cosine": 1.0000203847885132
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_0_case_1",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0450439453125,
+      "rms_error": 0.0013112940359860659,
+      "relative_rms_error": 0.041266776621341705,
+      "cosine": 0.9991101622581482
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_0_case_2",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.02996826171875,
+      "rms_error": 0.001247900421731174,
+      "relative_rms_error": 0.03654051944613457,
+      "cosine": 0.9992994666099548
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_0_case_3",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0322265625,
+      "rms_error": 0.0012039318680763245,
+      "relative_rms_error": 0.03437839448451996,
+      "cosine": 0.999376654624939
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_0_case_4",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0302734375,
+      "rms_error": 0.0012539229355752468,
+      "relative_rms_error": 0.038260284811258316,
+      "cosine": 0.9992298483848572
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_0_case_5",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0513916015625,
+      "rms_error": 0.0018683535745367408,
+      "relative_rms_error": 0.04821270331740379,
+      "cosine": 0.9988057017326355
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_0_case_6",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.05322265625,
+      "rms_error": 0.0016256183153018355,
+      "relative_rms_error": 0.04710673913359642,
+      "cosine": 0.9988544583320618
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_0_case_7",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.149169921875,
+      "rms_error": 0.0037898453883826733,
+      "relative_rms_error": 0.09414861351251602,
+      "cosine": 0.995521605014801
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_32_case_0",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.046142578125,
+      "rms_error": 0.0015188687248155475,
+      "relative_rms_error": 0.04271296039223671,
+      "cosine": 0.9990500211715698
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_32_case_0_block0",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": false,
+      "max_abs": 0.0625,
+      "rms_error": 0.0022298977710306644,
+      "relative_rms_error": 0.003809578251093626,
+      "cosine": 0.9999734163284302
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_32_case_0_blocklast",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": false,
+      "max_abs": 3592.0,
+      "rms_error": 5.496872901916504,
+      "relative_rms_error": 0.0389392264187336,
+      "cosine": 0.9996642470359802
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_32_case_0_patch",
+      "shape": [
+        1536,
+        1152
+      ],
+      "exact": false,
+      "max_abs": 0.0625,
+      "rms_error": 0.0009975971188396215,
+      "relative_rms_error": 0.0021840992849320173,
+      "cosine": 1.0000348091125488
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_32_case_1",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.02001953125,
+      "rms_error": 0.0011761061614379287,
+      "relative_rms_error": 0.036318644881248474,
+      "cosine": 0.9993059635162354
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_32_case_2",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.032958984375,
+      "rms_error": 0.0012828651815652847,
+      "relative_rms_error": 0.036607593297958374,
+      "cosine": 0.9992977380752563
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_32_case_3",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0169677734375,
+      "rms_error": 0.000949437846429646,
+      "relative_rms_error": 0.026521975174546242,
+      "cosine": 0.9996142983436584
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_32_case_4",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.0244140625,
+      "rms_error": 0.001161583000794053,
+      "relative_rms_error": 0.03443072363734245,
+      "cosine": 0.9993672966957092
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_32_case_5",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.066650390625,
+      "rms_error": 0.0019503330113366246,
+      "relative_rms_error": 0.04680880159139633,
+      "cosine": 0.9988722801208496
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_32_case_6",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.091796875,
+      "rms_error": 0.0022215130738914013,
+      "relative_rms_error": 0.062431689351797104,
+      "cosine": 0.9980137348175049
+    },
+    {
+      "reference": "training-hf",
+      "other": "inference-sglang",
+      "tensor": "update_32_case_7",
+      "shape": [
+        384,
+        2560
+      ],
+      "exact": false,
+      "max_abs": 0.28045654296875,
+      "rms_error": 0.005464124958962202,
+      "relative_rms_error": 0.12329547107219696,
+      "cosine": 0.9923357963562012
+    }
+  ]
+}

@@ -391,6 +391,42 @@ SHA256 `4f73b30e5a1b9d848b278b97bf5f71db81497d6119d3b183c7c2db00c5bf8978`;
 the recorded qualification has SHA256
 `65592eec0a0c58a4ab23163ac690a58698cc8b8e86b4e831c6f7685cfc304237`.
 
+### Follow-up Diagnostics And Prompt Alignment
+
+A development-only diagnostic closed the native thinking prefix before generation,
+matching the integer prefix seen in the original training targets. Image accuracy
+changed from 1 to 8/32, while invalid answers fell from 24 to 2. Among the eight
+answers valid at both endpoints, correct answers changed from 1 to 0: the observed
+gain came from validity transitions. The no-image arm remained 11/32 with exactly
+identical raw predictions; swapped images changed from 1 to 5/32. This
+[qualified diagnostic](../../assets/images/qwen3-8-flash-next-vision-sft/trained-prefix-development-qualification.json)
+does not establish improved image recognition. The main evaluation retains open
+thinking and its 16384-token budget.
+
+An [actual visual-forward comparison](../../assets/images/qwen3-8-flash-next-vision-sft/visual-forward-diagnosis.json)
+used the same eight train/development images and all original/final visual weights
+in the training HF runtime, evaluation HF runtime and native SGLang TP1. Training
+versus SGLang pooled-feature differences at the final checkpoint had relative RMS
+error of 2.65–12.33%. Training itself changed features by 18.53–27.63%; the
+[training-versus-SGLang update-direction cosine](../../assets/images/qwen3-8-flash-next-vision-sft/visual-update-delta-diagnosis.json)
+was 0.903–0.979. The updates reach inference, with numerical differences. This
+does not qualify full-decoder parity or establish the cause of the small quality
+change.
+
+The controlled follow-up `vision32-prompt-v2` changes only the training prompt:
+explicit `reasoning_effort="low"` replaces the native default `xhigh`, and training
+uses the same integer-final-answer system instruction as the existing evaluation.
+Thinking remains enabled. Original integer targets, images, labels, data order,
+32 updates, batch size 32, learning rate 1e-6, zero weight decay, full visual scope
+and frozen language remain fixed. Its fixed evaluation uses all 256 scenes and
+updates 0/8/16/24/32, with baseline versus update 32 as the primary comparison.
+The [native prompt qualification](../../assets/images/qwen3-8-flash-next-vision-sft/prompt-alignment-qualification.json)
+records 31 training tests, 45 evaluation/scoring tests and eight real encodings.
+Evaluation IDs and image payloads remain identical to the prior evaluator; image
+pixels, grids and image mRoPE agree with training. The native open-versus-complete
+assistant newline still has its existing BPE boundary difference. Prompt mismatch
+is a hypothesis; no quality gain is claimed for this new run before evaluation.
+
 ### Data And Launch
 
 The example reuses the archived `geometric_stack_count` scenes referenced by
@@ -401,6 +437,16 @@ generator targets and decoded-pixel hashes. Generation requires the pinned
 Sphinx checkout; see `prepare.py --help` for its required revision and options.
 The model receives the question and image, not scene metadata or the oracle.
 
+An [independent analytic audit](../../assets/images/qwen3-8-flash-next-vision-sft/ground-truth-independent-qualification.json)
+recomputed the labels of all 1312 scenes using signed distances to rectangle,
+circle and triangle boundaries, without importing the generator or its counting
+function. All labels, question-selected target geometries and archived image
+pixel hashes matched; all 1024 supervised integers matched their source scenes.
+Center and full-footprint membership agreed on every scene, with minimum boundary
+clearance above 15 pixels. This checks mathematical scene labels and retained
+pixels; it does not prove unique reconstruction of occluded sheets from the image.
+No scenes or labels were changed.
+
 ```bash
 python -m examples.qwen3_8_next_vision_sft.prepare --help
 python scripts/run_qwen3_8_next_vision_sft.py --help
@@ -409,7 +455,8 @@ MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_qwen3_8_next_vision_sft.py \
   --hf-checkpoint /root/models/Qwen3.8-Flash-Next \
   --prompt-data /root/datasets/geometry-v1/sft_exact.jsonl \
   --output-dir /root/runs/qwen38-image \
-  --freeze-language --enable-thinking
+  --freeze-language --enable-thinking \
+  --reasoning-effort low --final-answer-format integer-only
 ```
 
 Run on an allocated GPU node with a compatible Megatron and SGLang environment.

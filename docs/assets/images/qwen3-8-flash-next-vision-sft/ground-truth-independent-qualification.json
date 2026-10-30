@@ -1,0 +1,245 @@
+{
+  "complete": true,
+  "method": "independent analytic signed distances to rectangle/circle/triangle boundaries; no generator imports or count calls",
+  "source": {
+    "generator_repository": "https://github.com/maveryn/sphinx",
+    "generator_commit": "28ef6c43629ab4491491a204167ef2f52dcd8182",
+    "generator_module_sha256": "ffdf30c3c79de794b3693ec68d5925fc88e72cd11058044c19f8b1c41113bf94"
+  },
+  "script_sha256": "12b74a6fc2dc7dc805b62797fd4ad4211a6fae790e9cdecc1278c1a22e0dbfa1",
+  "dataset_changed": false,
+  "labels_changed": false,
+  "mismatches": [],
+  "question_selection_mismatches": [],
+  "per_role": {
+    "distillation": {
+      "n": 1024,
+      "labels_match": 1024,
+      "center_and_full_footprint_counts_match": 1024,
+      "pixels_match": 1024,
+      "by_target_kind": {
+        "triangle": 244,
+        "circle": 354,
+        "rectangle": 426
+      },
+      "minimum_inside_object_clearance_px": 15.005888120711715,
+      "minimum_outside_object_clearance_px": 15.050518705411333
+    },
+    "development": {
+      "n": 32,
+      "labels_match": 32,
+      "center_and_full_footprint_counts_match": 32,
+      "pixels_match": 32,
+      "by_target_kind": {
+        "triangle": 10,
+        "rectangle": 14,
+        "circle": 8
+      },
+      "minimum_inside_object_clearance_px": 15.573683105849732,
+      "minimum_outside_object_clearance_px": 15.646381983469222
+    },
+    "validation": {
+      "n": 256,
+      "labels_match": 256,
+      "center_and_full_footprint_counts_match": 256,
+      "pixels_match": 256,
+      "by_target_kind": {
+        "rectangle": 112,
+        "triangle": 59,
+        "circle": 85
+      },
+      "minimum_inside_object_clearance_px": 15.129251835397667,
+      "minimum_outside_object_clearance_px": 15.079711938827623
+    }
+  },
+  "example": {
+    "id": "validation-geometric_stack_count-00000",
+    "question": "Equal-area colored sheets are placed first; then the black triangles are overlaid on top. Even if the purple rectangle is partly hidden, how many small black triangles are strictly inside its boundary?\nGive your final answer as a single integer on its own line.",
+    "label": 6,
+    "computed": 6,
+    "target": {
+      "kind": "rectangle",
+      "color": "purple",
+      "bbox": [
+        143,
+        149,
+        625,
+        443
+      ]
+    },
+    "included_shape_indices": [
+      5,
+      9,
+      11,
+      18,
+      19,
+      23
+    ],
+    "candidate_objects": [
+      {
+        "shape_index": 2,
+        "center": [
+          729.4470980286978,
+          123.29924430765827
+        ],
+        "radius": 10.360559939092102,
+        "signed_center_margin_px": -104.44709802869784,
+        "inside": false
+      },
+      {
+        "shape_index": 4,
+        "center": [
+          678.6230174214699,
+          378.051987554406
+        ],
+        "radius": 14.433666894702245,
+        "signed_center_margin_px": -53.623017421469854,
+        "inside": false
+      },
+      {
+        "shape_index": 5,
+        "center": [
+          186.5201605556683,
+          305.2011284494256
+        ],
+        "radius": 9.890199610802865,
+        "signed_center_margin_px": 43.5201605556683,
+        "inside": true
+      },
+      {
+        "shape_index": 9,
+        "center": [
+          483.3066012145705,
+          268.0405895473334
+        ],
+        "radius": 14.918941536166106,
+        "signed_center_margin_px": 119.04058954733341,
+        "inside": true
+      },
+      {
+        "shape_index": 10,
+        "center": [
+          649.0310953047116,
+          469.94992349201164
+        ],
+        "radius": 8.907447742124324,
+        "signed_center_margin_px": -26.949923492011635,
+        "inside": false
+      },
+      {
+        "shape_index": 11,
+        "center": [
+          341.7165815490267,
+          249.9078114925828
+        ],
+        "radius": 11.199048069377904,
+        "signed_center_margin_px": 100.9078114925828,
+        "inside": true
+      },
+      {
+        "shape_index": 12,
+        "center": [
+          686.2416140808548,
+          188.4282423131562
+        ],
+        "radius": 9.686340144050815,
+        "signed_center_margin_px": -61.24161408085479,
+        "inside": false
+      },
+      {
+        "shape_index": 13,
+        "center": [
+          370.5700595313272,
+          70.15024831313947
+        ],
+        "radius": 14.662424197291882,
+        "signed_center_margin_px": -78.84975168686053,
+        "inside": false
+      },
+      {
+        "shape_index": 16,
+        "center": [
+          191.13507112909616,
+          60.64078435207239
+        ],
+        "radius": 12.153740781770521,
+        "signed_center_margin_px": -88.35921564792761,
+        "inside": false
+      },
+      {
+        "shape_index": 17,
+        "center": [
+          599.5596428793033,
+          480.9176149946681
+        ],
+        "radius": 14.082310491405565,
+        "signed_center_margin_px": -37.9176149946681,
+        "inside": false
+      },
+      {
+        "shape_index": 18,
+        "center": [
+          345.11894446117225,
+          307.2485012027037
+        ],
+        "radius": 8.022056479057225,
+        "signed_center_margin_px": 135.75149879729628,
+        "inside": true
+      },
+      {
+        "shape_index": 19,
+        "center": [
+          590.8790424268586,
+          207.06765555797648
+        ],
+        "radius": 11.618892043782074,
+        "signed_center_margin_px": 34.12095757314137,
+        "inside": true
+      },
+      {
+        "shape_index": 22,
+        "center": [
+          98.38884195125544,
+          329.4697312028938
+        ],
+        "radius": 11.691036933355,
+        "signed_center_margin_px": -44.61115804874456,
+        "inside": false
+      },
+      {
+        "shape_index": 23,
+        "center": [
+          581.161323017011,
+          270.15220253403396
+        ],
+        "radius": 14.819778392050026,
+        "signed_center_margin_px": 43.838676982989,
+        "inside": true
+      },
+      {
+        "shape_index": 25,
+        "center": [
+          669.316797927316,
+          98.94395806052778
+        ],
+        "radius": 13.275398753295434,
+        "signed_center_margin_px": -50.05604193947222,
+        "inside": false
+      }
+    ]
+  },
+  "limits": [
+    "Verifies mathematical scene labels, not uniqueness of reconstruction from an occluded rendered image",
+    "Checks actual rendered pixels against archived hashes, not an independent proof of the renderer itself"
+  ],
+  "files_sha256": {
+    "distillation.jsonl": "2d666b0b67f8c3aba2ef0bf11de71a7e7acfbf48fd14dd1c9d982492e6a3003e",
+    "development.jsonl": "78249a226152b10229f73b23a03706c31d140e95dcbb6325561864059120142c",
+    "validation.jsonl": "6f9b21c2cefe866a6b259c11ca9a0969b190494772cf46ba35ec9f025739376e",
+    "sft_exact.jsonl": "40f2159076083a73d38b9cc800a8a3702b68a302824571b5166c0531402ffb1d",
+    "materialization.json": "25f039ea46c12832c570eb97aeabab248fe0180afc7b93096bc61faeefbd1fab"
+  },
+  "total": 1312,
+  "total_labels_match": 1312,
+  "total_pixels_match": 1312
+}
