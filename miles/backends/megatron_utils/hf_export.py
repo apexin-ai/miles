@@ -10,6 +10,7 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.utils import is_lora_model
+from miles.backends.megatron_utils import ple_provenance
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -59,6 +60,7 @@ def save_hf_model(
                     checkpoint_dir, args.hf_checkpoint, mtp_trained=args.enable_mtp_training
                 )
                 if receipt is not None:
+                    ple_provenance.check_export(receipt["passthrough_sha256"])
                     logger.info(
                         f"HF export {checkpoint_dir}: {receipt['exported_keys']} exported + "
                         f"{receipt['passthrough_keys']} passed through from {receipt['base']} {receipt['passthrough_groups']}"
