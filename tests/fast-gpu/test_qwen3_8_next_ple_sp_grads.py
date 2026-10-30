@@ -38,7 +38,9 @@ SPLIT_PARTS, ROWS_PER_SHARD = 8, 128
 EPS = 2.0
 SEQ = 1024
 TOL = 2e-2  # bf16, relative to the largest gradient entry
-SIGNAL = 0.1  # the cross-boundary gradient must be at least this large, same scale
+# Unfixed code drops, at each slice boundary, exactly the gradient later tokens send back
+# across it; the largest of those must clear TOL by a margin for the test to tell the two apart.
+SIGNAL = 2.5 * TOL
 
 
 def build_config(world):
@@ -117,9 +119,12 @@ def check(layer, tp_group, rank, world, recompute):
     layer.zero_grad(set_to_none=True)
     scale = ref_dx.abs().max()
 
-    later_only = tuple(torch.cat([torch.zeros_like(u[:local]), u[local:]]) for u in upstream)
-    signal = run(layer, x, ngram_ids, cu, later_only, recompute)[local - LOOKBACK : local].abs().max() / scale
-    layer.zero_grad(set_to_none=True)
+    signal = 0.0
+    for b in range(local, SEQ, local):
+        later_only = tuple(torch.cat([torch.zeros_like(u[:b]), u[b:]]) for u in upstream)
+        crossing = run(layer, x, ngram_ids, cu, later_only, recompute)[b - LOOKBACK : b].abs().max() / scale
+        signal = max(signal, crossing.item())
+        layer.zero_grad(set_to_none=True)
 
     layer.config.sequence_parallel = True
     own = slice(rank * local, (rank + 1) * local)
@@ -129,7 +134,7 @@ def check(layer, tp_group, rank, world, recompute):
     dist.all_gather_into_tensor(dx, local_dx.contiguous(), group=tp_group)
 
     token_err = (dx - ref_dx).abs().amax(dim=(1, 2)) / scale
-    errors = {"signal": signal.item(), "dx": token_err.max().item()}
+    errors = {"signal": signal, "dx": token_err.max().item()}
     tails = [t for r in range(1, world) for t in range(r * local - LOOKBACK, r * local)]
     errors["dx_boundary"] = token_err[tails].max().item()
     for name, param in layer.named_parameters():
