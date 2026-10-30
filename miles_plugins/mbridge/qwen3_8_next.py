@@ -227,7 +227,8 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         moved = []
         for w in hf_weights:
             # Keep the source alive: an unmapped address can be reused by a different weight.
-            key = (w.data_ptr(), tuple(w.shape), w.dtype)
+            # The stride tells apart live views of one buffer that share address and shape (W and W.T).
+            key = (w.data_ptr(), tuple(w.shape), w.stride(), w.dtype)
             hit = cache.get(key)
             if hit is None:
                 if len(cache) >= self._GPU_CACHE_SIZE:
