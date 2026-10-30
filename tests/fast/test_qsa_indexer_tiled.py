@@ -131,23 +131,83 @@ def _block_sets(tokens, layout, num_blocks):
     return out
 
 
+def check_block_selection(got, want, logits, k, tol=0.0, lowest_index=True):
+    """Per row, the selection ``got`` must be a valid top-k of ``logits``; returns the rows where it differs from ``want``.
+
+    ``got`` / ``want`` are ``[T, blocks]`` 0/1; ``logits`` the untiled reference scores,
+    ``-inf`` outside each row's candidate blocks. Every row of ``got`` must:
+
+    - match ``want`` exactly outside the candidates (that is the query's partial tail block);
+    - when a row has at most ``k`` candidates, select all of them;
+    - otherwise select exactly ``k`` candidates, every one scoring above the k-th score by
+      more than ``tol``, none below it by more than ``tol``; only blocks inside that band
+      may differ from ``want``, and with ``lowest_index`` an exact tie keeps the lowest ids.
+
+    ``tol`` is the fp band the GPU allows for scores summed in a different order.
+    """
+    got, want = got.bool(), want.bool()
+    cand = torch.isfinite(logits)
+    bad = lambda mask, what: f"{what}: rows {torch.nonzero(mask).flatten()[:8].tolist()}"  # noqa: E731
+    outside = ((got ^ want) & ~cand).any(-1)
+    assert not bool(outside.any()), bad(outside, "differs outside the candidate blocks")
+    kth = torch.topk(logits, k, dim=-1).values[:, -1:]
+    full = torch.isfinite(kth.squeeze(-1))
+    few = ~full & ((got & cand) != cand).any(-1)
+    assert not bool(few.any()), bad(few, "misses a candidate in a row with at most k of them")
+    band = tol * kth.abs()
+    above = logits > kth + band
+    below = cand & (logits < kth - band)
+    missing = full & (above & ~got).any(-1)
+    assert not bool(missing.any()), bad(missing, "drops a strictly-better block")
+    extra = full & (got & below).any(-1)
+    assert not bool(extra.any()), bad(extra, "keeps a block below the k-th score")
+    count = full & ((got & cand).sum(-1) != k)
+    assert not bool(count.any()), bad(count, "selects a number of blocks other than k")
+    differ = (got != want).any(-1)
+    if lowest_index:
+        at = full.unsqueeze(-1) & (logits == kth)
+        lowest = at & (at.cumsum(-1) <= (got & at).sum(-1, keepdim=True))
+        wrong = ((got & at) != lowest).any(-1)
+        assert not bool(wrong.any()), bad(wrong, "breaks a tie away from the lowest block ids")
+    return differ
+
+
 def _compare(got, want, logits, k, layout):
-    """Rows must select the same blocks, except where the k-th score is tied: there the
-    strictly-better blocks and the tie count agree, and the tiled path keeps the lowest ids."""
     assert got.shape == want.shape
     g = _block_sets(got, layout, logits.shape[-1])
     w = _block_sets(want, layout, logits.shape[-1])
-    kth = torch.topk(logits, k, dim=-1).values[:, -1:]
-    tied = torch.isfinite(kth.squeeze(-1)) & ((logits >= kth).sum(-1) > k)
-    differ = (g != w).any(dim=-1)
-    assert not bool((differ & ~tied).any()), f"rows {torch.nonzero(differ & ~tied).flatten()[:8].tolist()} differ without a tie"
-    strictly = logits > kth
-    assert torch.equal(g & strictly, w & strictly)
-    at = logits == kth
-    assert torch.equal((g & at).sum(-1), (w & at).sum(-1))
-    lowest = at & (at.cumsum(-1) <= (g & at).sum(-1, keepdim=True))
-    assert torch.equal((g & at)[tied], lowest[tied]), "tie broken away from the lowest block ids"
-    return int((differ & tied).sum())
+    return int(check_block_selection(g, w, logits, k).sum())
+
+
+@pytest.mark.parametrize(
+    "logits,k,got,ok",
+    [
+        ([10.0, 2.0, 2.0, 0.0], 2, [1, 1, 0, 0], True),
+        ([10.0, 2.0, 2.0, 0.0], 2, [1, 0, 1, 0], False),  # valid top-k, but not the lowest-id tie
+        ([10.0, 2.0, 2.0, 0.0], 2, [0, 0, 0, 0], False),  # nothing selected
+        ([10.0, 2.0, 2.0, 0.0], 2, [0, 1, 1, 0], False),  # drops the best block
+        ([10.0, 2.0, 2.0, 0.0], 2, [1, 1, 1, 0], False),  # one too many
+        ([10.0, 2.0, 2.0, 0.0], 2, [1, 0, 0, 1], False),  # keeps a block below the k-th score
+        ([10.0, 2.000001, 2.0, 0.0], 2, [0, 0, 0, 0], False),
+        ([5.0, float("-inf"), float("-inf"), float("-inf")], 2, [1, 0, 0, 0], True),
+        ([5.0, float("-inf"), float("-inf"), float("-inf")], 2, [0, 0, 0, 0], False),
+    ],
+)
+def test_selection_check_rejects_invalid_bitmaps(logits, k, got, ok):
+    """The equivalence check itself: a wrong bitmap must not pass as a tie swap."""
+    logits = torch.tensor([logits])
+    want = torch.zeros(1, 4, dtype=torch.uint8)
+    want[0, torch.topk(logits[0], k).indices[torch.isfinite(torch.topk(logits[0], k).values)]] = 1
+    got = torch.tensor([got], dtype=torch.uint8)
+    if ok:
+        check_block_selection(got, want, logits, k)
+    else:
+        with pytest.raises(AssertionError):
+            check_block_selection(got, want, logits, k)
+    if logits[0, 1] == 2.000001 and not got.any():
+        # a near tie inside the fp band still may not empty the row
+        with pytest.raises(AssertionError):
+            check_block_selection(got, want, logits, k, tol=1e-5, lowest_index=False)
 
 
 CASES = [
@@ -286,11 +346,15 @@ def test_block_form_matches_untiled_attention(monkeypatch, lens):
         assert torch.equal(a, b)
     assert got[7] == want[7]
     k = min(indexer.block_topk, logits.shape[-1])
-    kth = torch.topk(logits, k, dim=-1).values[:, -1:]
-    tied = (torch.isfinite(kth.squeeze(-1))) & ((logits >= kth).sum(-1) > k)
-    differ = (got[0] != want[0]).any(dim=-1)
-    assert not bool((differ & ~tied).any()), "bitmap rows differ without a tied k-th score"
-    # on tied rows the strictly-better blocks and the selected count still agree
-    strictly = logits > kth
-    assert torch.equal(got[0].bool() & strictly, want[0].bool() & strictly)
-    assert torch.equal(got[0].sum(-1), want[0].sum(-1))
+    check_block_selection(got[0], want[0], logits, k)
+
+
+@pytest.mark.parametrize("tile_bytes", [0, -1])
+def test_plan_rejects_a_non_positive_budget(tile_bytes):
+    with pytest.raises(ValueError, match="positive"):
+        plan_query_tiles([0, 0], [1, 2], tile_bytes)
+
+
+def test_a_row_wider_than_the_budget_is_scored_alone():
+    tiles = plan_query_tiles([0, 0, 0], [4096, 4096, 4096], 65536)
+    assert tiles == [(0, 1), (1, 2), (2, 3)]
