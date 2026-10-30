@@ -202,10 +202,15 @@ def _evaluate_split(engine, processor, config, rows, output, *, args, split, upd
                 ids = [item[0] for item in prepared]
                 if max(map(len, ids)) + args.max_new_tokens > args.context_length:
                     raise ValueError("Expanded image prompt plus generation exceeds the fixed context budget")
+                sampling = {"temperature": 0, "top_p": 1, "max_new_tokens": args.max_new_tokens}
+                if getattr(args, "constrain_integer_answer", False):
+                    if any(item[3] != "<think>\n\n</think>\n\n" for item in prepared):
+                        raise ValueError("Integer-constrained generation requires a closed thinking prefill")
+                    sampling["regex"] = r"[+-]?[0-9]+"
                 kwargs = {} if control == "no_image" else {"image_data": [item[1] for item in prepared]}
                 outputs = engine.generate(
                     input_ids=ids,
-                    sampling_params={"temperature": 0, "top_p": 1, "max_new_tokens": args.max_new_tokens},
+                    sampling_params=sampling,
                     **kwargs,
                 )
                 if len(outputs) != len(batch):
@@ -310,6 +315,9 @@ def main():
         help="Close native thinking before generation while retaining template reasoning/system instructions",
     )
     parser.add_argument("--enable-cuda-graph", action="store_true", help="Opt in to native decode graph capture")
+    parser.add_argument(
+        "--constrain-integer-answer", action="store_true", help="Use native regex decoding for a signed integer"
+    )
     parser.add_argument("--mem-fraction-static", type=float, default=0.6)
     parser.add_argument("--limit", type=int, default=0, help="Bring-up only; not a held-out quality result")
     args = parser.parse_args()
@@ -317,6 +325,8 @@ def main():
         parser.error("Invalid device, batch or token counts")
     if args.skip_baseline and not args.visual_snapshots:
         parser.error("--skip-baseline requires at least one visual snapshot")
+    if args.constrain_integer_answer and args.enable_thinking and not args.empty_thinking_prefill:
+        parser.error("--constrain-integer-answer requires disabled thinking or --empty-thinking-prefill")
     args.output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     processor, config = _processor(str(args.model))
