@@ -255,6 +255,96 @@ not tell you.
 
 ## 7. Image SFT
 
+### Completed Five-Epoch Vision-Only Result
+
+The complete native visual tower and merger were trained with the language model
+frozen. The fixed final checkpoint at **160 cumulative updates** improves both
+the full 1024-scene training set and the fixed 256-scene validation set:
+
+| Fixed scene set | Original base | Update 160 | Change | Wrong → right | Right → wrong |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Training, 1024 scenes | 448/1024 (43.75%) | 511/1024 (49.90%) | **+6.15 pp, net +63** | 221 | 158 |
+| Validation, 256 scenes | 113/256 (44.14%) | 125/256 (48.83%) | **+4.69 pp, net +12** | 59 | 47 |
+
+![Measured original-base and final visual-only scores](https://raw.githubusercontent.com/leviking98z-rgb/miles/refs/heads/feat/qwen38-next-vision-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-vision-sft/u160-eval-gain.png)
+
+These bars show two measured endpoints. Intermediate checkpoints of this
+continuation were not evaluated. Both endpoints use genuine images, identical
+ordered scene IDs, questions, labels, pixels, expanded input tokens and native
+assistant prefills. Thinking stays enabled at `low`, with greedy decoding,
+16384 output tokens, context 32768, TP8/EP8, batch size 256 and CUDA graphs.
+The integer-only instruction and `integer_last_final_line_v2` scorer are the same
+for both endpoints. There is no integer-constrained decoder or closed-thinking
+prefill in this evaluation.
+
+The improvement persists among scenes where both answers have valid formats:
+**net +58 training scenes and net +12 validation scenes**. Validity transitions
+contribute the remaining net +5 training scenes and net zero validation scenes.
+Invalid answers fall from 19 to 6 on training and change from 1 to 2 on validation.
+
+![Paired gains, regressions and validity accounting](https://raw.githubusercontent.com/leviking98z-rgb/miles/refs/heads/feat/qwen38-next-vision-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-vision-sft/u160-paired-changes.png)
+
+The [canonical result and exact protocol](../../assets/images/qwen3-8-flash-next-vision-sft/u160-results.json),
+[1024 training pairs](../../assets/images/qwen3-8-flash-next-vision-sft/u160-training1024-pairs.jsonl)
+and [256 validation pairs](../../assets/images/qwen3-8-flash-next-vision-sft/u160-validation256-pairs.jsonl)
+retain the exact per-scene integer comparison. All aggregates were recomputed
+from retained raw predictions before publishing. The training baseline combines
+256 previously qualified identical requests with 768 newly completed requests;
+the resulting denominator is the same 1024 scenes as the final checkpoint.
+
+The continuation uses **four eight-GPU B300 nodes, TP8/DP4/PP1/EP8**, global batch
+32, micro-batch 1, constant LR `1e-6`, Adam betas `(0.9, 0.98)`, zero weight decay
+and gradient clipping at 1. Updates 1–64 were trained on one eight-GPU node;
+updates 65–160 continue from its audited update-64 visual state. Adam state was
+**reset at update 64**. This is five nominal passes through 1024 training scenes,
+with no claim of uninterrupted optimizer or data-cursor resume.
+
+![All 96 logged continuation loss points](https://raw.githubusercontent.com/leviking98z-rgb/miles/refs/heads/feat/qwen38-next-vision-sft-01a188ab/docs/assets/images/qwen3-8-flash-next-vision-sft/u160-training-loss.png)
+
+The [loss data](../../assets/images/qwen3-8-flash-next-vision-sft/u160-training-loss.json)
+contains every actual continuation update, without smoothing or filling missing
+points. Mean losses for epochs 3/4/5 are 0.293/0.279/0.257. Each point uses a
+different training batch; the average includes the fixed answer-boundary tokens.
+
+The [rank and source audit](../../assets/images/qwen3-8-flash-next-vision-sft/u160-training-audit.json)
+covers **333 visual tensors / 448,931,056 parameters**, all 32 final rank audits,
+unchanged complete language hashes, identical visual replica hashes and 32
+successful native model-only reload checks. All 25 inventoried model, bridge,
+launcher and evaluator source files match this published checkout. The final
+complete visual parameter hash is
+`619d90d4c362f100e86b65bc94ac41fc46c486ea46ae80a7cc9be0359c283d2f`.
+The native checkpoint iteration is 95, corresponding to the 96th continuation
+update and cumulative update 160. Model weights and raw prediction/audit files
+remain on the project disk; this page publishes their hashes and paired answers.
+
+The public launcher expresses the measured continuation as follows. The HF
+checkpoint supplied here contains the audited update-64 visual weights and the
+unchanged original language weights:
+
+```bash
+MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_qwen3_8_next_vision_sft.py \
+  --hf-checkpoint /root/models/Qwen3.8-Flash-Next-vision-u64 \
+  --prompt-data /root/datasets/geometry/sft_exact.jsonl \
+  --output-dir /root/runs/qwen38-vision-continuation \
+  --num-nodes 4 --num-gpus-per-node 8 --tp-size 8 --pp-size 1 --ep-size 8 \
+  --freeze-language --vision-trainable full --enable-thinking \
+  --reasoning-effort low --final-answer-format integer-only \
+  --num-rollout 96 --save-interval 96 --visual-snapshot-interval 32 \
+  --lr 1e-6 --weight-decay 0 \
+  --extra-args "--make-vocab-size-divisible-by 64"
+```
+
+The explicit vocabulary alignment preserves the native 248320-row embedding
+when using TP8. An allocated, already-joined Ray cluster and the documented native
+dependencies remain prerequisites. Rebuild all three figures with
+`python -m tools.plot_qwen38_vision160_results`.
+
+This meets the task's engineering criterion of **real visual updates plus observed
+validation-score improvement**. The training set remains far from perfectly fit.
+The validation set was also used in earlier debugging; this is one run, without
+new matched image-removal/swapping controls or a multiple-seed estimate. The
+earlier experiments below preserve their own protocols and are separate runs.
+
 ### Scope And Qualification
 
 `scripts/run_qwen3_8_next_vision_sft.py` implements image SFT for the **complete
