@@ -383,6 +383,10 @@ retains the native template's system/reasoning instructions and closes its
 assistant thinking block before generating the integer. Disabling thinking in
 the template can also change system instructions, so it is a separate protocol.
 All compared checkpoints must use the same prefill, reasoning effort and format.
+`--constrain-integer-answer` additionally applies native signed-integer regex
+decoding. It requires a closed thinking prefill, preserves the exact scorer,
+and must be applied to the baseline and every compared checkpoint. Constrained
+and unconstrained generations are separate evaluation protocols.
 
 ```bash
 python -m examples.qwen3_8_next_vision_sft.evaluate \

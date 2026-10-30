@@ -267,7 +267,8 @@ def test_empty_thinking_prefill_preserves_native_system_reasoning_options(thinki
     "thinking,generated,correct,invalid",
     [(True, "Counted two.\n</think>\n\n2", 1, 0), (True, "Still counting: 2", 0, 1), (False, "2", 1, 0)],
 )
-def test_scoring_preserves_prompt_thinking_prefix(tmp_path, thinking, generated, correct, invalid):
+@pytest.mark.parametrize("constrain", [False, True])
+def test_scoring_preserves_prompt_thinking_prefix(tmp_path, thinking, generated, correct, invalid, constrain):
     from examples.qwen3_8_next_vision_sft.evaluate import _evaluate_split
 
     prefill = "<think>\n" if thinking else "<think>\n\n</think>\n\n"
@@ -279,15 +280,16 @@ def test_scoring_preserves_prompt_thinking_prefix(tmp_path, thinking, generated,
     def generate(**kwargs):
         assert kwargs["input_ids"] == [[1, 2]] and "image_data" not in kwargs
         assert kwargs["sampling_params"]["max_new_tokens"] == 4096
+        assert kwargs["sampling_params"].get("regex") == (r"[+-]?[0-9]+" if constrain else None)
         return [{"text": generated, "meta_info": {"prompt_tokens": 2}}]
 
     path = tmp_path / "predictions.jsonl"
-    metrics = _evaluate_split(
-        SimpleNamespace(generate=generate),
-        SimpleNamespace(tokenizer=tokenizer),
-        {},
-        [{"id": "scene", "messages": [{"content": "Count."}], "answer": "2"}],
-        path,
+    options = dict(
+        engine=SimpleNamespace(generate=generate),
+        processor=SimpleNamespace(tokenizer=tokenizer),
+        config={},
+        rows=[{"id": "scene", "messages": [{"content": "Count."}], "answer": "2"}],
+        output=path,
         args=SimpleNamespace(
             controls=["no_image"],
             batch_size=1,
@@ -296,10 +298,16 @@ def test_scoring_preserves_prompt_thinking_prefix(tmp_path, thinking, generated,
             enable_thinking=thinking,
             reasoning_effort="xhigh",
             final_answer_format="dataset",
+            constrain_integer_answer=constrain,
         ),
         split="development",
         update=0,
     )
+    if constrain and thinking:
+        with pytest.raises(ValueError, match="requires a closed thinking prefill"):
+            _evaluate_split(**options)
+        return
+    metrics = _evaluate_split(**options)
     assert metrics["no_image"]["correct"] == correct
     assert metrics["no_image"]["invalid"] == invalid
     record = json.loads(path.read_text())
