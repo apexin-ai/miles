@@ -453,7 +453,11 @@ node before relying on a speedup. Decode progress is logged during generation.
 
 The evaluator records raw text for genuine-image, no-image and deterministic
 swapped-image controls, using greedy decoding (4096 new tokens by default), native
-expanded prompt IDs, and `integer_first_final_line_v1`. It retains the template's assistant
+expanded prompt IDs, and `integer_last_final_line_v2`. The scorer takes the last
+nonempty line after closed thinking and requires that line to be an integer;
+it does not search arbitrary prose for a number. An unfinished thinking block
+remains invalid. Earlier recorded runs used `integer_first_final_line_v1`.
+It retains the template's assistant
 prefill separately from generated text and includes it when scoring, so an unfinished
 native `<think>` block cannot become a valid final answer. Use `--enable-thinking`
 consistently for the reasoning protocol in training and evaluation.
@@ -473,6 +477,19 @@ After all workers finish, combine their output directories with
 different protocols, source hashes, and package versions, then re-scores the raw
 predictions before accepting a complete curve. Checkpoint workers require the
 completed frozen-language audits from training.
+
+Retained complete predictions can be re-scored without another GPU generation:
+
+```bash
+python -m examples.qwen3_8_next_vision_sft.rescore \
+  --evaluation /root/runs/qwen38-image/original-evaluation \
+  --data /root/datasets/geometry-v1 \
+  --output /root/runs/qwen38-image/last-line-evaluation
+```
+
+Re-scoring checks the original protocol's aggregates, unchanged dataset and raw
+text, preserves the source files, and records their hashes with the new scoring
+protocol. Apply the same extraction rule to the baseline and every checkpoint.
 
 A falling training loss, successful weight loading, or scores from the reference
 GLM/DeepSeek issues are not evidence of a Qwen evaluation improvement.

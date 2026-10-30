@@ -9,14 +9,17 @@ import re
 from collections import Counter
 from pathlib import Path
 
-PROTOCOL = "integer_first_final_line_v1"
+PROTOCOL = "integer_last_final_line_v2"
+LEGACY_PROTOCOL = "integer_first_final_line_v1"
 
 
 def read_rows(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def answer_of(text: str) -> int | None:
+def answer_of(text: str, *, protocol: str = PROTOCOL) -> int | None:
+    if protocol not in (PROTOCOL, LEGACY_PROTOCOL):
+        raise ValueError(f"Unknown answer-scoring protocol: {protocol}")
     if text.count("</think>") > 1:
         return None
     if "<think>" in text and "</think>" not in text:
@@ -25,7 +28,7 @@ def answer_of(text: str) -> int | None:
     lines = [line.strip() for line in body.splitlines() if line.strip()]
     if not lines:
         return None
-    line = lines[0].replace("*", "").replace("`", "").strip()
+    line = lines[-1 if protocol == PROTOCOL else 0].replace("*", "").replace("`", "").strip()
     matched = re.fullmatch(r"([+-]?\d+)\.?", line)
     return int(matched.group(1)) if matched else None
 
