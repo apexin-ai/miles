@@ -47,7 +47,10 @@ class TestBackendOwnedSpecs:
     ) -> None:
         """Dense Qwen models reset the MoE cadence before SDK block construction."""
         module = importlib.import_module(f"miles_plugins.models.{family}")
-        args = make_trainer_config(num_experts=num_experts, hf_checkpoint="/qwen-checkpoint")
+        # Megatron always defines position_embedding_type; the Qwen3.8 spec reads it to pick mRoPE.
+        args = make_trainer_config(
+            num_experts=num_experts, position_embedding_type="rope", hf_checkpoint="/qwen-checkpoint"
+        )
         original = args.model_dump()
         config = SimpleNamespace(num_layers=2, moe_layer_freq=[1, 0], pipeline_model_parallel_layout=None)
         text = SimpleNamespace(
