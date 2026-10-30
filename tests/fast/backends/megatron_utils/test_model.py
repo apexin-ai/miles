@@ -543,3 +543,134 @@ def test_ft_discard_stays_invalid_with_finite_gradient_norm(
     )
 
     assert outcome is model_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY
+
+
+class TorchBackedOptimizer:
+    """The MegatronOptimizer calls of train_one_step, backed by a real AdamW whose weight decay moves weights."""
+
+    def __init__(self, parameter: torch.nn.Parameter) -> None:
+        self.parameter = parameter
+        self.optimizer = torch.optim.AdamW([parameter], lr=0.1, weight_decay=0.1)
+        self.step_count = 0
+
+    @property
+    def param_groups(self) -> list[dict]:
+        return self.optimizer.param_groups
+
+    def zero_grad(self) -> None:
+        self.optimizer.zero_grad(set_to_none=True)
+
+    def prepare_grads(self) -> bool:
+        return False
+
+    def get_grad_norm(self) -> float:
+        return self.parameter.grad.norm().item()
+
+    def step(self) -> tuple[bool, float, int]:
+        grad_norm = self.get_grad_norm()
+        self.optimizer.step()
+        self.step_count += 1
+        return True, grad_norm, 0
+
+
+class TestUnsupervisedStep:
+    @pytest.mark.parametrize(
+        ("per_token", "num_tokens", "grad", "updates"),
+        [
+            (True, 0, 0.0, False),
+            # e.g. a MoE aux loss: gradients without any supervised token are skipped too
+            (True, 0, 1.0, False),
+            (True, 5, 1.0, True),
+            # sample-mean losses carry no token count, so their steps are untouched
+            (False, None, 0.0, True),
+        ],
+    )
+    def test_a_step_without_supervised_tokens_skips_the_optimizer_and_the_scheduler(
+        self,
+        train_one_step_env: TrainOneStepEnv,
+        monkeypatch: pytest.MonkeyPatch,
+        per_token: bool,
+        num_tokens: int | None,
+        grad: float,
+        updates: bool,
+    ) -> None:
+        """Megatron clamps a zero global token count to one; the step must still leave weights and LR untouched."""
+        from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
+
+        from miles.backends.megatron_utils import model as model_module
+
+        env = train_one_step_env
+        env.args.enable_sample_ownership_checker = False
+        env.args = with_backend_values(
+            env.args, check_for_nan_in_loss_and_grad=False, calculate_per_token_loss=per_token
+        )
+        parameter = torch.nn.Parameter(torch.ones(3))
+        env.model[0].register_parameter("weight", parameter)
+        optimizer = TorchBackedOptimizer(parameter)
+        scheduler = OptimizerParamScheduler(
+            optimizer,
+            init_lr=0.0,
+            max_lr=0.1,
+            min_lr=0.0,
+            lr_warmup_steps=4,
+            lr_decay_steps=16,
+            lr_decay_style="linear",
+            start_wd=0.1,
+            end_wd=0.1,
+            wd_incr_steps=16,
+            wd_incr_style="constant",
+        )
+        scheduler.step(increment=2)
+        weight_before = parameter.detach().clone()
+        lr_before = optimizer.param_groups[0]["lr"]
+
+        def finalize_model_grads(model, num_tokens=None, pg_collection=None, force_all_reduce=False):
+            # one rank: the PP broadcast and DP-CP all-reduce leave the count as it is
+            if num_tokens is not None:
+                parameter.grad *= 1.0 / torch.clamp(num_tokens, min=1)
+
+        def forward_backward_engine(**kwargs: Any) -> list[dict[str, Any]]:
+            parameter.grad = torch.full_like(parameter, grad)
+            count = torch.tensor(num_tokens, dtype=torch.int) if per_token else None
+            model_module.finalize_model_grads_with_empty_cache(
+                kwargs["model"], count, pg_collection=None, force_all_reduce=False
+            )
+            return []
+
+        monkeypatch.setattr(model_module, "finalize_model_grads", finalize_model_grads)
+        monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward_engine)
+        monkeypatch.setattr(model_module, "mpu", FakeMpu(is_last_pipeline_stage=True))
+        monkeypatch.setattr(model_module, "aggregate_train_losses", lambda losses_reduced, num_rollouts: {})
+        monkeypatch.setattr(model_module, "is_first_replica_megatron_main_rank", lambda: True)
+        monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+        monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (1, 1))
+
+        loss_dict, _, outcome = model_module.train_one_step(
+            args=env.args,
+            rollout_id=7,
+            step_id=0,
+            data_iterator=env.data_iterator,
+            model=env.model,
+            optimizer=optimizer,
+            opt_param_scheduler=scheduler,
+            num_microbatches=1,
+            num_rollouts=4,
+            witness_info=None,
+            attempt=0,
+        )
+
+        assert outcome is model_module.TrainStepOutcome.NORMAL
+        assert parameter.grad is None
+        if updates:
+            assert optimizer.step_count == 1
+            assert scheduler.num_steps == 6
+            assert not torch.equal(parameter.detach(), weight_before)
+            assert env.model[0].model_companion.weight_version.item() == 1
+            assert "skipped_unsupervised_step" not in loss_dict
+        else:
+            assert optimizer.step_count == 0
+            assert scheduler.num_steps == 2
+            assert optimizer.param_groups[0]["lr"] == lr_before
+            assert torch.equal(parameter.detach(), weight_before)
+            assert env.model[0].model_companion.weight_version.item() == 0
+            assert loss_dict == {"skipped_unsupervised_step": 1.0}

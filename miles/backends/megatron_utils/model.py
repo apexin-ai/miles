@@ -591,6 +591,8 @@ def train_one_step(
     if args.enable_sample_ownership_checker:
         sample_consumption_start = data_iterator[0].offset
     _zero_grads(model, optimizer, disable_optimizer)
+    global _step_num_tokens
+    _step_num_tokens = None
 
     if (x := args.custom_megatron_before_train_step_hook_path) is not None:
         from miles.utils.args.custom_view import compute_custom_function_config
@@ -612,9 +614,15 @@ def train_one_step(
         )
         consumed_identities: list[SampleLineage] = []
 
+    # finalize_model_grads clamps a zero token count to one: no nan, but the optimizer and the scheduler would
+    # still step and apply weight decay with nothing to learn. The count is global, so every rank skips alike.
+    unsupervised_step = _step_num_tokens is not None and _step_num_tokens.item() == 0
+    if unsupervised_step and is_first_replica_megatron_main_rank():
+        logger.warning(f"rollout {rollout_id} step {step_id} has no supervised token; skipping its update")
+
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
-    valid_step = True
+    valid_step = not unsupervised_step
     indep_dp_loss_reduced: dict[str, float] = {}
 
     if parallel_state.indep_dp.size > 1:
@@ -711,12 +719,20 @@ def train_one_step(
                 if parallel_state.indep_dp.size > 1
                 else aggregate_train_losses(losses_reduced, metric_num_rollouts)
             )
+            if unsupervised_step:
+                loss_reduced = {**loss_reduced, "skipped_unsupervised_step": 1.0}
             return loss_reduced, grad_norm, outcome
 
     return {}, grad_norm, outcome
 
 
-def finalize_model_grads_with_empty_cache(*args, **kwargs):
+# This step's supervised-token count as finalize_model_grads leaves it: broadcast over PP and all-reduced over
+# DP-CP in place, so every rank holds the same value. None unless the loss is per-token normalized.
+_step_num_tokens: torch.Tensor | None = None
+
+
+def finalize_model_grads_with_empty_cache(model, num_tokens=None, *args, **kwargs):
+    global _step_num_tokens
     # TODO: this is an ad-hoc method and we should figure out why the oom happens in the first place.
     device = torch.cuda.current_device()
     free, total = torch.cuda.mem_get_info(device)
@@ -724,8 +740,10 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
         clear_memory()
     from .lora.utils import reduce_marked_lora_grads
 
-    reduce_marked_lora_grads(args[0])
-    return finalize_model_grads(*args, **kwargs)
+    reduce_marked_lora_grads(model)
+    result = finalize_model_grads(model, num_tokens, *args, **kwargs)
+    _step_num_tokens = num_tokens
+    return result
 
 
 def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
