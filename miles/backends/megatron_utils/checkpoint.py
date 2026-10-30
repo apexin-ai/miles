@@ -261,7 +261,10 @@ def is_release_checkpoint(load_path: str | Path | None, ckpt_step: int | None) -
         return False
     path = Path(load_path)
     tracker = path / "latest_checkpointed_iteration.txt"
-    return path.name == "release" or (tracker.is_file() and tracker.read_text().strip() == "release")
+    if tracker.is_file():
+        # what Megatron reads, even in a directory that happens to be named release
+        return tracker.read_text().strip() == "release"
+    return path.name == "release"
 
 
 def _is_megatron_checkpoint(path: str | Path) -> bool:
