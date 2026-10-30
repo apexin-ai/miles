@@ -425,7 +425,7 @@ records 31 training tests, 45 evaluation/scoring tests and eight real encodings.
 Evaluation IDs and image payloads remain identical to the prior evaluator; image
 pixels, grids and image mRoPE agree with training. The native open-versus-complete
 assistant newline still has its existing BPE boundary difference. Prompt mismatch
-is a hypothesis; no quality gain is claimed for this new run before evaluation.
+was a hypothesis; the complete evaluation result is recorded below.
 
 The aligned-prompt run has now completed all 32 updates. Its
 [training qualification](../../assets/images/qwen3-8-flash-next-vision-sft/prompt-alignment-training-qualification.json)
@@ -447,6 +447,41 @@ input IDs matched exactly. Ten answers changed from wrong to right and eight in
 the reverse direction; only 114 raw prediction strings were identical. The new
 curve uses the fresh 113/256 baseline. These two observations demonstrate runtime
 variation, not a confidence interval or an improvement from training.
+
+The follow-up's [training protocol](../../assets/images/qwen3-8-flash-next-vision-sft/prompt-alignment-training-protocol.json)
+and [evaluation protocol](../../assets/images/qwen3-8-flash-next-vision-sft/prompt-alignment-evaluation-protocol.json)
+were fixed before generating its new validation predictions. All five points
+have now completed under the same last-line scorer and open-thinking protocol:
+
+| Vision update | Correct / 256 | Invalid final answers |
+| --- | --- | --- |
+| 0 | 113 | 1 |
+| 8 | 111 | 3 |
+| 16 | 112 | 3 |
+| 24 | 116 | 4 |
+| 32 | 112 | 3 |
+
+![Complete prompt-aligned visual SFT validation curve](../../assets/images/qwen3-8-flash-next-vision-sft/prompt-alignment-validation256-curve.png)
+
+The [qualified curve](../../assets/images/qwen3-8-flash-next-vision-sft/prompt-alignment-validation256-curve.json)
+and [full evaluation qualification](../../assets/images/qwen3-8-flash-next-vision-sft/prompt-alignment-validation256-qualification.json)
+verify identical questions, labels, image pixels, expanded input IDs and assistant
+prefills across all five checkpoints, and re-score every retained raw prediction.
+The fixed final update scores **112/256 versus 113/256: -0.39 percentage points**.
+Fifty answers change from wrong to right and 51 in the reverse direction. Among
+the 252 scenes with valid answers at both endpoints, correct answers decrease
+from 112 to 111; validity transitions contribute zero net correct answers.
+Mean completion length increases from 2024 to 2200 tokens. The higher update-24
+score is retained in the curve; the predeclared final update remains the primary
+comparison. The prompt alignment did not establish a quality improvement.
+
+These are image-only results from one run, on a validation set also used for
+earlier recipe comparisons. There are no matched negative controls or
+multiple-seed replications for this follow-up. Complete raw prediction evidence
+is retained in an archive with SHA256
+`af45572a235e23251c94b9b3bbc94837461bf46d52e8427d3343b493d8ead41d`;
+the qualification itself has SHA256
+`d76be4d629f558fa8f5c794605077ebca1137eef8efb16eb31022db1624dfd06`.
 
 ### Data And Launch
 

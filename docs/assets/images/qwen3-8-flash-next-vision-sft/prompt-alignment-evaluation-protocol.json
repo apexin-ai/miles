@@ -1,0 +1,63 @@
+{
+  "run_id": "vision32-prompt-v2",
+  "source_commit": "8b1519ac0f0439298b4b8d0b768d9ac8704a12eb",
+  "source_archive_sha256": "d209d7faeb026a2627d0be8dc72b8405ea51332647fe67754e0fd4ebac4ae096",
+  "training_script_sha256": "fdd1b87bfc8bd8d4fbf4cfd8547a4a3e01602ad66f0ca8c5eaa66b47ca65916c",
+  "qualification_sha256": "22496f7d0696cafabeff713cd4b38c861cfea924a1946c71102390b9d29ead8f",
+  "dataset_sha256": {
+    "sft_exact.jsonl": "40f2159076083a73d38b9cc800a8a3702b68a302824571b5166c0531402ffb1d",
+    "development.jsonl": "78249a226152b10229f73b23a03706c31d140e95dcbb6325561864059120142c",
+    "validation.jsonl": "6f9b21c2cefe866a6b259c11ca9a0969b190494772cf46ba35ec9f025739376e"
+  },
+  "model_revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
+  "changes_from_vision32_v1": [
+    "training reasoning_effort: native default xhigh -> explicit low",
+    "training integer-only system instruction now identical to fixed evaluation"
+  ],
+  "enable_thinking": true,
+  "language_frozen": true,
+  "vision_trainable": "full",
+  "optimizer_steps": 32,
+  "global_batch_size": 32,
+  "micro_batch_size": 1,
+  "lr": 1e-06,
+  "weight_decay": 0.0,
+  "adam_beta1": 0.9,
+  "adam_beta2": 0.98,
+  "seed": 42,
+  "tp": 2,
+  "pp": 4,
+  "ep": 2,
+  "seq_length": 4096,
+  "snapshot_updates": [
+    0,
+    8,
+    16,
+    24,
+    32
+  ],
+  "eval": {
+    "split": "validation",
+    "n": 256,
+    "controls": [
+      "image"
+    ],
+    "tp_size": 8,
+    "batch_size": 256,
+    "enable_thinking": true,
+    "reasoning_effort": "low",
+    "final_answer_format": "integer-only",
+    "empty_thinking_prefill": false,
+    "constrained_output": false,
+    "max_new_tokens": 16384,
+    "context_length": 32768,
+    "enable_cuda_graph": true,
+    "scorer": "integer_last_final_line_v2",
+    "primary_comparison": [
+      0,
+      32
+    ],
+    "checkpoint_selection": false
+  },
+  "preregistered_at": "2026-10-30T03:21:51.942297+00:00"
+}
