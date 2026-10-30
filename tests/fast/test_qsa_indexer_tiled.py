@@ -172,6 +172,31 @@ def check_block_selection(got, want, logits, k, tol=0.0, lowest_index=True):
     return differ
 
 
+def classify_differences(got, want, logits, k):
+    """Rows where ``got`` and ``want`` differ: (exact, near) bool ``[T]``.
+
+    A row is an exact tie swap only when every differing block scores exactly the k-th
+    score; any other differing score (inside the fp band ``check_block_selection`` allows)
+    makes it a near swap.
+    """
+    got, want = got.bool(), want.bool()
+    kth = torch.topk(logits, k, dim=-1).values[:, -1:]
+    swapped = got ^ want
+    differ = swapped.any(-1)
+    off_kth = (swapped & (logits != kth)).any(-1)
+    return differ & ~off_kth, differ & off_kth
+
+
+def test_classification_counts_a_near_swap_next_to_an_exact_tie():
+    logits = torch.tensor([[10.0, 2.0, 2.0, 1.99999], [10.0, 2.0, 2.0, 1.0]])
+    want = torch.tensor([[1, 1, 0, 0], [1, 1, 0, 0]], dtype=torch.uint8)
+    got = torch.tensor([[1, 0, 0, 1], [1, 0, 1, 0]], dtype=torch.uint8)
+    check_block_selection(got, want, logits, 2, tol=1e-5, lowest_index=False)
+    exact, near = classify_differences(got, want, logits, 2)
+    assert exact.tolist() == [False, True]
+    assert near.tolist() == [True, False]
+
+
 def _compare(got, want, logits, k, layout):
     assert got.shape == want.shape
     g = _block_sets(got, layout, logits.shape[-1])
