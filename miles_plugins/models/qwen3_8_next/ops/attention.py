@@ -7,11 +7,13 @@ only those.
 import torch
 from megatron.core.parallel_state import get_tensor_model_parallel_group, get_tensor_model_parallel_world_size
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
+from megatron.core.tensor_parallel.random import is_checkpointing
 from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
 from miles.kernels.attention.qsa import qsa_block_sparse_attention, qsa_sparse_attention
+from miles_plugins.models.qwen3_8_next.ops.indexer_monitor import get_monitor
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout, Qwen38NextQSAIndexer
 
 
@@ -37,6 +39,12 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                     "QSA core attention ran on a thd query with no block form published. "
                     "Qwen38NextAttention.forward sets it before delegating; reaching here "
                     "means core_attention was called out of band."
+                )
+            monitor = get_monitor()
+            # the recompute pass would measure the same rows twice
+            if monitor.enabled and not (is_checkpointing() and torch.is_grad_enabled()):
+                monitor.maybe_record(
+                    self.layer_number, query, key, block_form, self.softmax_scale, self._owner.indexer.block_topk
                 )
             sel_bitmap, lo, hi, blk_base, tok_base, block_first, block_last, blk = block_form
             return qsa_block_sparse_attention(
