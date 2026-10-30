@@ -6,7 +6,11 @@ from pathlib import Path
 
 from miles.utils.processing_utils import load_processor
 from miles.utils.types import Sample
-from miles_plugins.models.qwen3_8_next.vision_inputs import image_rope_positions, normalize_image_messages
+from miles_plugins.models.qwen3_8_next.vision_inputs import (
+    apply_final_answer_format,
+    image_rope_positions,
+    normalize_image_messages,
+)
 
 
 @lru_cache(maxsize=1)
@@ -20,10 +24,13 @@ def _processor(checkpoint):
     return processor, config
 
 
-def encode_sft_sample(processor, config, messages, images, *, template_kwargs=None, tools=None):
+def encode_sft_sample(
+    processor, config, messages, images, *, template_kwargs=None, tools=None, final_answer_format="dataset"
+):
     normalized = normalize_image_messages(messages, len(images))
     if not images or not normalized or normalized[-1]["role"] != "assistant":
         raise ValueError("Image SFT needs real images and a final assistant target")
+    normalized = apply_final_answer_format(normalized, final_answer_format)
     options = dict(template_kwargs or {})
     if any(key in options for key in ("tokenize", "add_generation_prompt", "tools")):
         raise ValueError("Template options cannot override SFT rendering or tool schemas")
@@ -100,6 +107,7 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
             images,
             template_kwargs=args.apply_chat_template_kwargs,
             tools=sample.metadata.get("tools"),
+            final_answer_format=getattr(args, "qwen38_sft_final_answer_format", "dataset"),
         )
         if len(tokens) > args.seq_length:
             raise ValueError(f"Expanded sample {sample.index} exceeds --seq-length: {len(tokens)}")

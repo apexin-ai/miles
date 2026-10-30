@@ -15,6 +15,8 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModel, Qwen3VL
 
 from miles_plugins.models.qwen3_8_next.vision import set_visual_scope
 from miles_plugins.models.qwen3_8_next.vision_inputs import (
+    INTEGER_FINAL_INSTRUCTION,
+    apply_final_answer_format,
     image_rope_positions,
     normalize_image_messages,
     scatter_image_embeddings,
@@ -206,6 +208,44 @@ def test_multiturn_masks_follow_whole_native_conversation_after_image_expansion(
     selected = "".join(chr(token) for token, active in zip(tokens, mask, strict=True) if active)
     assert selected == "9[END]\n"
     assert not any(active for token, active in zip(tokens, mask, strict=True) if token == 9001)
+
+
+def test_aligned_output_instruction_is_not_supervised_and_preserves_source_messages():
+    messages = [{"role": "user", "content": "<image>Q"}, {"role": "assistant", "content": "9"}]
+    options = []
+
+    class Tokenizer(_Tokenizer):
+        def apply_chat_template(self, messages, **kwargs):
+            options.append(kwargs)
+            return super().apply_chat_template(messages, **kwargs)
+
+    processor = _Processor()
+    processor.tokenizer = Tokenizer()
+    tokens, mask, inputs = encode_sft_sample(
+        processor,
+        _CONFIG,
+        messages,
+        [[1, 4, 4]],
+        template_kwargs={"enable_thinking": True, "reasoning_effort": "low"},
+        final_answer_format="integer-only",
+    )
+    assert all(item["enable_thinking"] and item["reasoning_effort"] == "low" for item in options)
+    assert "".join(chr(token) for token, active in zip(tokens, mask, strict=True) if active) == "9[END]\n"
+    assert sum(token == 9001 for token in tokens) == 4
+    assert len(inputs["qwen38_position_ids"]) == len(tokens)
+    assert INTEGER_FINAL_INSTRUCTION in "".join(chr(token) for token in tokens if token < 9001)
+    assert messages == [{"role": "user", "content": "<image>Q"}, {"role": "assistant", "content": "9"}]
+
+
+def test_aligned_output_instruction_retains_an_existing_system_message():
+    source = [{"role": "system", "content": "Read the image."}, {"role": "user", "content": "Q"}]
+    aligned = apply_final_answer_format(source, "integer-only")
+    assert len(aligned) == len(source)
+    assert aligned[0]["content"] == "Read the image.\n\n" + INTEGER_FINAL_INSTRUCTION
+    assert source[0]["content"] == "Read the image."
+    assert apply_final_answer_format(source, "dataset") == source
+    with pytest.raises(ValueError, match="Unknown final-answer format"):
+        apply_final_answer_format(source, "unknown")
 
 
 def test_qsa_materialized_rope_uses_absolute_token_rows_for_packed_documents():
