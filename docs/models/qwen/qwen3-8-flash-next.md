@@ -400,6 +400,16 @@ outputs before choosing a common budget for the full evaluation;
 held-out quality curve. More output tokens can finish reasoning but do not repair
 an invalid final-answer format by themselves.
 
+The native template defaults to `--reasoning-effort xhigh`. Development-only
+diagnosis can explicitly select `--reasoning-effort low` or `medium` while retaining
+thinking. `--final-answer-format integer-only` adds a shared system instruction
+requiring the final response to contain only one integer; it does not change the
+scorer or extract an answer from explanatory prose. Apply either change equally
+to baseline and trained checkpoints, record the new protocol, and select it on
+development data before the held-out evaluation. `--enable-cuda-graph` opts in to
+native decode capture up to the requested batch size; qualify it on the allocated
+node before relying on a speedup. Decode progress is logged during generation.
+
 The evaluator records raw text for genuine-image, no-image and deterministic
 swapped-image controls, using greedy decoding (4096 new tokens by default), native
 expanded prompt IDs, and `integer_first_final_line_v1`. It retains the template's assistant
