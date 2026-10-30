@@ -168,6 +168,56 @@ class TestFreshStartAndExport:
         assert saved["ple"] == compute_manifest(base)["ple"]
 
 
+class TestLoadModelStateClassification:
+    """CRV-FIX-015: load_model_state verifies a manifest only for a trained checkpoint, as the scheduler guard does."""
+
+    @pytest.fixture(autouse=True)
+    def _no_gpu_side_effects(self, monkeypatch):
+        monkeypatch.setattr(model_module, "check_peak_gpu_memory_after_load", lambda *a, **k: None)
+        monkeypatch.setattr(model_module, "clear_memory", lambda *a, **k: None)
+        monkeypatch.setattr(model_module, "check_model_hashes", lambda *a, **k: None)
+        monkeypatch.setattr(model_module, "check_tp_replicas", lambda *a, **k: 0)
+        monkeypatch.setattr(model_module, "is_first_replica_megatron_main_rank", lambda: False)
+
+    def _load(self, base: Path, load: Path, monkeypatch, *, tracker: str | None, iteration: int = 0, finetune=False):
+        load.mkdir(exist_ok=True)
+        if tracker is not None:
+            (load / "latest_checkpointed_iteration.txt").write_text(tracker)
+            (load / ("release" if tracker == "release" else f"iter_{int(tracker):07d}")).mkdir(exist_ok=True)
+            # Megatron's load_checkpoint returns (iteration, not finetune) for any checkpoint it reads
+            monkeypatch.setattr(model_module, "load_checkpoint", lambda *a, **k: (iteration, not finetune))
+        return model_module.load_model_state(
+            make_trainer_args(hf_checkpoint=str(base), load=str(load), finetune=finetune),
+            model=[],
+            optimizer=None,
+            opt_param_scheduler=None,
+            role="actor",
+            checkpointing_context=None,
+            resume_from_ckpt=True,
+        )
+
+    def test_the_first_load_of_a_release_checkpoint_starts_a_binding(self, tmp_path, monkeypatch) -> None:
+        """A converted checkpoint is untrained and has no manifest; it must not need MILES_PLE_PROVENANCE_ADOPT."""
+        base = _make_base(tmp_path / "base")
+        self._load(base, tmp_path / "converted", monkeypatch, tracker="release")
+        assert ple_provenance.run_manifest()["ple"] == compute_manifest(base)["ple"]
+
+    def test_an_empty_load_directory_starts_a_binding(self, tmp_path, monkeypatch) -> None:
+        """No checkpoint yet: the weights come from the model provider, without --finetune too."""
+        base = _make_base(tmp_path / "base")
+        self._load(base, tmp_path / "empty", monkeypatch, tracker=None)
+        assert ple_provenance.run_manifest() is not None
+
+    def test_a_trained_rollout_0_checkpoint_still_needs_its_manifest(self, tmp_path, monkeypatch) -> None:
+        """iteration 0 of a trained run is a resume; its manifest is checked, its absence refused."""
+        base = _make_base(tmp_path / "base")
+        with pytest.raises(PleProvenanceError, match="iter_0000000"):
+            self._load(base, tmp_path / "ckpt", monkeypatch, tracker="0")
+        _train_and_save(base, tmp_path / "ckpt", iteration=0)
+        self._load(base, tmp_path / "ckpt", monkeypatch, tracker="0")
+        assert ple_provenance.run_manifest() is not None
+
+
 class TestExportOfABoundRun:
     """CRV-FIX-018: a run bound to a PLE table at load must complete its export, whatever the base's config says now."""
 

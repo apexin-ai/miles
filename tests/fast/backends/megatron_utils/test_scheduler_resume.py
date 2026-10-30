@@ -69,11 +69,18 @@ def _train(scheduler, increments) -> list[tuple[float, float, float]]:
 
 
 def _load(
-    tmp_path: Path, scheduler, *, iteration: int, saved_state: dict | None, finetune: bool = False, tracker: str | None = None
+    tmp_path: Path,
+    scheduler,
+    *,
+    iteration: int,
+    saved_state: dict | None,
+    finetune: bool = False,
+    tracker: str | None = None,
+    dirname: str = "ckpt",
 ):
     from miles.backends.megatron_utils.model import load_model_state
 
-    load_dir = tmp_path / "ckpt"
+    load_dir = tmp_path / dirname
     load_dir.mkdir(exist_ok=True)
     (load_dir / "latest_checkpointed_iteration.txt").write_text(tracker or str(iteration))
 
@@ -165,6 +172,11 @@ class TestLoadsThatDoNotRestoreTheScheduler:
         _load(tmp_path, scheduler, iteration=0, saved_state=None, tracker="release")
         assert scheduler.num_steps == 0
 
+    def test_a_trained_checkpoint_in_a_directory_named_release_is_still_refused(self, tmp_path: Path) -> None:
+        """CRV-FIX-016: Megatron follows the tracker's content, so must the release classification."""
+        with pytest.raises(RuntimeError, match="no LR scheduler state"):
+            _load(tmp_path, _new_scheduler(True), iteration=0, saved_state=None, tracker="0", dirname="release")
+
     def test_finetune_starts_a_new_schedule_at_step_zero(self, tmp_path: Path) -> None:
         """--finetune is the explicit new-stage policy: iteration 0, nothing restored, no error."""
         scheduler = _new_scheduler(True)
@@ -184,3 +196,24 @@ class TestLoadsThatDoNotRestoreTheScheduler:
         assert [(g["lr"], g["weight_decay"]) for g in scheduler.optimizer.param_groups] == [
             (g["lr"], g["weight_decay"]) for g in fresh
         ]
+
+
+@pytest.mark.parametrize(
+    ("dirname", "tracker", "ckpt_step", "release"),
+    [
+        ("ckpt", "release", None, True),
+        ("ckpt", "7", None, False),
+        ("release", "0", None, False),  # CRV-FIX-016: the tracker wins over the directory name
+        ("release", None, None, True),
+        ("ckpt", "release", 3, False),  # an explicit --ckpt-step loads that trained iteration
+    ],
+)
+def test_release_classification_follows_what_megatron_reads(tmp_path: Path, dirname, tracker, ckpt_step, release) -> None:
+    from miles.backends.megatron_utils.checkpoint import is_release_checkpoint
+
+    load_dir = tmp_path / dirname
+    load_dir.mkdir()
+    if tracker is not None:
+        (load_dir / "latest_checkpointed_iteration.txt").write_text(tracker)
+    assert is_release_checkpoint(load_dir, ckpt_step) is release
+    assert is_release_checkpoint(None, None) is False
