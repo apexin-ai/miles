@@ -1,7 +1,6 @@
 """Attach Qwen's complete native ViT before Megatron DDP/optimizer construction."""
 
 import json
-from copy import copy
 from pathlib import Path
 
 import torch
@@ -90,13 +89,10 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language):
     model.forward = forward
 
 
-def get_qwen38_vision_model_provider(pre_process=True, post_process=True, vp_stage=None):
-    from megatron.training import get_args
-
+def get_qwen38_vision_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args):
     from miles.backends.megatron_utils.model_provider import get_model_provider_func
     from miles_plugins.models.qwen3_8_next.model_provider import _install_ple_context_hooks
 
-    args = get_args()
     if args.context_parallel_size != 1 or args.qkv_format != "thd" or args.micro_batch_size != 1:
         raise ValueError("Qwen image SFT currently requires CP1, THD and micro-batch-size 1")
     if args.use_dynamic_batch_size or (args.tensor_model_parallel_size > 1 and not args.sequence_parallel):
@@ -108,8 +104,7 @@ def get_qwen38_vision_model_provider(pre_process=True, post_process=True, vp_sta
     config = json.loads((Path(args.hf_checkpoint) / "config.json").read_text())
     if config.get("model_type") != "qwen4_exp" or config.get("language_model_only"):
         raise ValueError("Expected a complete native Qwen3.8-Flash-Next model")
-    provider_args = copy(args)
-    provider_args.custom_model_provider_path = None
+    provider_args = type(args).model_validate(dict(args) | {"custom_model_provider_path": None})
     model = get_model_provider_func(provider_args)(
         pre_process=pre_process, post_process=post_process, vp_stage=vp_stage
     )
