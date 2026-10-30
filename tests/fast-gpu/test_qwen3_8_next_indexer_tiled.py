@@ -18,6 +18,7 @@ from tests.fast.test_qsa_indexer_tiled import (
     _reference_block_form,
     _reference_forward,
     check_block_selection,
+    classify_differences,
 )
 
 GiB = 1 << 30
@@ -70,13 +71,13 @@ def _peak(fn):
 
 
 def _row_mismatch(got_bitmap, want_bitmap, logits, k):
-    """Rows whose bitmap differs from the untiled one, split into exact k-th-score ties and
-    fp near ties. ``check_block_selection`` fails on anything else (missing strictly-better
-    block, wrong count, block below the band, difference outside the candidates)."""
-    exact = check_block_selection(got_bitmap, want_bitmap, logits, k, tol=1e-5, lowest_index=False)
-    kth = torch.topk(logits, k, dim=-1).values[:, -1:]
-    tied = torch.isfinite(kth.squeeze(-1)) & ((logits == kth).sum(-1) > 1)
-    return int((exact & tied).sum()), int((exact & ~tied).sum()), 0
+    """Rows whose bitmap differs from the untiled one, split into exact k-th-score tie swaps and
+    fp near swaps by the scores of the blocks actually swapped. ``check_block_selection`` fails
+    on anything else (missing strictly-better block, wrong count, block below the band,
+    difference outside the candidates)."""
+    check_block_selection(got_bitmap, want_bitmap, logits, k, tol=1e-5, lowest_index=False)
+    exact, near = classify_differences(got_bitmap, want_bitmap, logits, k)
+    return int(exact.sum()), int(near.sum()), 0
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
