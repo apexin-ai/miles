@@ -48,7 +48,8 @@ def _build(monkeypatch: pytest.MonkeyPatch, **config_fields):
     monkeypatch.setattr(qwen3_8_next, "load_hf_config", lambda path: _text_config())
     monkeypatch.setattr(qwen3_8_next, "get_gpt_decoder_block_spec", block_spec)
     args = SimpleNamespace(
-        hf_checkpoint="/qwen-checkpoint", position_embedding_type="rope", backend=SimpleNamespace(num_experts=4)
+        hf_checkpoint="/qwen-checkpoint",
+        backend=SimpleNamespace(num_experts=4, position_embedding_type="rope"),
     )
     config = SimpleNamespace(num_layers=2, moe_layer_freq=[1, 0], pipeline_model_parallel_layout=None, **config_fields)
     return qwen3_8_next.get_qwen3_8_next_spec(args=args, config=config)
