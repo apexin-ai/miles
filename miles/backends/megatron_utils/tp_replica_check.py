@@ -1,20 +1,21 @@
 """Cross-TP-rank consistency check for TP-replicated tensors.
 
 Every rank of a TP group holds its own copy of each TP-replicated parameter (norms, routers, the
-Qwen3.8 GDN, ...). A checkpoint stores the TP-rank-0 copy only, so a copy that drifted on another
-rank changes silently on reload. This check compares a bitwise digest of every replicated
-parameter, and of the fp32 master shard and optimizer moments the optimizer keeps for it, across
-the TP group. It fails on any difference and names the tensors, their dtype and max |diff|.
+Qwen3.8 GDN, ...) and of the optimizer state for its shard of it. A checkpoint stores the TP-rank-0
+copy only, so a copy that drifted on another rank changes silently on reload. This check compares,
+bit for bit against TP rank 0, every replicated parameter and everything the optimizer keeps for it
+(the fp32 master shard, Adam moments, the step count, an offloaded optimizer's CPU master). It fails
+on any difference and names the tensors, their dtype and the max |diff| per TP rank.
 
 ``MILES_TP_REPLICA_CHECK=0`` turns the check off. ``MILES_TENSOR_DIGEST_DIR=<dir>`` also writes the
-per-rank digests of all local tensors (sharded ones included) at every check, so a save and the
-reload that follows can be compared tensor by tensor:
+sha256 of every local tensor (sharded ones included) at every check, so a save and the reload that
+follows can be compared tensor by tensor:
 ``python -m miles.backends.megatron_utils.tp_replica_check <dir> <tag before save> <tag after load>``.
 """
 
-import hashlib
 import json
 import logging
+import numbers
 import os
 import re
 import sys
@@ -24,30 +25,12 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
+from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
+
 logger = logging.getLogger(__name__)
 
-_CHUNK = 1 << 24
-_WEIGHT_MOD = 1_000_003
-_WORD_DTYPES = {1: torch.uint8, 2: torch.int16, 4: torch.int32, 8: torch.int64}
+_CHUNK = 1 << 28  # bytes per broadcast
 _MAX_REPORTED = 8
-
-
-def tensor_digest(tensor: torch.Tensor) -> torch.Tensor:
-    """[sum, position-weighted sum, numel] of the raw bits as int64.
-
-    Integer sums wrap the same way in any reduction order, so the digest is deterministic on GPU,
-    and any single bit flip changes the first sum.
-    """
-    flat = tensor.detach().contiguous().view(-1)
-    words = flat.view(_WORD_DTYPES[flat.element_size()])
-    total = torch.zeros((), dtype=torch.int64, device=flat.device)
-    weighted = torch.zeros((), dtype=torch.int64, device=flat.device)
-    for start in range(0, words.numel(), _CHUNK):
-        chunk = words[start : start + _CHUNK].to(torch.int64)
-        position = torch.arange(start, start + chunk.numel(), dtype=torch.int64, device=flat.device)
-        total += chunk.sum()
-        weighted += (chunk * (position % _WEIGHT_MOD + 1)).sum()
-    return torch.stack([total, weighted, torch.tensor(words.numel(), dtype=torch.int64, device=flat.device)])
 
 
 def is_tp_replicated(param: torch.Tensor) -> bool:
@@ -73,36 +56,81 @@ def _sub_optimizers(optimizer) -> Iterator:
             yield from _sub_optimizers(sub)
 
 
-def _optimizer_states(optimizer) -> list[dict]:
-    states = []
-    for sub in _sub_optimizers(optimizer):
+def _optimizer_param_owners(sub) -> dict[int, torch.Tensor]:
+    """id(tensor the torch optimizer steps) -> model param, for the Megatron optimizer layouts."""
+    owners = {}
+    pairs = [
+        # DistributedOptimizer: fp32 model params step through a view of their shard; bf16/fp16 ones through
+        # an fp32 master shard, or through the bf16 shard itself with the precision-aware optimizer.
+        ("model_fp32_groups", "shard_fp32_groups"),
+        ("model_float16_groups", "shard_fp32_from_float16_groups"),
+        ("model_float16_groups", "shard_float16_groups"),
+        # Float16OptimizerWithFloat16Params
+        ("float16_groups", "fp32_from_float16_groups"),
+    ]
+    for model_attr, shard_attr in pairs:
+        model_groups = getattr(sub, model_attr, None)  # config-access-exempt: attribute set depends on optimizer class
+        shard_groups = getattr(sub, shard_attr, None)  # config-access-exempt: attribute set depends on optimizer class
+        if model_groups is None or shard_groups is None:
+            continue
+        for model_group, shard_group in zip(model_groups, shard_groups, strict=True):
+            for model_param, shard in zip(model_group, shard_group, strict=True):
+                if shard is not None:
+                    owners.setdefault(id(shard), model_param)
+    return owners
+
+
+def _as_tensor(value) -> torch.Tensor | None:
+    if isinstance(value, torch.Tensor):
+        return value
+    if isinstance(value, bool | numbers.Integral):
+        return torch.tensor(int(value), dtype=torch.int64)
+    if isinstance(value, numbers.Real):
+        return torch.tensor(float(value), dtype=torch.float64)
+    return None
+
+
+def named_tensors(
+    model: Sequence[torch.nn.Module], optimizer=None, *, replicated_only: bool
+) -> Iterator[tuple[str, torch.Tensor]]:
+    """Parameters, then each optimizer-stepped tensor and every state entry (tensors and numbers) per param.
+
+    Raises if the optimizer steps a tensor that cannot be traced back to a model param: a check that
+    silently skipped optimizer state would report agreement it never verified.
+    """
+    names = {}
+    for chunk_idx, chunk in enumerate(model):
+        for name, param in chunk.named_parameters():
+            names[id(param)] = (f"pp{chunk_idx}.{name}", param)
+            if not replicated_only or is_tp_replicated(param):
+                yield f"pp{chunk_idx}.{name}", param
+    if optimizer is None:
+        return
+    for sub_idx, sub in enumerate(_sub_optimizers(optimizer)):
         inner = (
             sub if isinstance(sub, torch.optim.Optimizer) else getattr(sub, "optimizer", None)
         )  # config-access-exempt: Megatron optimizers wrap a torch optimizer, stub optimizers wrap none
-        if isinstance(inner, torch.optim.Optimizer):
-            states.append(inner.state)
-    return states
-
-
-def named_tensors(model: Sequence[torch.nn.Module], optimizer=None, *, replicated_only: bool) -> Iterator[tuple[str, torch.Tensor]]:
-    """Parameters, plus the fp32 master shard and optimizer moments the optimizer holds for them."""
-    states = _optimizer_states(optimizer) if optimizer is not None else []
-    for chunk_idx, chunk in enumerate(model):
-        for name, param in chunk.named_parameters():
-            if replicated_only and not is_tp_replicated(param):
-                continue
-            key = f"pp{chunk_idx}.{name}"
-            yield key, param
-            main = getattr(
-                param, "main_param", None
-            )  # config-access-exempt: the distributed optimizer attaches main_param only to params whose shard this DP rank owns
-            if main is None:
-                continue
-            yield f"{key}#main", main
-            for state in states:
-                for state_name, value in sorted(state.get(main, {}).items()):
-                    if isinstance(value, torch.Tensor) and value.numel() > 1:
-                        yield f"{key}#{state_name}", value
+        if not isinstance(inner, torch.optim.Optimizer):
+            continue
+        owners = _optimizer_param_owners(sub)
+        for group in inner.param_groups:
+            for stepped in group["params"]:
+                owner = owners.get(id(stepped), stepped)
+                if id(owner) not in names:
+                    raise RuntimeError(
+                        f"optimizer {sub_idx} ({type(inner).__name__}) steps a {tuple(stepped.shape)} tensor that "
+                        "is not traceable to a model parameter; the TP replica check does not support this layout"
+                    )
+                name, param = names[id(owner)]
+                if replicated_only and not is_tp_replicated(param):
+                    continue
+                if stepped is not param:
+                    yield f"{name}#main", stepped
+                for key, value in sorted(inner.state.get(stepped, {}).items()):
+                    tensor = _as_tensor(value)
+                    if tensor is None:
+                        raise RuntimeError(f"{name}: optimizer state {key!r} has unsupported type {type(value).__name__}")
+                    yield f"{name}#{key}", tensor
 
 
 def _collective_device(group) -> torch.device:
@@ -111,9 +139,28 @@ def _collective_device(group) -> torch.device:
     return torch.device("cpu")
 
 
-def _fingerprint(entries: list[tuple[str, torch.Tensor]]) -> int:
-    text = "\n".join(f"{name}|{t.dtype}|{tuple(t.shape)}" for name, t in entries)
-    return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "little", signed=True)
+def _bytes(tensor: torch.Tensor) -> torch.Tensor:
+    # raw bytes: NaN payloads and -0.0 compare bitwise, and gloo and NCCL both broadcast uint8
+    return tensor.detach().reshape(-1).contiguous().view(torch.uint8)
+
+
+def _differs_from(tensor: torch.Tensor, *, src: int, group, device) -> bool:
+    """Bitwise comparison with the copy on ``src``; every rank issues the same broadcasts."""
+    raw = _bytes(tensor)
+    differs = False
+    for start in range(0, max(raw.numel(), 1), _CHUNK):
+        local = raw[start : start + _CHUNK].to(device)
+        reference = local.clone()
+        dist.broadcast(reference, src=src, group=group)
+        differs |= not torch.equal(local, reference)
+    return differs
+
+
+def _max_abs_diff(tensor: torch.Tensor, *, src: int, group, device) -> float:
+    local = tensor.detach().reshape(-1).to(device=device, dtype=torch.float64)
+    reference = local.clone()
+    dist.broadcast(reference, src=src, group=group)
+    return float((local - reference).abs().max()) if local.numel() else 0.0
 
 
 def check_tp_replicas(model: Sequence[torch.nn.Module], optimizer=None, *, where: str, group=None) -> int:
@@ -125,46 +172,43 @@ def check_tp_replicas(model: Sequence[torch.nn.Module], optimizer=None, *, where
         from megatron.core import mpu
 
         group = mpu.get_tensor_model_parallel_group()
-    if dist.get_world_size(group) == 1:
+    world = dist.get_world_size(group)
+    if world == 1:
         return 0
     entries = list(named_tensors(model, optimizer, replicated_only=True))
     device = _collective_device(group)
-    world = dist.get_world_size(group)
 
-    header = torch.tensor([len(entries), _fingerprint(entries)], dtype=torch.int64, device=device)
-    headers = [torch.empty_like(header) for _ in range(world)]
-    dist.all_gather(headers, header, group=group)
-    if any(not torch.equal(h, headers[0]) for h in headers):
-        counts = [int(h[0]) for h in headers]
-        raise RuntimeError(f"[TP replica check @ {where}] TP ranks hold different replicated tensor lists: counts={counts}")
-    if not entries:
-        return 0
-
-    digests = torch.stack([tensor_digest(t).to(device) for _, t in entries])
-    gathered = [torch.empty_like(digests) for _ in range(world)]
-    dist.all_gather(gathered, digests, group=group)
-    differs = torch.zeros(len(entries), dtype=torch.bool, device=device)
-    for other in gathered[1:]:
-        differs |= (other != gathered[0]).any(dim=1)
-    bad = differs.nonzero().flatten().tolist()
-    if not bad:
-        logger.info(f"[TP replica check @ {where}] {len(entries)} replicated tensors identical on {world} TP ranks")
-        return len(entries)
+    layout = [f"{name}|{t.dtype}|{tuple(t.shape)}" for name, t in entries]
+    layouts = [None] * world
+    dist.all_gather_object(layouts, layout, group=group)
+    if any(other != layouts[0] for other in layouts):
+        mismatch = [
+            next((f"{a} vs {b}" for a, b in zip(layouts[0], other) if a != b), f"length {len(other)}")
+            for other in layouts
+        ]
+        raise RuntimeError(
+            f"[TP replica check @ {where}] TP ranks hold different replicated tensor lists "
+            f"(counts {[len(x) for x in layouts]}); first difference from TP rank 0 by rank: {mismatch}"
+        )
 
     src = dist.get_global_rank(group, 0)
+    differs = torch.tensor(
+        [_differs_from(t, src=src, group=group, device=device) for _, t in entries], dtype=torch.int32, device=device
+    )
+    dist.all_reduce(differs, op=dist.ReduceOp.MAX, group=group)
+    bad = differs.nonzero().flatten().tolist()
+    if not bad:
+        logger.info(f"[TP replica check @ {where}] {len(entries)} replicated tensors bitwise identical on {world} TP ranks")
+        return len(entries)
+
     lines = []
     for idx in bad[:_MAX_REPORTED]:
         name, tensor = entries[idx]
-        local = tensor.detach().to(device)
-        reference = local.clone()
-        dist.broadcast(reference, src=src, group=group)
-        max_abs = (local.float() - reference.float()).abs().max().reshape(1)
-        max_abs_by_rank = [torch.empty_like(max_abs) for _ in range(world)]
-        dist.all_gather(max_abs_by_rank, max_abs, group=group)
-        ranks = [r for r in range(world) if not torch.equal(gathered[r][idx], gathered[0][idx])]
+        max_abs = [None] * world
+        dist.all_gather_object(max_abs, _max_abs_diff(tensor, src=src, group=group, device=device), group=group)
         lines.append(
-            f"{name} dtype={tensor.dtype} shape={tuple(tensor.shape)} differs from TP rank 0 on TP ranks {ranks}; "
-            f"max|diff| by TP rank={[float(m) for m in max_abs_by_rank]}"
+            f"{name} dtype={tensor.dtype} shape={tuple(tensor.shape)} differs from TP rank 0; "
+            f"max|diff| by TP rank={max_abs}"
         )
     raise RuntimeError(
         f"[TP replica check @ {where}] {len(bad)} of {len(entries)} TP-replicated tensors differ across TP ranks "
@@ -177,25 +221,50 @@ def _maybe_dump_digests(model, optimizer, *, where: str) -> None:
     if not root:
         return
     rank = dist.get_rank() if dist.is_initialized() else 0
+    world = dist.get_world_size() if dist.is_initialized() else 1
     out = Path(root) / re.sub(r"[^A-Za-z0-9_.-]+", "_", where)
     out.mkdir(parents=True, exist_ok=True)
-    digests = {name: tensor_digest(t).tolist() for name, t in named_tensors(model, optimizer, replicated_only=False)}
-    (out / f"rank{rank:05d}.json").write_text(json.dumps(digests, sort_keys=True))
+    tensors = {name: hash_tensor_sha256(t) for name, t in named_tensors(model, optimizer, replicated_only=False)}
+    record = {"rank": rank, "world_size": world, "where": where, "tensors": tensors}
+    tmp = out / f".rank{rank:05d}.json.tmp"
+    tmp.write_text(json.dumps(record, sort_keys=True))
+    tmp.replace(out / f"rank{rank:05d}.json")
+
+
+def _load_dump(directory: Path) -> tuple[dict[int, dict], list[str]]:
+    if not directory.is_dir():
+        return {}, [f"{directory} does not exist"]
+    records = {}
+    for path in sorted(directory.glob("rank*.json")):
+        record = json.loads(path.read_text())
+        records[record["rank"]] = record
+    if not records:
+        return {}, [f"{directory} holds no rank dumps"]
+    problems = []
+    worlds = {r["world_size"] for r in records.values()}
+    if len(worlds) != 1:
+        problems.append(f"{directory}: rank dumps disagree on world size {sorted(worlds)}")
+    elif set(records) != set(range(worlds.pop())):
+        problems.append(f"{directory}: incomplete dump, ranks present {sorted(records)}")
+    return records, problems
 
 
 def compare_digest_dirs(before: Path, after: Path) -> list[str]:
-    """Per-rank, per-tensor differences between two digest dumps; empty means identical."""
-    problems = []
-    ranks_before = sorted(p.name for p in before.glob("rank*.json"))
-    ranks_after = sorted(p.name for p in after.glob("rank*.json"))
-    if ranks_before != ranks_after:
-        problems.append(f"rank files differ: {ranks_before} vs {ranks_after}")
-    for rank_file in sorted(set(ranks_before) & set(ranks_after)):
-        a = json.loads((before / rank_file).read_text())
-        b = json.loads((after / rank_file).read_text())
+    """Per-rank, per-tensor differences between two complete digest dumps; empty means identical."""
+    records_before, problems = _load_dump(Path(before))
+    records_after, problems_after = _load_dump(Path(after))
+    problems += problems_after
+    if problems:
+        return problems
+    if set(records_before) != set(records_after):
+        return [f"rank sets differ: {sorted(records_before)} vs {sorted(records_after)}"]
+    for rank in sorted(records_before):
+        a, b = records_before[rank]["tensors"], records_after[rank]["tensors"]
+        if not a:
+            problems.append(f"rank {rank}: empty dump")
         for name in sorted(a.keys() | b.keys()):
             if a.get(name) != b.get(name):
-                problems.append(f"{rank_file}: {name}: {a.get(name)} -> {b.get(name)}")
+                problems.append(f"rank {rank}: {name}: {a.get(name, 'missing')} -> {b.get(name, 'missing')}")
     return problems
 
 
