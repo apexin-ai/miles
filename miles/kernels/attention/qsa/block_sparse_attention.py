@@ -79,7 +79,8 @@ def _qsa_bs_fwd_kernel(
         # which need not be a multiple of BLK
         blk = blk_base[:, None] + (offs_k[None, :] - tok_base[:, None]) // BLK
         sel = tl.load(
-            SEL + offs_q[:, None] * stride_st + (blk >> 3),
+            # int64 row offset: T x ceil(NB / 8) bytes passes 2^31 for long packed batches
+            SEL + offs_q[:, None].to(tl.int64) * stride_st + (blk >> 3),
             mask=q_mask[:, None] & k_in[None, :] & (blk >= 0) & (blk < NB),
             other=0,
         )
@@ -189,7 +190,8 @@ def _qsa_bs_dq_kernel(
         # per-token block lookup, as in the forward kernel
         blk = blk_base[:, None] + (offs_k[None, :] - tok_base[:, None]) // BLK
         sel = tl.load(
-            SEL + offs_q[:, None] * stride_st + (blk >> 3),
+            # int64 row offset: T x ceil(NB / 8) bytes passes 2^31 for long packed batches
+            SEL + offs_q[:, None].to(tl.int64) * stride_st + (blk >> 3),
             mask=q_mask[:, None] & k_in[None, :] & (blk >= 0) & (blk < NB),
             other=0,
         )
@@ -290,7 +292,8 @@ def _qsa_bs_dkdv_kernel(
 
         blk = blk_base[:, None] + (offs_k[None, :] - tok_base[:, None]) // BLK
         sel = tl.load(
-            SEL + offs_q[:, None] * stride_st + (blk >> 3),
+            # int64 row offset: T x ceil(NB / 8) bytes passes 2^31 for long packed batches
+            SEL + offs_q[:, None].to(tl.int64) * stride_st + (blk >> 3),
             mask=q_mask[:, None] & k_in[None, :] & (blk >= 0) & (blk < NB),
             other=0,
         )
