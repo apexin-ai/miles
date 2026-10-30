@@ -1229,6 +1229,31 @@ def test_fused_log_probs_backend_rejects_what_it_does_not_cover(extra, vocab_siz
         validate_log_probs_backend_args(args)
 
 
+@pytest.mark.parametrize("recompute_loss_function", [False, True])
+def test_fused_log_probs_backend_accepts_a_megatron_sft_run(recompute_loss_function):
+    """Qwen3.8-Flash-Next text SFT: a per-token sft_loss over thd packing with the HF vocab_size. With
+    --recompute-loss-function the op only skips its in-place backward (the recompute replays the forward on
+    the same logits), so both stay allowed."""
+    extra = [
+        "--log-probs-backend",
+        "fused",
+        "--loss-type",
+        "sft_loss",
+        "--calculate-per-token-loss",
+        "--disable-compute-advantages-and-returns",
+        "--qkv-format",
+        "thd",
+        "--vocab-size",
+        "248320",
+    ] + (["--recompute-loss-function"] if recompute_loss_function else [])
+    args = _parse_megatron_args(extra)
+    args.use_sampling_support_replay = False  # derived by miles_validate_args from the default top-p/top-k
+
+    validate_log_probs_backend_args(args)
+    assert (args.log_probs_backend, args.vocab_size) == ("fused", 248_320)
+    assert args.recompute_loss_function is recompute_loss_function
+
+
 @pytest.mark.parametrize(
     ("sampling_args", "expected"),
     [
