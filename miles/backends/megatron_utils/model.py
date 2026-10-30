@@ -620,6 +620,13 @@ def train_one_step(
     unsupervised_step = _step_num_tokens is not None and _step_num_tokens.item() == 0
     if unsupervised_step and is_first_replica_megatron_main_rank():
         logger.warning(f"rollout {rollout_id} step {step_id} has no supervised token; skipping its update")
+        if getattr(
+            args.backend, "moe_router_enable_expert_bias", False
+        ):  # config-access-exempt: minimal backend namespaces (tests, non-MoE models) omit MoE router fields
+            # finalize_model_grads runs the router expert-bias update before the token count decides the skip
+            logger.warning(
+                "the skipped step may still have moved the MoE router expert bias (--moe-router-enable-expert-bias)"
+            )
 
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
