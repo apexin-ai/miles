@@ -1099,9 +1099,10 @@ def load_model_state(
 
     check_model_hashes(args, model, iteration)
     check_tp_replicas(model, optimizer, where=f"load iteration {iteration}")
-    # the frozen PLE table is re-read from --hf-checkpoint on every start; bind it to this run's checkpoints
+    # the frozen PLE table is re-read from --hf-checkpoint on every start; bind it to this run's checkpoints.
+    # Only a trained checkpoint carries a manifest: a release, an empty --load or --finetune starts a new binding.
     ple_provenance.on_load(
-        args.hf_checkpoint, load_dir=args.backend.load, iteration=iteration, resumed=restored_trained_iteration
+        args.hf_checkpoint, load_dir=args.backend.load, iteration=iteration, resumed=trained_checkpoint
     )
 
     # A restored scheduler already carries the exact progress of every successful update (dynamic batch
