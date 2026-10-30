@@ -166,14 +166,14 @@ def _patch_initialize_side_effects(stack: ExitStack) -> None:
     stack.enter_context(patch("miles.backends.megatron_utils.model.check_model_hashes"))
 
 
-def _initialize_with_scheduler(*, iteration: int = 100, **overrides) -> MagicMock:
+def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
     from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
     args = make_trainer_config(
+        use_checkpoint_opt_param_scheduler=True,
         global_batch_size=8,
         finetune=False,
         pretrained_checkpoint="/checkpoint",
-        **overrides,
     )
     model = [_FakeModelChunk()]
     optimizer = object()
@@ -187,7 +187,7 @@ def _initialize_with_scheduler(*, iteration: int = 100, **overrides) -> MagicMoc
             )
         )
         stack.enter_context(
-            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(iteration, True))
+            patch("miles.backends.megatron_utils.model.load_checkpoint", side_effect=_load_restoring_scheduler(100))
         )
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args, resume_from_ckpt=True)
@@ -196,34 +196,79 @@ def _initialize_with_scheduler(*, iteration: int = 100, **overrides) -> MagicMoc
         model,
         optimizer,
         opt_param_scheduler,
-        LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=iteration + 1),
+        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
     )
-    return opt_param_scheduler
+    opt_param_scheduler.load_state_dict.assert_called_once_with({"num_steps": 800})
+    opt_param_scheduler.step.assert_not_called()
 
 
-@pytest.mark.parametrize("use_checkpoint_opt_param_scheduler", [True, False])
-def test_initialize_does_not_step_scheduler_restored_from_checkpoint(use_checkpoint_opt_param_scheduler):
-    """Megatron restores the step count with the optimizer, whichever scheduler settings win."""
-    scheduler = _initialize_with_scheduler(use_checkpoint_opt_param_scheduler=use_checkpoint_opt_param_scheduler)
+def _load_restoring_scheduler(iteration: int):
+    def load(model, optimizer, opt_param_scheduler, **kwargs):
+        opt_param_scheduler.load_state_dict({"num_steps": iteration * 8})
+        return iteration, True
 
-    scheduler.step.assert_not_called()
+    return load
 
 
-@pytest.mark.parametrize("use_checkpoint_opt_param_scheduler", [True, False])
-def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it(use_checkpoint_opt_param_scheduler):
-    """--no-load-optim skips the scheduler state, so the step count is rebuilt from the iteration."""
-    scheduler = _initialize_with_scheduler(
-        use_checkpoint_opt_param_scheduler=use_checkpoint_opt_param_scheduler, no_load_optim=True
+def test_initialize_does_not_step_a_restored_scheduler_even_without_use_checkpoint_flag():
+    """use_checkpoint_opt_param_scheduler only decides which hyperparameters win; Megatron restores
+    num_steps either way, so stepping again by iteration * GBS would double the LR progress."""
+    from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
+
+    args = make_trainer_config(
+        use_checkpoint_opt_param_scheduler=False,
+        global_batch_size=8,
+        finetune=False,
+        pretrained_checkpoint="/checkpoint",
     )
+    model = [_FakeModelChunk()]
+    optimizer = object()
+    opt_param_scheduler = MagicMock()
 
-    scheduler.step.assert_called_once_with(increment=800)
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "miles.backends.megatron_utils.model.setup_model_and_optimizer",
+                return_value=(model, optimizer, opt_param_scheduler),
+            )
+        )
+        stack.enter_context(
+            patch("miles.backends.megatron_utils.model.load_checkpoint", side_effect=_load_restoring_scheduler(100))
+        )
+        _patch_initialize_side_effects(stack)
+        result = initialize_model_and_optimizer(args, resume_from_ckpt=True)
+
+    assert result[3] == LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101)
+    opt_param_scheduler.step.assert_not_called()
 
 
-def test_initialize_refreshes_scheduler_after_a_release_checkpoint():
-    """A release checkpoint returns iteration 0 without scheduler state, so step(0) must still refresh lr/wd."""
-    scheduler = _initialize_with_scheduler(iteration=0)
+def test_initialize_refuses_a_trained_iteration_without_scheduler_state():
+    """--no-load-optim on a trained checkpoint leaves no record of the LR progress."""
+    from miles.backends.megatron_utils.model import initialize_model_and_optimizer
 
-    scheduler.step.assert_called_once_with(increment=0)
+    args = make_trainer_config(
+        use_checkpoint_opt_param_scheduler=False,
+        global_batch_size=8,
+        finetune=False,
+        pretrained_checkpoint="/checkpoint",
+    )
+    model = [_FakeModelChunk()]
+    optimizer = object()
+    opt_param_scheduler = MagicMock()
+
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "miles.backends.megatron_utils.model.setup_model_and_optimizer",
+                return_value=(model, optimizer, opt_param_scheduler),
+            )
+        )
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True)))
+        _patch_initialize_side_effects(stack)
+        with pytest.raises(RuntimeError, match="no LR scheduler state"):
+            initialize_model_and_optimizer(args, resume_from_ckpt=True)
+
+    opt_param_scheduler.step.assert_not_called()
 
 
 def _load_model_state_with(
