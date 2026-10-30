@@ -42,6 +42,8 @@ def _model_args(base):
         num_query_groups=text["num_key_value_heads"],
         kv_channels=text.get("head_dim"),
         vocab_size=text["vocab_size"],
+        # convert_to_hf reads Megatron fields through args.backend since upstream #3507
+        backend=SimpleNamespace(vocab_size=text["vocab_size"]),
         hf_checkpoint=str(base),
         sglang_enable_ep_moe=False,
     )
