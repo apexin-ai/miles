@@ -7,6 +7,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from miles.kernels.attention.qsa.block_sparse_attention import pack_block_bitmap  # noqa: E402
 from miles_plugins.models.qwen3_8_next.ops import indexer_monitor  # noqa: E402
 from miles_plugins.models.qwen3_8_next.ops.indexer_monitor import (  # noqa: E402
     IndexerRecallMonitor,
@@ -66,7 +67,7 @@ def test_measure_matches_dense_reference_on_packed_rows():
     key = torch.randn(sum(lens), HKV, D)
     scale = D**-0.5
     rows = torch.tensor([0, 5, 22, 23, 31, 32, 50, 71])
-    stats = measure_rows(query, key, bitmap, lo, hi, blk_base, RATIO, scale, TOPK, rows)
+    stats = measure_rows(query, key, pack_block_bitmap(bitmap), lo, hi, blk_base, RATIO, scale, TOPK, rows)
     for row, s in zip(rows.tolist(), stats, strict=True):
         recall, overlap = _reference(query, key, bitmap, lo, hi, blk_base, scale, row)
         assert s["pos"] == int(hi[row] - lo[row])
@@ -78,7 +79,7 @@ def test_full_selection_has_recall_one():
     lo, hi, blk_base, bitmap = _packed([30])
     bitmap.fill_(1)
     query, key = torch.randn(30, HQ, D), torch.randn(30, HKV, D)
-    stats = measure_rows(query, key, bitmap, lo, hi, blk_base, RATIO, 1.0, TOPK, torch.tensor([29]))
+    stats = measure_rows(query, key, pack_block_bitmap(bitmap), lo, hi, blk_base, RATIO, 1.0, TOPK, torch.tensor([29]))
     assert stats[0]["recall"] == pytest.approx(1.0, abs=1e-6)
 
 
@@ -96,7 +97,7 @@ def test_rows_are_drawn_per_bucket_only_where_the_indexer_must_choose():
 def test_records_every_nth_call_and_summary_flags_a_drop(tmp_path, monkeypatch):
     monkeypatch.setattr(indexer_monitor, "BUCKETS", ((8, 1 << 62, "all"),))
     lo, hi, blk_base, bitmap = _packed([64])
-    form = (bitmap, lo, hi, blk_base, lo, None, None, RATIO)
+    form = (pack_block_bitmap(bitmap), lo, hi, blk_base, lo, None, None, RATIO)
     torch.manual_seed(2)
     query, key = torch.randn(64, HQ, D), torch.randn(64, HKV, D)
     monitor = IndexerRecallMonitor(every=2, out_dir=str(tmp_path), rows=4)
@@ -140,7 +141,7 @@ def _tp_worker(rank, world, init_file, out_file):
     q = query[:, rank * hq : (rank + 1) * hq]
     k = key[:, rank * hkv : (rank + 1) * hkv]
     stats = measure_rows(
-        q, k, bitmap, lo, hi, blk_base, RATIO, TP_D**-0.5, TP_TOPK, rows, tp_group=torch.distributed.group.WORLD
+        q, k, pack_block_bitmap(bitmap), lo, hi, blk_base, RATIO, TP_D**-0.5, TP_TOPK, rows, tp_group=torch.distributed.group.WORLD
     )
     if rank == 0:
         torch.save(stats, out_file)
@@ -150,7 +151,8 @@ def _tp_worker(rank, world, init_file, out_file):
 def test_tp_split_heads_match_the_all_heads_teacher(tmp_path):
     """Per-rank heads summed over the TP group give the all-heads recall and teacher overlap."""
     query, key, bitmap, lo, hi, blk_base, rows = _tp_case()
-    want = measure_rows(query, key, bitmap, lo, hi, blk_base, RATIO, TP_D**-0.5, TP_TOPK, rows)
+    packed = pack_block_bitmap(bitmap)
+    want = measure_rows(query, key, packed, lo, hi, blk_base, RATIO, TP_D**-0.5, TP_TOPK, rows)
     out = tmp_path / "stats.pt"
     torch.multiprocessing.spawn(_tp_worker, args=(2, str(tmp_path / "init"), str(out)), nprocs=2, join=True)
     got = torch.load(out)
@@ -159,5 +161,5 @@ def test_tp_split_heads_match_the_all_heads_teacher(tmp_path):
         assert g["recall"] == pytest.approx(w["recall"], abs=1e-6)
         assert g["overlap"] == pytest.approx(w["overlap"], abs=1e-6)
     # the case is sensitive: one rank's heads alone pick a different teacher somewhere
-    local = measure_rows(query[:, : TP_HQ // 2], key[:, :1], bitmap, lo, hi, blk_base, RATIO, TP_D**-0.5, TP_TOPK, rows)
+    local = measure_rows(query[:, : TP_HQ // 2], key[:, :1], packed, lo, hi, blk_base, RATIO, TP_D**-0.5, TP_TOPK, rows)
     assert any(abs(a["overlap"] - b["overlap"]) > 1e-6 for a, b in zip(local, want, strict=True))

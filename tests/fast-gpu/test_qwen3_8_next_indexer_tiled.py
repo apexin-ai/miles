@@ -13,6 +13,7 @@ register_cuda_ci(
 import pytest
 import torch
 
+from miles.kernels.attention.qsa.block_sparse_attention import unpack_block_bitmap
 from tests.fast.test_qsa_indexer_tiled import (
     _packed_positions,
     _reference_block_form,
@@ -97,7 +98,7 @@ def test_tiled_block_form_matches_untiled_and_stays_small(lens):
     for a, b in zip(got[1:7], want[1:7], strict=True):
         assert torch.equal(a, b)
     k = min(indexer.block_topk, logits.shape[-1])
-    ties, near, bad = _row_mismatch(got[0], want[0], logits, k)
+    ties, near, bad = _row_mismatch(unpack_block_bitmap(got[0], want[0].shape[1]), want[0], logits, k)
     bitmap = got[0].numel() / GiB
     print(
         f"\nT={sum(lens)} rows={len(positions)} tiled_peak={tiled_peak:.2f}GiB (bitmap {bitmap:.2f}) "
@@ -115,19 +116,23 @@ def _reference_block_form_cuda(indexer, hidden, positions, rope, cu):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
-@pytest.mark.parametrize("T", [131072, 262144])
-def test_long_sequence_indexer_peak(T):
-    """No untiled reference here (it would need 144 / 576 GiB): peak and runtime only."""
+@pytest.mark.parametrize("lens", [[131072], [262144], [247145, 14999]], ids=["T131072", "T262144", "T262144-packed"])
+def test_long_sequence_indexer_peak(lens):
+    """No untiled reference here (it would need 144 / 576 GiB): peak and runtime only.
+
+    The packed case is the one where a tile's rows span both documents, so its scored window
+    is narrow while the batch's block count is the full grid.
+    """
     import time
 
     from miles_plugins.models.qwen3_8_next.ops.attention import qsa_block_form
 
     indexer = _indexer(GiB)
-    hidden, positions, rope, cu = _inputs([T])
+    hidden, positions, rope, cu = _inputs(lens)
     with torch.no_grad():
         t0 = time.perf_counter()
         got, peak = _peak(lambda: qsa_block_form(indexer, hidden, positions, rope, cu))
         elapsed = time.perf_counter() - t0
     bitmap = got[0].numel() / GiB
-    print(f"\nT={T} tiled_peak={peak:.2f}GiB (bitmap {bitmap:.2f}) time={elapsed:.2f}s")
+    print(f"\nT={sum(lens)} lens={lens} tiled_peak={peak:.2f}GiB (bitmap {bitmap:.2f}) time={elapsed:.2f}s")
     assert peak <= bitmap + 2.5

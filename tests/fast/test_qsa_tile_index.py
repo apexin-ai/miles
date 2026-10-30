@@ -7,7 +7,11 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("triton")
 
-from miles.kernels.attention.qsa.block_sparse_attention import build_tile_index, build_tile_index_pair  # noqa: E402
+from miles.kernels.attention.qsa.block_sparse_attention import (  # noqa: E402
+    build_tile_index,
+    build_tile_index_pair,
+    pack_block_bitmap,
+)
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout  # noqa: E402
 
 RATIO = 4
@@ -66,8 +70,9 @@ def test_every_attended_key_tile_is_listed(lens, dense):
     first, last = layout.block_first_token, layout.block_last_token
     total = sel.shape[0]
 
-    fwd = _tile_sets(*build_tile_index(sel, first, last, BQ, 64))
-    klist, kcnt, qlist, qcnt = build_tile_index_pair(sel, first, last, BQ, 32)
+    packed = pack_block_bitmap(sel)
+    fwd = _tile_sets(*build_tile_index(packed, first, last, BQ, 64))
+    klist, kcnt, qlist, qcnt = build_tile_index_pair(packed, first, last, BQ, 32)
     bwd_k = _tile_sets(klist, kcnt)
     bwd_q = _tile_sets(qlist, qcnt)
 

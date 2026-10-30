@@ -207,8 +207,8 @@ def qsa_block_form(
 ):
     """Indexer selection -> the block form the tensor-core kernel consumes.
 
-    The bitmap marks each query's indexer blocks plus the block holding the query while
-    that block is still partial (the indexer only ranks complete blocks). Block ids come
+    The bitmap (bit-packed, see ``pack_block_bitmap``) marks each query's indexer blocks plus
+    the block holding the query while that block is still partial (the indexer only ranks complete blocks). Block ids come
     from the per-sequence grid (``PackedBlockLayout``); a ceil(seq_start / ratio) base
     collides across sequences for some lengths.
     """
@@ -221,15 +221,25 @@ def qsa_block_form(
     layout = PackedBlockLayout(cu, positions, ratio)
     num_blocks = layout.num_blocks
 
-    sel_bitmap = torch.zeros(seq, num_blocks, dtype=torch.uint8, device=device)
+    # one bit per (query, block), set straight from the block ids: a row's blocks are
+    # distinct, so adding their bits into a byte is the same as OR-ing them, and no
+    # [rows, blocks] temporary is needed (a tile's rows can span a whole packed batch)
+    nbytes = -(-num_blocks // 8)
+    sel_bitmap = torch.zeros(seq, nbytes, dtype=torch.uint8, device=device)
+    flat = sel_bitmap.view(-1)
+
+    def set_bits(rows: Tensor, blocks: Tensor) -> None:
+        flat.index_put_((rows * nbytes + (blocks >> 3),), (1 << (blocks & 7)).to(torch.uint8), accumulate=True)
+
     for start, end, block_idx in indexer.iter_selected_blocks(
         indexer_states, positions, rotary_pos_emb, cu_seqlens, materialized_rope=materialized_rope
     ):
         valid = block_idx >= 0
         rows = torch.arange(start, end, device=device).unsqueeze(1).expand_as(block_idx)
-        sel_bitmap[rows[valid], block_idx[valid]] = 1
+        set_bits(rows[valid], block_idx[valid])
+    # the query's own partial block is never an indexer candidate, so its bit is not set yet
     partial = (positions + 1) % ratio != 0
-    sel_bitmap[torch.arange(seq, device=device)[partial], layout.token_block[partial]] = 1
+    set_bits(torch.arange(seq, device=device)[partial], layout.token_block[partial])
 
     seq_start = torch.arange(seq, device=device) - positions
     blk_base = layout.token_block_start.to(torch.int32)
