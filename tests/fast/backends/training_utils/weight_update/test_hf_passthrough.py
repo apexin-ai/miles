@@ -2,6 +2,8 @@
 
 import json
 import os
+import re
+import signal
 import zlib
 from pathlib import Path
 
@@ -70,6 +72,11 @@ def _export(tmp_path: Path, keys, *, seed: int = 1, override: dict | None = None
     directory = tmp_path / "export"
     _write(directory, {"model-00001.safetensors": sorted(keys)}, tensors)
     return directory
+
+
+def _truncate(path: Path, nbytes: int = 8) -> None:
+    """Drop the last bytes of a shard's payload; the header stays valid."""
+    path.write_bytes(path.read_bytes()[:-nbytes])
 
 
 def _read(directory: Path, key: str) -> torch.Tensor:
@@ -173,6 +180,60 @@ class TestRefusals:
         monkeypatch.setattr(hf_passthrough, "_write_raw_shard", corrupting)
         with pytest.raises(ExportIncomplete, match="passthrough tensors differ from the base bytes"):
             complete_hf_export(_export(tmp_path, TRAINED), base, mtp_trained=False)
+
+
+class TestTruncatedShards:
+    """CRV-FIX-014: a shard whose payload is shorter than its header declares is refused before .complete."""
+
+    @pytest.fixture(autouse=True)
+    def _fail_instead_of_hanging(self):
+        """Before the fix the raw copy spun forever on a truncated source."""
+
+        def timeout(signum, frame):
+            raise TimeoutError("the export did not return")
+
+        previous = signal.signal(signal.SIGALRM, timeout)
+        signal.alarm(20)
+        yield
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+    def test_a_truncated_mixed_base_shard_fails_before_anything_is_written(self, tmp_path, base) -> None:
+        """model-00003 mixes trained keys with PLE metadata and MTP, so it would be copied key by key."""
+        _truncate(base / "model-00003-of-00004.safetensors")
+        export = _export(tmp_path, TRAINED)
+        before = sorted(p.name for p in export.iterdir())
+        with pytest.raises(ExportIncomplete, match="truncated or padded"):
+            complete_hf_export(export, base, mtp_trained=False)
+        assert sorted(p.name for p in export.iterdir()) == before
+
+    def test_a_truncated_trained_export_shard_fails(self, tmp_path, base) -> None:
+        """Only passthrough tensors are hashed against the base; the trained ones need the size check."""
+        export = _export(tmp_path, TRAINED)
+        _truncate(export / "model-00001.safetensors")
+        with pytest.raises(ExportIncomplete, match="model-00001.safetensors: header declares"):
+            complete_hf_export(export, base, mtp_trained=False)
+        assert not (export / "passthrough.json").exists()
+
+    def test_a_tensor_whose_span_does_not_match_its_shape_fails(self, tmp_path, base) -> None:
+        """A header that declares fewer bytes than dtype x shape is as broken as a short file."""
+        export = _export(tmp_path, TRAINED)
+        shard = export / "model-00001.safetensors"
+        data_start, header = hf_passthrough.read_header(shard)
+        key = sorted(header)[0]
+        header[key]["shape"] = [4, 7]
+        blob = json.dumps(header).encode()
+        blob += b" " * (-len(blob) % 8)
+        shard.write_bytes(len(blob).to_bytes(8, "little") + blob + shard.read_bytes()[data_start:])
+        with pytest.raises(ExportIncomplete, match=re.escape(f"{key} spans 48 bytes, BF16[4, 7] is 56")):
+            hf_passthrough.check_payloads(export, ["model-00001.safetensors"])
+
+    def test_the_raw_copy_raises_at_an_early_end_of_file_instead_of_spinning(self, tmp_path, base) -> None:
+        """The copy loop must not wait forever for bytes a truncated source does not have."""
+        source = base / "model-00003-of-00004.safetensors"
+        _truncate(source)
+        with pytest.raises(ExportIncomplete, match="ends 8 bytes before the end of"):
+            hf_passthrough._write_raw_shard(tmp_path / "out.safetensors", source, MTP)
 
 
 class TestVerifyExport:

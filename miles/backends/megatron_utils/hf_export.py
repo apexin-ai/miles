@@ -54,10 +54,12 @@ def save_hf_model(
                 hf_checkpoint=args.hf_checkpoint,
             )
             is_writer = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
-            if is_writer and hf_passthrough.applies(args.hf_checkpoint):
+            # a run bound to a PLE table at load must complete its export, whatever the base's config says now
+            required = ple_provenance.run_manifest() is not None
+            if is_writer and (required or hf_passthrough.applies(args.hf_checkpoint)):
                 # base tensors the model does not hold (Qwen3.8: PLE table, untrained MTP, unbuilt vision tower)
                 receipt = hf_passthrough.complete_hf_export(
-                    checkpoint_dir, args.hf_checkpoint, mtp_trained=args.enable_mtp_training
+                    checkpoint_dir, args.hf_checkpoint, mtp_trained=args.enable_mtp_training, required=required
                 )
                 if receipt is not None:
                     ple_provenance.check_export(receipt["passthrough_sha256"])
