@@ -17,7 +17,11 @@ import pytest
 import torch
 import torch.distributed as dist
 
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
+
+# two gloo TP2 runs: about 45 s on the qwen38 smoke pod's CPU
+register_cpu_ci(est_time=70, suite="stage-b-cpu", labels=["megatron"])
 
 _ROOT = Path(__file__).resolve().parents[5]
 

@@ -971,34 +971,37 @@ def save(
             (e.g. ``{'local_checkpoint_manager': manager}`` for in-memory checkpoints).
         non_persistent_ckpt (bool): If True, save a non-persistent (in-memory) checkpoint.
     """
-    check_tp_replicas(model, optimizer, where=f"save iteration {iteration}")
     hashes = None
     if args.ci_test and args.ci_save_model_hash:
         hashes = compute_model_hashes_by_layer(model)
     if should_disable_forward_pre_hook(args):
+        # also finishes the param all-gather an overlapped optimizer step left pending
         disable_forward_pre_hook(model)
+    try:
+        # after that sync, so the check sees the values the checkpoint stores
+        check_tp_replicas(model, optimizer, where=f"save iteration {iteration}")
+        if is_lora_model(model):
+            save_checkpoint_with_lora(
+                iteration, model, optimizer, opt_param_scheduler, args=args, publisher=snapshot_publisher
+            )
+        else:
+            save_checkpoint(
+                iteration,
+                model,
+                optimizer,
+                opt_param_scheduler,
+                num_floating_point_operations_so_far=0,
+                train_data_iterator=None,
+                preprocess_common_state_dict_fn=None,
+                checkpointing_context=checkpointing_context,
+                non_persistent_ckpt=non_persistent_ckpt,
+            )
 
-    if is_lora_model(model):
-        save_checkpoint_with_lora(
-            iteration, model, optimizer, opt_param_scheduler, args=args, publisher=snapshot_publisher
-        )
-    else:
-        save_checkpoint(
-            iteration,
-            model,
-            optimizer,
-            opt_param_scheduler,
-            num_floating_point_operations_so_far=0,
-            train_data_iterator=None,
-            preprocess_common_state_dict_fn=None,
-            checkpointing_context=checkpointing_context,
-            non_persistent_ckpt=non_persistent_ckpt,
-        )
-
-    if hashes is not None:
-        save_model_hashes(args, model, iteration, hashes)
-    if should_disable_forward_pre_hook(args):
-        enable_forward_pre_hook(model)
+        if hashes is not None:
+            save_model_hashes(args, model, iteration, hashes)
+    finally:
+        if should_disable_forward_pre_hook(args):
+            enable_forward_pre_hook(model)
 
 
 def initialize_model_and_optimizer(
