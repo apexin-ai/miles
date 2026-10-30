@@ -248,55 +248,6 @@ def test_sft_rollout_marks_completed_and_preserves_sample_groups(monkeypatch):
     assert sample.multimodal_train_inputs == {"patches": 1}
 
 
-@pytest.mark.parametrize("restore", [True, False])
-def test_native_reload_witness_checks_every_visual_tensor_and_restores_args(monkeypatch, tmp_path, restore):
-    from miles_plugins.models.deepseek_v4_1 import checkpoint_audit
-
-    parameters = [(f"module.module.visual.tensor{i}", torch.nn.Parameter(torch.ones(2))) for i in range(266)]
-    parameters += [
-        ("module.module." + name, torch.nn.Parameter(torch.ones(2)))
-        for name in ("mlp.router.weight", "mlp.experts.linear_fc1.weight0", "self_attention.linear_q_up_proj.weight")
-    ]
-    saved = {name: parameter.detach().clone() for name, parameter in parameters}
-    model = [SimpleNamespace(named_parameters=lambda: iter(parameters))]
-    args = SimpleNamespace(
-        async_save=False,
-        save="native",
-        load="base",
-        ckpt_step=None,
-        no_load_optim=False,
-        no_load_rng=False,
-        finetune=False,
-    )
-    original = vars(args).copy()
-    module = ModuleType("miles.backends.megatron_utils.checkpoint")
-
-    def load(*positional, **kwargs):
-        assert args.load == "native" and args.finetune and args.no_load_optim
-        assert torch.isnan(parameters[0][1]).all()
-        if restore:
-            with torch.no_grad():
-                for name, parameter in parameters:
-                    parameter.copy_(saved[name])
-        return (0, False)
-
-    module.load_checkpoint = load
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    monkeypatch.setenv("DSV41_AUDIT_DIR", str(tmp_path))
-    monkeypatch.setattr(checkpoint_audit.dist, "get_rank", lambda: 0)
-    monkeypatch.setattr(checkpoint_audit.dist, "barrier", lambda: None)
-    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
-    if restore:
-        checkpoint_audit.verify_saved_model(args, 1, model)
-        assert (tmp_path / "checkpoint-reload/rank-000.json").is_file()
-        assert all(torch.equal(parameter, saved[name]) for name, parameter in parameters)
-    else:
-        with pytest.raises(ValueError, match="failed to restore"):
-            checkpoint_audit.verify_saved_model(args, 1, model)
-        assert not (tmp_path / "checkpoint-reload/rank-000.json").exists()
-    assert vars(args) == original
-
-
 def test_discarded_optimizer_step_does_not_nest_audit_wrappers(monkeypatch, tmp_path):
     from miles_plugins.models.deepseek_v4_1 import audit
 

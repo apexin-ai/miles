@@ -5,6 +5,7 @@ The final synchronous save is followed by corruption and model-only reload;
 optimizer/data-cursor resume is a separate qualification, not implied here.
 """
 
+import inspect
 import json
 import os
 import time
@@ -18,9 +19,11 @@ from miles_plugins.models.deepseek_v4_1.audit import _parameter_hash
 
 
 def verify_saved_model(args, iteration, model):
+    """``args`` is the TrainerConfig that ``save`` received; load fields stay runtime-only."""
     from miles.backends.megatron_utils.checkpoint import load_checkpoint
+    from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 
-    if args.async_save:
+    if args.backend.async_save:
         raise ValueError("Image checkpoint qualification requires a completed synchronous save")
     visual = [(name, p) for chunk in model for name, p in chunk.named_parameters() if ".visual." in name]
     language = [(name, p) for chunk in model for name, p in chunk.named_parameters() if ".visual." not in name]
@@ -33,18 +36,24 @@ def verify_saved_model(args, iteration, model):
         raise ValueError("Incomplete image checkpoint qualification inventory")
     samples = [(name, p, p.detach().flatten()[:65536].cpu().clone()) for name, p in visual + selected]
     visual_before = _parameter_hash(visual) if visual else None
-    previous = {key: getattr(args, key) for key in ("load", "ckpt_step", "no_load_optim", "no_load_rng", "finetune")}
+    request = MegatronCkptLoadConfig(
+        load=args.backend.save,
+        resume_from_ckpt=False,
+        no_load_optim=True,
+        no_load_rng=True,
+        finetune=True,
+        ckpt_step=iteration,
+    )
+    load_kwargs = dict(checkpointing_context=None, skip_load_to_model_and_opt=False, args=args)
+    # Fail on a call-contract mismatch before the live model is touched.
+    inspect.signature(load_checkpoint).bind(model, None, None, **load_kwargs)
     started = time.monotonic()
     try:
         with torch.no_grad():
             for _, parameter, _ in samples:
                 parameter.flatten()[:65536].fill_(float("nan"))
-        args.load = args.save
-        args.ckpt_step = iteration
-        args.no_load_optim = True
-        args.no_load_rng = True
-        args.finetune = True
-        result = load_checkpoint(model, None, None, checkpointing_context=None, skip_load_to_model_and_opt=False)
+        with request.apply(args.backend):
+            result = load_checkpoint(model, None, None, **load_kwargs)
         if result[0] != 0:
             raise ValueError("Model-only checkpoint check unexpectedly restored training counters")
         torch.cuda.synchronize()
@@ -55,9 +64,12 @@ def verify_saved_model(args, iteration, model):
         visual_after = _parameter_hash(visual) if visual else None
         if visual_before != visual_after:
             raise ValueError("Native checkpoint did not restore the complete visual state")
-    finally:
-        for key, value in previous.items():
-            setattr(args, key, value)
+    except BaseException:
+        # Leave no NaN slices behind; the caller still sees the original failure.
+        with torch.no_grad():
+            for _, parameter, expected in samples:
+                parameter.flatten()[: expected.numel()].copy_(expected.to(parameter.device))
+        raise
     root = Path(os.environ["DSV41_AUDIT_DIR"]) / "checkpoint-reload"
     root.mkdir(parents=True, exist_ok=True)
     receipt = dict(
@@ -75,23 +87,30 @@ def verify_saved_model(args, iteration, model):
     dist.barrier()
 
 
-def install_final_save_check():
-    """Attach once to the native final-save lifecycle, without changing core files."""
-    from megatron.training import get_args
+def install_final_save_check(args):
+    """Attach once to the native final-save lifecycle, without changing core files.
 
+    ``args`` is the frozen flat view passed to ``--custom-megatron-init-path`` hooks.
+    The wrapped ``save`` receives the live TrainerConfig as its first argument.
+    """
     from miles.backends.megatron_utils import actor
     from miles.backends.megatron_utils import model as backend
 
-    if getattr(backend.save, "_dsv41_final_save_check", False):
+    if args.async_save or not args.save:
+        raise ValueError("Image checkpoint qualification requires synchronous saving")
+    if getattr(
+        backend.save, "_dsv41_final_save_check", False
+    ):  # config-access-exempt: marker attribute on a function, not a config field
         return
     original = backend.save
+    if next(iter(inspect.signature(original).parameters)) != "args":
+        raise TypeError("Image checkpoint qualification expects save(args, iteration, model, ...)")
 
     @wraps(original)
-    def save(iteration, model, optimizer, scheduler, *positional, **keywords):
-        result = original(iteration, model, optimizer, scheduler, *positional, **keywords)
-        args = get_args()
-        if iteration == args.num_rollout - 1:
-            verify_saved_model(args, iteration, model)
+    def save(trainer_args, iteration, model, optimizer, scheduler, *positional, **keywords):
+        result = original(trainer_args, iteration, model, optimizer, scheduler, *positional, **keywords)
+        if iteration == trainer_args.num_rollout - 1:
+            verify_saved_model(trainer_args, iteration, model)
         return result
 
     save._dsv41_final_save_check = True
