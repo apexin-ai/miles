@@ -59,6 +59,7 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
     qwen38_vision_trainable: A[str, Arg(choices=["none", "projector", "full"])] = "full"
     qwen38_freeze_language: A[bool, Arg()] = False
     qwen38_vision_recompute: A[bool, Arg()] = False
+    qwen38_sft_final_answer_format: A[str, Arg(choices=["dataset", "integer-only"])] = "dataset"
     qwen38_audit_dir: A[str | None, Arg()] = None
     qwen38_visual_snapshot_interval: A[int, Arg()] = 0
 
