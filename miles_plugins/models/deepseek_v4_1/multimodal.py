@@ -1,7 +1,6 @@
 """Attach native image embeddings before DDP, preserving language weight names."""
 
 import json
-from copy import copy
 from pathlib import Path
 
 import torch
@@ -133,21 +132,18 @@ def wire_visual(model, checkpoint, *, scope, recompute=False, freeze_language=Fa
     model.forward = forward
 
 
-def deepseek_v41_vlm_model_provider(pre_process=True, post_process=True, vp_stage=None):
-    from megatron.training import get_args
-
+def deepseek_v41_vlm_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args):
     from miles.backends.megatron_utils.model_provider import get_model_provider_func
 
-    args = get_args()
     if args.context_parallel_size != 1 or args.qkv_format != "bshd" or args.micro_batch_size != 1:
         raise ValueError("V4.1 image SFT currently requires CP1, BSHD and micro-batch-size 1")
     if not args.sequence_parallel and args.tensor_model_parallel_size > 1:
         raise ValueError("Replicated V4.1 visual gradients require sequence parallelism at TP>1")
     if args.use_rollout_routing_replay or args.enable_mtp_training:
         raise ValueError("V4.1 image SFT does not yet support routing replay or MTP")
-    provider_args = copy(args)
-    provider_args.custom_model_provider_path = None
-    provider_args.dsv41_image_sft = True
+    provider_args = type(args).model_validate(
+        dict(args) | {"custom_model_provider_path": None, "dsv41_image_sft": True}
+    )
     model = get_model_provider_func(provider_args, role="actor")(
         pre_process=pre_process,
         post_process=post_process,
