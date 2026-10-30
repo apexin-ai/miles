@@ -19,6 +19,15 @@ from miles_plugins.models.linear_attn import gdn_kernel
 from miles_plugins.models.qwen3_5 import _get_text_config
 
 
+def mark_tp_replicated(module: nn.Module) -> None:
+    """Have finalize_model_grads all-reduce (AVG) these grads over the TP group."""
+    for param in module.parameters():
+        assert not getattr(
+            param, "tensor_model_parallel", False
+        ), "a TP-sharded param cannot be TP-averaged"  # config-access-exempt: Megatron sets this only on TP-sharded params
+        param.average_gradients_across_tp_domain = True
+
+
 # Adapted from Qwen3NextGatedDeltaNet but with separate in_proj_qkv and in_proj_z
 class ReplicatedGatedDeltaNet(nn.Module):
     """
@@ -207,6 +216,11 @@ class ReplicatedGDNAttention(HuggingfaceAttention):
             from torch.nn import RMSNorm
 
             self.input_layernorm = RMSNorm(self.hf_config.hidden_size, eps=self.hf_config.rms_norm_eps)
+
+        # Every TP rank holds the whole GDN and gets the same gradient only up to kernel nondeterminism
+        # (fla autotune picks block sizes per process), so unsynced replicas drift apart while a
+        # checkpoint keeps TP rank 0's copy alone. Average across TP like Megatron's HuggingFaceModule.
+        mark_tp_replicated(self)
 
     def hf_forward(self, hidden_states, packed_seq_params):
         hidden_states = self.input_layernorm(hidden_states)
