@@ -21,6 +21,11 @@ from miles_plugins.models.qwen3_8_next.vision_inputs import image_rope_positions
 from miles_plugins.models.qwen3_8_next.vision_sft import _processor
 
 _LOADER = "examples.qwen3_8_next_vision_sft.evaluate.load_visual_and_verify"
+_INTEGER_FINAL_INSTRUCTION = (
+    "Keep all reasoning in the thinking block. Your final answer after thinking must consist of "
+    "exactly one integer and nothing else. Do not include explanations, headings, lists, units, "
+    "or Markdown in the final answer."
+)
 
 
 def _sha(path):
@@ -89,7 +94,17 @@ def _source_visual(model):
     return tensors
 
 
-def _prepare(processor, config, row, image_row, *, control, enable_thinking):
+def _prepare(
+    processor,
+    config,
+    row,
+    image_row,
+    *,
+    control,
+    enable_thinking,
+    reasoning_effort="xhigh",
+    final_answer_format="dataset",
+):
     question = row["messages"][0]["content"].replace("<image>", "")
     images, pixel_hash = [], None
     if control != "no_image":
@@ -104,8 +119,16 @@ def _prepare(processor, config, row, image_row, *, control, enable_thinking):
     messages = normalize_image_messages(
         [{"role": "user", "content": ("<image>" * len(images)) + question}], len(images)
     )
+    if final_answer_format == "integer-only":
+        messages.insert(0, {"role": "system", "content": _INTEGER_FINAL_INSTRUCTION})
+    elif final_answer_format != "dataset":
+        raise ValueError("Unknown final-answer format")
     text = processor.tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True, enable_thinking=enable_thinking
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=enable_thinking,
+        reasoning_effort=reasoning_effort,
     )
     _, header, prefill = text.rpartition("<|im_start|>assistant\n")
     if not header or prefill not in ("<think>\n", "<think>\n\n</think>\n\n"):
@@ -150,6 +173,8 @@ def _evaluate_split(engine, processor, config, rows, output, *, args, split, upd
                         other if control == "swapped_image" else row,
                         control=control,
                         enable_thinking=args.enable_thinking,
+                        reasoning_effort=args.reasoning_effort,
+                        final_answer_format=args.final_answer_format,
                     )
                     for row, other in zip(batch, image_rows, strict=True)
                 ]
@@ -256,6 +281,9 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=4096)
     parser.add_argument("--context-length", type=int, default=8192)
     parser.add_argument("--enable-thinking", action="store_true")
+    parser.add_argument("--reasoning-effort", choices=["xhigh", "medium", "low"], default="xhigh")
+    parser.add_argument("--final-answer-format", choices=["dataset", "integer-only"], default="dataset")
+    parser.add_argument("--enable-cuda-graph", action="store_true", help="Opt in to native decode graph capture")
     parser.add_argument("--mem-fraction-static", type=float, default=0.6)
     parser.add_argument("--limit", type=int, default=0, help="Bring-up only; not a held-out quality result")
     args = parser.parse_args()
@@ -310,12 +338,15 @@ def main():
         mem_fraction_static=args.mem_fraction_static,
         max_running_requests=args.batch_size,
         chunked_prefill_size=4096,
-        disable_cuda_graph=True,
+        disable_cuda_graph=not args.enable_cuda_graph,
+        cuda_graph_max_bs_decode=args.batch_size if args.enable_cuda_graph else None,
         disable_radix_cache=True,
         linear_attn_prefill_backend="flashinfer",
         moe_runner_backend="triton",
         trust_remote_code=True,
         custom_weight_loader=[_LOADER],
+        log_level="info",
+        decode_log_interval=200,
     )
     try:
         checkpoints = ([] if args.skip_baseline else [(0, None)]) + [(None, path) for path in args.visual_snapshots]

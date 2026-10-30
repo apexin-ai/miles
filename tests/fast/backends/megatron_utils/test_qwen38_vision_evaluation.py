@@ -238,7 +238,13 @@ def test_scoring_preserves_prompt_thinking_prefix(tmp_path, thinking, generated,
         [{"id": "scene", "messages": [{"content": "Count."}], "answer": "2"}],
         path,
         args=SimpleNamespace(
-            controls=["no_image"], batch_size=1, max_new_tokens=4096, context_length=8192, enable_thinking=thinking
+            controls=["no_image"],
+            batch_size=1,
+            max_new_tokens=4096,
+            context_length=8192,
+            enable_thinking=thinking,
+            reasoning_effort="xhigh",
+            final_answer_format="dataset",
         ),
         split="development",
         update=0,
@@ -249,6 +255,39 @@ def test_scoring_preserves_prompt_thinking_prefix(tmp_path, thinking, generated,
     assert record["generated_text"] == generated
     assert record["assistant_prefill"] == prefill
     assert record["prediction"] == prefill + generated
+
+
+@pytest.mark.parametrize("answer_format", ["dataset", "integer-only"])
+def test_native_reasoning_and_final_format_preserve_question_and_thinking(answer_format):
+    from examples.qwen3_8_next_vision_sft.evaluate import _prepare
+
+    captured = {}
+
+    def template(messages, **kwargs):
+        captured.update(messages=messages, options=kwargs)
+        return "<|im_start|>assistant\n<think>\n"
+
+    tokenizer = SimpleNamespace(apply_chat_template=template, encode=lambda *a, **k: [1, 2])
+    row = {"messages": [{"content": "Count the black squares."}]}
+    result = _prepare(
+        SimpleNamespace(tokenizer=tokenizer),
+        {},
+        row,
+        row,
+        control="no_image",
+        enable_thinking=True,
+        reasoning_effort="low",
+        final_answer_format=answer_format,
+    )
+    assert result == ([1, 2], None, None, "<think>\n")
+    assert captured["options"]["reasoning_effort"] == "low"
+    assert captured["options"]["enable_thinking"] is True
+    assert captured["messages"][-1] == {"role": "user", "content": "Count the black squares."}
+    if answer_format == "integer-only":
+        assert captured["messages"][0]["role"] == "system"
+        assert "exactly one integer" in captured["messages"][0]["content"]
+    else:
+        assert len(captured["messages"]) == 1
 
 
 @pytest.fixture
