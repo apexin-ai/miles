@@ -107,7 +107,7 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
             images,
             template_kwargs=args.apply_chat_template_kwargs,
             tools=sample.metadata.get("tools"),
-            final_answer_format=getattr(args, "qwen38_sft_final_answer_format", "dataset"),
+            final_answer_format=args.qwen38_sft_final_answer_format,
         )
         if len(tokens) > args.seq_length:
             raise ValueError(f"Expanded sample {sample.index} exceeds --seq-length: {len(tokens)}")

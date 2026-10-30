@@ -27,7 +27,9 @@ def _runtime_identity():
     for name, module in sorted(sys.modules.copy().items()):
         if name not in selected and not name.startswith("miles_plugins.models.qwen3_8_next."):
             continue
-        if filename := getattr(module, "__file__", None):
+        if filename := getattr(
+            module, "__file__", None
+        ):  # config-access-exempt: namespace and builtin modules have no __file__
             path = Path(filename).resolve()
             sources[name] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
     return {
@@ -49,11 +51,15 @@ def parameter_hash(parameters):
 
 
 def _buffers(optimizer):
-    if (children := getattr(optimizer, "chained_optimizers", None)) is not None:
+    if (
+        children := getattr(optimizer, "chained_optimizers", None)
+    ) is not None:  # config-access-exempt: only ChainedOptimizer has children
         for child in children:
             yield from _buffers(child)
     else:
-        yield from getattr(optimizer, "buffers", ())
+        yield from getattr(
+            optimizer, "buffers", ()
+        )  # config-access-exempt: only distributed optimizers own gradient buffers
 
 
 def _gradient_samples(optimizer, parameter, indices):
@@ -210,14 +216,18 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler):
     if not args.qwen38_audit_dir:
         raise ValueError("Qwen's audit hook requires --qwen38-audit-dir")
     parameters = [(name, p) for chunk in model for name, p in chunk.named_parameters()]
-    state = getattr(model[0], "_qwen38_audit_state", None)
+    state = getattr(
+        model[0], "_qwen38_audit_state", None
+    )  # config-access-exempt: audit state cached on the first model chunk
     if state is None:
         state = _initial_state(args, model, parameters)
         model[0]._qwen38_audit_state = state
     selected = [(name, p) for name, p in parameters if "vision_model." in name and p.requires_grad]
     language_names = set(state["language_probe_names"])
     language_selected = [(name, p) for name, p in parameters if name in language_names]
-    original = getattr(optimizer.step, "_qwen38_original_step", optimizer.step)
+    original = getattr(
+        optimizer.step, "_qwen38_original_step", optimizer.step
+    )  # config-access-exempt: marker set on our own step wrapper
 
     def audited_step(*positional, **keywords):
         probes = _capture_probes(optimizer, selected)
