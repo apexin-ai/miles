@@ -65,12 +65,19 @@ def _digest(module):
 
 
 @pytest.fixture
-def layer(monkeypatch):
+def layer(monkeypatch, tmp_path):
     monkeypatch.setattr(qsa_indexer, "TELinear", _DuplicatedLinear)
-    if not dist.is_initialized():
-        dist.init_process_group("gloo", init_method="tcp://127.0.0.1:29571", rank=0, world_size=1)
+    # A file rendezvous avoids a fixed port; destroy only a group this fixture created, so later
+    # tests (e.g. the indexer monitor) do not see a stray initialized process group.
+    created = not dist.is_initialized()
+    if created:
+        dist.init_process_group("gloo", init_method=f"file://{tmp_path / 'rendezvous'}", rank=0, world_size=1)
     torch.manual_seed(0)
-    return _Layer()
+    try:
+        yield _Layer()
+    finally:
+        if created:
+            dist.destroy_process_group()
 
 
 def test_indexer_parameters_do_not_require_grad(layer):
