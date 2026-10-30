@@ -483,6 +483,122 @@ is retained in an archive with SHA256
 the qualification itself has SHA256
 `d76be4d629f558fa8f5c794605077ebca1137eef8efb16eb31022db1624dfd06`.
 
+The [aligned-prompt training loss](../../assets/images/qwen3-8-flash-next-vision-sft/prompt-alignment-training-loss.json)
+is finite on all 32 updates: first/last
+0.440702/0.292345, with a range of 0.280298–0.440702. Logged gradient norms
+range from 10.02 to 128.93. Each update consumes a different batch; this is
+neither a fixed-batch fitting test nor held-out loss. These values establish
+numerical stability, not improved counting accuracy.
+
+A subsequent [full-model forward comparison](../../assets/images/qwen3-8-flash-next-vision-sft/full-forward-parity-comparison.json)
+uses four training and four development images, all 48 language layers, and the
+same native input tokens, image tensors, grids, mRoPE and original/final visual
+weights. It performs no optimizer updates and verifies frozen language hashes
+on all eight training ranks. The two last-stage TP ranks produce identical
+teacher-forced target log probabilities. Training-versus-SGLang mean absolute
+integer-token log-probability differences are 0.15842 before training and 0.05548
+after training, with maxima of 0.56729/0.15599. The integer update-direction
+cosine is 0.75114; only three of eight integer log-probability changes agree in
+sign. These are measured prefill differences on eight diagnostic examples,
+without a post-hoc numerical pass threshold. They do not establish the cause
+of the flat validation curve, free-generation parity or a quality improvement.
+The retained evidence archive has SHA256
+`095eea7941dff0cb4c46d6e4052b7ea330828db1cbe7b064570d84b0ce9f0504`.
+
+### First-256 Training-Set Diagnostic
+
+The user requested a free-generation check on the first 256 training scenes in
+their original order, comparing the base model with the fixed update-32
+`vision32-prompt-v2` snapshot. This uses the user question and image only; the
+assistant training target is not supplied to inference. Thinking remains enabled
+at `low`, with the existing integer-answer instruction, 16384 new tokens,
+context 32768, batch size 256 and the same last-final-line scorer.
+
+The [qualified result](../../assets/images/qwen3-8-flash-next-vision-sft/training256-prompt-alignment-result.json)
+verifies all 256 IDs, questions, labels, decoded-pixel hashes and expanded input
+token hashes across the pair, together with evaluator, model-file, scorer and
+inference-package identities. All 512 predictions are retained for re-scoring.
+The [CPU qualification script](../../assets/images/qwen3-8-flash-next-vision-sft/audit-training256-prompt-alignment.py)
+checks both raw prediction files against the original source rows and manifests.
+
+| Visual update | Correct / 256 | Accuracy | Invalid answers |
+| --- | --- | --- | --- |
+| 0 | 114 | 44.53125% | 5 |
+| 32 | 127 | 49.609375% | 3 |
+
+This single paired run gains 13 correct answers, or 5.078125 percentage points:
+55 wrong-to-right and 42 right-to-wrong. Among the 248 questions with valid
+integer answers on both sides, correct answers rise from 112 to 124; validity
+transitions contribute the remaining net one. Thus the measured training-set
+gain is primarily a change in counting answers. This is a training-set
+diagnostic, not a new held-out result; the previously fixed validation pair
+remains 113 to 112/256.
+By target sheet, correct answers change from 47 to 57/88 on circles, 38 to
+44/110 on rectangles, and 29 to 26/58 on triangles.
+
+The first baseline batch had already completed in a larger training-set job.
+That job was explicitly interrupted after the user reduced the scope to 256;
+its manifest remains incomplete and its exit-143 receipt is preserved. The
+baseline artifact is an unchanged 256-row prefix with its parent file hash and
+receipt recorded. The trained-only job completed normally with `--limit 256`;
+the qualification explicitly records the requested subset and does not promote
+it to held-out accuracy. The full evidence archive has SHA256
+`ca30ca6096e11f32b02565e4d946b6476a30eff46e02c355af28b7b6f65e8d21`.
+
+### Which Reference Questions Improved
+
+The [paired-answer audit](../../assets/images/qwen3-8-flash-next-vision-sft/glm-reference-paired-audit.json)
+checks the public GLM result at commit `74808f6e24254e1f647d78d8a98d714ab9daacb0`.
+All 256 IDs, questions, labels, decoded-pixel hashes, scene structures and seeds
+match this Qwen dataset exactly. The complete
+[wrong-to-right and right-to-wrong question list](../../assets/images/qwen3-8-flash-next-vision-sft/glm-reference-transitions.csv)
+retains the questions, source answers, categories and Qwen endpoint answers.
+The [CPU auditor](../../assets/images/qwen3-8-flash-next-vision-sft/audit-glm-reference-pairs.py)
+verifies the pinned scene/pair hashes and reproduces the public
+104-to-127 aggregate before producing these results.
+
+| Target sheet | Questions | GLM baseline correct | GLM trained correct | Net |
+| --- | --- | --- | --- | --- |
+| Rectangle | 112 | 22 | 34 | +12 |
+| Circle | 85 | 43 | 52 | +9 |
+| Triangle | 59 | 39 | 41 | +2 |
+
+Forty-nine GLM answers change from wrong to right and 26 in reverse. Of the 49
+gains, 45 already have valid integer answers before training; four recover from
+invalid answers. After subtracting regressions, the common-valid subset gains
+21 correct answers and validity transitions contribute two. Counts of one and
+two account for 22 of the net 23 gain; the remaining answer groups gain one net.
+This is a real change in extracted counting answers, concentrated in low counts,
+not evidence that reasoning traces or hidden-boundary reconstruction improved.
+
+Representative scene IDs are selected as the first gain in each declared
+category, rather than from the most favorable examples:
+
+| ID suffix | Question target | Gold | GLM before → after | Qwen before → after |
+| --- | --- | --- | --- | --- |
+| 00001 | Black triangles inside the green rectangle | 3 | 0 → 3 | 3 → 3 |
+| 00017 | Black squares inside the blue circle | 2 | 1 → 2 | 0 → 0 |
+| 00049 | Black squares inside the purple triangle | 2 | 3 → 2 | 2 → 2 |
+
+GLM also uses an empty-thinking-end plus integer target, without reasoning
+labels. Its short target therefore cannot by itself explain why Qwen failed
+to improve, and adding reasoning labels is not justified by this comparison.
+The GLM starting point is the previously language-updated `chartqa_none_v2_seed42`
+iteration 95, while Qwen starts from its native base. That difference is recorded
+provenance, not an isolated causal explanation. Public GLM artifacts contain
+extracted answers, not the raw reasoning text, so they cannot be re-scored under
+Qwen's last-line rule or used to infer the reasoning mechanism.
+
+The [pinned DeepSeek reference](https://github.com/leviking98z-rgb/miles/blob/be9e706/docs/models/deepseek/deepseek-v4-1-1017-vision-sft.md)
+reports a vision-only gain of 51 to 62/256. Thirty previously invalid answers
+become correct, one previously valid wrong answer becomes correct, and 20
+previously correct answers become invalid: common-valid net +1 and validity
+net +10. Of the 30 invalid-to-correct cases, 15 had unfinished thinking and 15
+had noninteger first final lines. Its per-question raw files remain on the
+reference project disk and are not attached to the public issue; this audit
+does not infer their IDs or scene categories. The documented no-image response
+drift also prevents attributing its entire score change to visual learning.
+
 ### Data And Launch
 
 The example reuses the archived `geometric_stack_count` scenes referenced by
