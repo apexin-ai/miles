@@ -786,6 +786,18 @@ without loading the complete checkpoint weights. `--model-update` requires the
 closed full-model export receipt and verifies the model index, config and native
 checkpoint metadata before starting inference.
 
+For diagnosis after a failed live-model restoration, the separate
+`--saved-checkpoint-only` export mode independently validates the model actually
+saved in the native checkpoint. It requires every final training rank audit,
+checks all exported tensors for finite values and exact HF readback, and checks
+that the native file inventory stays unchanged. Its receipt explicitly sets
+`live_model_roundtrip_qualified=false`, retains the available live reload
+receipts, and records the unresolved restoration limitation. Evaluation from
+this mode measures the saved model; it does not establish that all live TP
+replicas were restored exactly. The default exporter still requires the complete
+live-model roundtrip. Do not present this diagnostic mode as a passed live
+restoration check.
+
 Run the evaluator on the same allocated GPU node after training, not on a control
 machine. It starts the full native SGLang model and evaluates the source baseline
 plus each explicitly supplied visual snapshot. A visual-only update is accepted

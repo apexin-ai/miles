@@ -114,6 +114,62 @@ def test_joint_evaluation_requires_a_complete_unchanged_model_export(tmp_path, t
         assert evaluate._full_model_receipt(tmp_path, 160) == receipt
 
 
+@pytest.mark.parametrize("tamper", [None, "nonfinite", "readback", "undisclosed", "rank", "missing_file", "changed_file"])
+def test_saved_model_evaluation_discloses_live_failure_and_checks_independent_export(tmp_path, tamper):
+    for name in ["config.json", "model.safetensors.index.json", ".metadata", "__0_0.distcp"]:
+        (tmp_path / name).write_text("{}")
+    receipt = {
+        "complete": True,
+        "plan_only": False,
+        "update": 160,
+        "checkpoint": str(tmp_path),
+        "native_metadata_sha256": evaluate._sha(tmp_path / ".metadata"),
+        "source_config_sha256": evaluate._sha(tmp_path / "config.json"),
+        "hf_index_sha256": evaluate._sha(tmp_path / "model.safetensors.index.json"),
+        "validation_mode": "saved-checkpoint",
+        "live_model_roundtrip_qualified": False,
+        "limitation": "Live restore failed; only the saved model is independently qualified.",
+        "native_export_tensors": 4,
+        "training_rank_audits": [{"rank": 0, "world_size": 1, "update": 160}],
+        "closed_rank_audits": [],
+        "saved_checkpoint_validation": {"complete": True, "finite_tensors": 4, "exact_hf_readback_tensors": 4, "native_files": export_full._checkpoint_inventory(tmp_path)},
+    }
+    if tamper == "nonfinite":
+        receipt["saved_checkpoint_validation"]["finite_tensors"] = 3
+    elif tamper == "readback":
+        receipt["saved_checkpoint_validation"]["exact_hf_readback_tensors"] = 3
+    elif tamper == "undisclosed":
+        receipt["live_model_roundtrip_qualified"] = True
+    elif tamper == "rank":
+        receipt["training_rank_audits"][0]["world_size"] = 2
+    elif tamper == "missing_file":
+        del receipt["saved_checkpoint_validation"]["native_files"]["__0_0.distcp"]
+    elif tamper == "changed_file":
+        (tmp_path / "__0_0.distcp").write_text("changed")
+    (tmp_path / "joint-export.json").write_text(json.dumps(receipt))
+    if tamper:
+        with pytest.raises(ValueError):
+            evaluate._full_model_receipt(tmp_path, 160)
+    else:
+        assert evaluate._full_model_receipt(tmp_path, 160) == receipt
+
+
+def test_saved_checkpoint_checks_never_qualify_a_partial_live_roundtrip(tmp_path):
+    probe = {"gradient_nonzero": 1, "gradient_finite": True, "weight_finite": True}
+    for rank in range(2):
+        before = {"rank": rank, "world_size": 2, "language_frozen": False, "language_sha256": "before", "visual_sha256": "before"}
+        after = {"rank": rank, "update": 160, "initial_language_sha256": "before", "final_language_sha256": "after", "visual_sha256": "after", "parameters": [probe], "language_parameters": [probe]}
+        (tmp_path / f"rank-{rank:03d}-initial.json").write_text(json.dumps(before))
+        (tmp_path / f"rank-{rank:03d}-update-000160.json").write_text(json.dumps(after))
+    records = export_full._saved_training_audit(tmp_path, 159)
+    assert len(records) == 2 and {row["rank"] for row in records} == {0, 1}
+    with pytest.raises(FileNotFoundError):
+        export_full._closed_audit(tmp_path, 159)
+    with pytest.raises(ValueError, match="nonfinite"):
+        export_full._verify_saved_tensors({"bad": torch.tensor([float("nan")])})
+    assert export_full._verify_saved_tensors({"finite": torch.tensor([1.0, 2.0])}) == 1
+
+
 def test_joint_probe_selection_is_bounded_and_includes_decoder_endpoints():
     trainable = SimpleNamespace(requires_grad=True)
     frozen = SimpleNamespace(requires_grad=False)
