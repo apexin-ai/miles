@@ -14,6 +14,7 @@ from miles.kernels.attention.qsa import (  # noqa: E402
 )
 from miles.kernels.attention.qsa.block_sparse_attention import (  # noqa: E402
     build_tile_index_pair,
+    pack_block_bitmap,
     selection_to_block_bitmap,
 )
 
@@ -130,7 +131,7 @@ def test_packed_boundary_not_a_multiple_of_the_block(lens):
     hi = torch.arange(T, dtype=torch.int32, device="cuda")
     qq, kk, vv = (t.clone().requires_grad_(True) for t in (q, k, v))
     out = qsa_block_sparse_attention(
-        qq, kk, vv, sel, tok_base, hi, blk_base, tok_base, block_first, block_last, SCALE, BLK
+        qq, kk, vv, pack_block_bitmap(sel), tok_base, hi, blk_base, tok_base, block_first, block_last, SCALE, BLK
     )
     ref = _reference(q, k, v, idx, SCALE)
     assert _rel(out, ref)[1] < 1e-2
@@ -148,7 +149,7 @@ def test_packed_boundary_not_a_multiple_of_the_block(lens):
 def test_tile_index_pair_is_consistent_both_ways():
     q, k, v, idx = _single_sequence_case(T=256, budget=32)
     sel = selection_to_block_bitmap(idx, 256, BLK)
-    block_first = torch.arange(sel.shape[1], dtype=torch.int32, device="cuda") * BLK
+    block_first = torch.arange(256 // BLK, dtype=torch.int32, device="cuda") * BLK
     klist, kcnt, qlist, qcnt = build_tile_index_pair(sel, block_first, block_first + BLK - 1, 64, 32)
 
     forward = {(qt, int(klist[qt, i])) for qt in range(kcnt.numel()) for i in range(int(kcnt[qt]))}

@@ -119,7 +119,8 @@ def measure_rows(
     rows: Tensor,
     tp_group=None,
 ) -> list[dict]:
-    """Per row: position, recall and teacher overlap. ``query`` [T, Hq, D], ``key`` [T, Hkv, D].
+    """Per row: position, recall and teacher overlap. ``query`` [T, Hq, D], ``key`` [T, Hkv, D],
+    ``sel_bitmap`` the packed block bits the kernel reads.
 
     With ``tp_group``, ``query`` holds this rank's heads only; per-key mass is summed over the
     group (one all-reduce per row, same rows on every rank), so both metrics cover all heads.
@@ -135,7 +136,7 @@ def measure_rows(
         k = key[start:end].float()
         probs = torch.softmax(torch.einsum("hgd,lhd->hgl", q, k) * scale, dim=-1).reshape(hq, n_keys)
         key_block = int(blk_base[row]) + torch.arange(n_keys, device=query.device) // ratio
-        chosen = sel_bitmap[row, key_block] != 0
+        chosen = ((sel_bitmap[row, key_block >> 3] >> (key_block & 7).to(torch.uint8)) & 1) != 0
         head_mass = probs.sum(dim=0)
         if tp_group is not None:
             torch.distributed.all_reduce(head_mass, group=tp_group)

@@ -79,10 +79,11 @@ def _qsa_bs_fwd_kernel(
         # which need not be a multiple of BLK
         blk = blk_base[:, None] + (offs_k[None, :] - tok_base[:, None]) // BLK
         sel = tl.load(
-            SEL + offs_q[:, None] * stride_st + blk,
+            SEL + offs_q[:, None] * stride_st + (blk >> 3),
             mask=q_mask[:, None] & k_in[None, :] & (blk >= 0) & (blk < NB),
             other=0,
         )
+        sel = (sel.to(tl.int32) >> (blk & 7)) & 1
         ok = (sel != 0) & (offs_k[None, :] <= hi[:, None]) & (offs_k[None, :] >= lo[:, None]) & k_in[None, :]
 
         k_tile = tl.load(
@@ -188,10 +189,11 @@ def _qsa_bs_dq_kernel(
         # per-token block lookup, as in the forward kernel
         blk = blk_base[:, None] + (offs_k[None, :] - tok_base[:, None]) // BLK
         sel = tl.load(
-            SEL + offs_q[:, None] * stride_st + blk,
+            SEL + offs_q[:, None] * stride_st + (blk >> 3),
             mask=q_mask[:, None] & k_in[None, :] & (blk >= 0) & (blk < NB),
             other=0,
         )
+        sel = (sel.to(tl.int32) >> (blk & 7)) & 1
         ok = (
             (sel != 0)
             & (offs_k[None, :] <= hi[:, None])
@@ -288,10 +290,11 @@ def _qsa_bs_dkdv_kernel(
 
         blk = blk_base[:, None] + (offs_k[None, :] - tok_base[:, None]) // BLK
         sel = tl.load(
-            SEL + offs_q[:, None] * stride_st + blk,
+            SEL + offs_q[:, None] * stride_st + (blk >> 3),
             mask=q_mask[:, None] & k_in[None, :] & (blk >= 0) & (blk < NB),
             other=0,
         )
+        sel = (sel.to(tl.int32) >> (blk & 7)) & 1
         ok = (
             (sel != 0)
             & (offs_k[None, :] <= hi[:, None])
@@ -331,8 +334,27 @@ def _qsa_bs_dkdv_kernel(
     tl.store(DV + offs_k[:, None] * stride_vt + kv_head * stride_vh + offs_d[None, :], dv, mask=k_in[:, None])
 
 
+def pack_block_bitmap(flags: Tensor) -> Tensor:
+    """``[T, NB]`` 0/1 block flags -> ``[T, ceil(NB / 8)]`` uint8, block ``b`` at bit ``b % 8`` of byte ``b // 8``.
+
+    One byte per (query, block) is ``T^2 / 4`` bytes at compress ratio 4 (16 GiB at 262K,
+    held until the layer's backward); one bit is an eighth of that.
+    """
+    rows, nb = flags.shape
+    pad = -nb % 8
+    bits = torch.nn.functional.pad(flags.to(torch.uint8), (0, pad)).view(rows, -1, 8)
+    weights = 1 << torch.arange(8, dtype=torch.uint8, device=flags.device)
+    return (bits * weights).sum(dim=-1, dtype=torch.uint8)
+
+
+def unpack_block_bitmap(packed: Tensor, num_blocks: int) -> Tensor:
+    """Inverse of ``pack_block_bitmap``: ``[T, NBYTES]`` uint8 -> ``[T, num_blocks]`` uint8 0/1."""
+    shifts = torch.arange(8, dtype=torch.uint8, device=packed.device)
+    return ((packed.unsqueeze(-1) >> shifts) & 1).flatten(-2)[:, :num_blocks]
+
+
 def selection_to_block_bitmap(indices: Tensor, num_tokens: int, block_size: int) -> Tensor:
-    """``[T, K]`` token indices (``-1`` pad) -> ``[T, ceil(T / block_size)]`` uint8 flags.
+    """``[T, K]`` token indices (``-1`` pad) -> packed ``[T, ceil(ceil(T / block_size) / 8)]`` block bits.
 
     A block is flagged when any of its tokens appears in the row. Tokens that the caller
     clamped away inside an otherwise selected block are re-excluded by the ``lo``/``hi``
@@ -344,7 +366,7 @@ def selection_to_block_bitmap(indices: Tensor, num_tokens: int, block_size: int)
     rows = torch.arange(indices.shape[0], device=indices.device).unsqueeze(1).expand_as(indices)
     blocks = torch.where(valid, indices // block_size, torch.zeros_like(indices))
     flags[rows[valid], blocks[valid].long()] = 1
-    return flags
+    return pack_block_bitmap(flags)
 
 
 def _tile_mask(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int) -> Tensor:
@@ -354,13 +376,18 @@ def _tile_mask(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk
     ``block_first`` / ``block_last`` ``[NB]`` are each block's inclusive token span; packed
     block ids drift from ``token // block_size`` once a sequence length is off the grid.
     """
-    T, nb = sel.shape
+    T, nbytes = sel.shape
+    nb = block_first.shape[0]
     nqt = -(-T // bq)
     nkt = -(-T // bk)
     pad_q = nqt * bq - T
     if pad_q:
         sel = torch.nn.functional.pad(sel, (0, 0, 0, pad_q))
-    picked = sel.view(nqt, bq, nb).amax(dim=1).to(torch.int32)
+    rows = sel.view(nqt, bq, nbytes)
+    union = rows[:, 0].clone()
+    for i in range(1, bq):
+        union |= rows[:, i]
+    picked = unpack_block_bitmap(union, nb).to(torch.int32)
     tile = torch.zeros(nqt, nkt, dtype=torch.int32, device=sel.device)
     # block_size <= bk, so a block touches at most the tiles of its first and last token
     tile.index_add_(1, block_first.long() // bk, picked)
@@ -377,7 +404,7 @@ def _compact_tile_mask(mat: Tensor) -> tuple[Tensor, Tensor]:
 
 
 def build_tile_index(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int) -> tuple[Tensor, Tensor]:
-    """``[T, NB]`` block flags -> (``klist`` [NQT, maxc] int32, ``kcnt`` [NQT] int32).
+    """Packed ``[T, ceil(NB / 8)]`` block bits -> (``klist`` [NQT, maxc] int32, ``kcnt`` [NQT] int32).
 
     ``klist[i]`` lists, ascending, the key tiles that at least one query in query-tile
     ``i`` selected. Per-query exactness still comes from the in-kernel mask; this only
@@ -435,7 +462,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             o.stride(0),
             o.stride(1),
             T,
-            selc.shape[1],
+            block_first.shape[0],
             scale,
             GROUP=group,
             D=D,
@@ -494,7 +521,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             do.stride(0),
             do.stride(1),
             T,
-            selc.shape[1],
+            block_first.shape[0],
             ctx.scale,
             GROUP=ctx.group,
             D=D,
@@ -525,7 +552,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             do.stride(0),
             do.stride(1),
             T,
-            selc.shape[1],
+            block_first.shape[0],
             ctx.scale,
             GROUP=ctx.group,
             D=D,
@@ -552,7 +579,8 @@ def qsa_block_sparse_attention(
     scale: float,
     block_size: int = 4,
 ) -> Tensor:
-    """``q`` [T, Hq, D], ``k``/``v`` [S, Hkv, D], ``sel_blocks`` [T, NB] uint8.
+    """``q`` [T, Hq, D], ``k``/``v`` [S, Hkv, D], ``sel_blocks`` [T, ceil(NB / 8)] uint8 block bits
+    (``pack_block_bitmap``).
 
     ``lo``/``hi`` are the inclusive key range per query; ``blk_base``/``tok_base`` place
     the query's sequence in the packed block grid (both zero for a single sequence);
@@ -574,6 +602,6 @@ def qsa_sparse_attention_from_indices(
     lo = torch.where(valid, indices, torch.full_like(indices, big)).min(dim=1).values.to(torch.int32)
     hi = torch.where(valid, indices, torch.full_like(indices, -1)).max(dim=1).values.to(torch.int32)
     zeros = torch.zeros(T, dtype=torch.int32, device=q.device)
-    block_first = torch.arange(sel.shape[1], dtype=torch.int32, device=q.device) * block_size
+    block_first = torch.arange(-(-T // block_size), dtype=torch.int32, device=q.device) * block_size
     block_last = (block_first + block_size).clamp_max(T) - 1
     return qsa_block_sparse_attention(q, k, v, sel, lo, hi, zeros, zeros, block_first, block_last, scale, block_size)

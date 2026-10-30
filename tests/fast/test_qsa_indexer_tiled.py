@@ -13,6 +13,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from miles.kernels.attention.qsa.block_sparse_attention import unpack_block_bitmap  # noqa: E402
 from miles_plugins.models.qwen3_8_next.ops import qsa_indexer  # noqa: E402
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import (  # noqa: E402
     PackedBlockLayout,
@@ -370,6 +371,7 @@ def test_block_form_matches_untiled_attention(monkeypatch, lens):
     for a, b in zip(got[1:7], want[1:7], strict=True):
         assert torch.equal(a, b)
     assert got[7] == want[7]
+    got = (unpack_block_bitmap(got[0], want[0].shape[1]), *got[1:])
     k = min(indexer.block_topk, logits.shape[-1])
     check_block_selection(got[0], want[0], logits, k)
 
