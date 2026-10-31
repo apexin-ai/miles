@@ -300,3 +300,142 @@ class TestRawExportPath:
         assert (export / ".complete").exists()
         assert json.loads((export / "passthrough.json").read_text())["passthrough_groups"] == ["mtp", "ple_table", "visual"]
         assert verify_export(export, base)["changed"] == len(TRAINED)
+
+
+SHARD = re.compile(r"model-(\d{5})-of-(\d{5})\.safetensors")
+
+
+def _raw_export(tmp_path: Path, base: Path, monkeypatch, layout: dict[str, list[str]]) -> Path:
+    """save_hf_model in raw mode with a publisher that writes ``layout`` (exporter-named shards)."""
+    from types import SimpleNamespace
+
+    from miles.backends.megatron_utils import hf_export
+
+    class Publisher:
+        def write_model(self, path, *, weights, hf_checkpoint):
+            keys = [k for ks in layout.values() for k in ks]
+            _write(Path(path), layout, {k: _tensor(k, 1) for k in keys})
+
+    monkeypatch.setattr(hf_export, "named_params_and_buffers", lambda *a, **k: [])
+    monkeypatch.setattr(hf_export, "is_lora_model", lambda model: False)
+    monkeypatch.setattr(hf_export.torch.distributed, "get_rank", lambda: 0)
+    rank0 = SimpleNamespace(rank=0)
+    monkeypatch.setattr(hf_export, "get_parallel_state", lambda: SimpleNamespace(effective_dp_cp=rank0, tp=rank0))
+    args = SimpleNamespace(
+        megatron_to_hf_mode="raw",
+        hf_checkpoint=str(base),
+        enable_mtp_training=False,
+        save_hf=str(tmp_path / "hf" / "rollout-{rollout_id}"),
+    )
+    hf_export.save_hf_model(args, 7, [torch.nn.Linear(2, 2)], publisher=Publisher(), raise_on_error=True)
+    return tmp_path / "hf" / "rollout-7"
+
+
+def _assert_uniform(export: Path) -> dict[str, str]:
+    """Every indexed shard is model-i-of-N with i = 1..N, and no other safetensors file is in the directory."""
+    weight_map = json.loads((export / "model.safetensors.index.json").read_text())["weight_map"]
+    files = sorted(set(weight_map.values()))
+    matches = [SHARD.fullmatch(f) for f in files]
+    assert all(matches), files
+    assert [int(m.group(1)) for m in matches] == list(range(1, len(files) + 1)), files
+    assert {int(m.group(2)) for m in matches} == {len(files)}, files
+    assert sorted(p.name for p in export.glob("*.safetensors")) == files
+    return weight_map
+
+
+class TestShardNames:
+    """SMOKE REPO-3: a completed export mixed model-NNNNN, the base's model-NNNNN-of-00131 and passthrough-NNNNN,
+    so a tool counting shards by -of- saw 31 of 131. Every raw export is named model-i-of-N, trained shards first."""
+
+    def test_a_completed_export_is_named_model_i_of_n_trained_shards_first(self, tmp_path, base, monkeypatch) -> None:
+        trained = sorted(TRAINED)
+        export = _raw_export(
+            tmp_path, base, monkeypatch, {"model-00001.safetensors": trained[:2], "model-00002.safetensors": trained[2:]}
+        )
+        weight_map = _assert_uniform(export)
+        # 2 trained shards, 1 whole base shard (PLE table), 2 passthrough shards (mixed base shards)
+        assert {weight_map[k] for k in trained[:2]} == {"model-00001-of-00005.safetensors"}
+        assert {weight_map[k] for k in trained[2:]} == {"model-00002-of-00005.safetensors"}
+        assert weight_map[f"{PLE}.ngram_embedding.shard_0.weight"] == "model-00003-of-00005.safetensors"
+        assert {weight_map[k] for k in VISUAL + MTP} <= {"model-00004-of-00005.safetensors", "model-00005-of-00005.safetensors"}
+        receipt = json.loads((export / "passthrough.json").read_text())
+        assert receipt["whole_base_shards"] == ["model-00002-of-00004.safetensors"]   # where it came from
+        assert receipt["shard_renames"] == {
+            "model-00001.safetensors": "model-00001-of-00005.safetensors",
+            "model-00002.safetensors": "model-00002-of-00005.safetensors",
+            "model-00002-of-00004.safetensors": "model-00003-of-00005.safetensors",
+            "passthrough-00001.safetensors": "model-00004-of-00005.safetensors",
+            "passthrough-00002.safetensors": "model-00005-of-00005.safetensors",
+        }
+        assert (export / ".complete").exists()
+        for key in weight_map:
+            assert torch.equal(_read(export, key), _tensor(key, 1) if key in TRAINED else _tensor(key, 0)), key
+        assert verify_export(export, base)["changed"] == len(TRAINED)
+
+    def test_a_raw_export_without_a_passthrough_policy_is_named_too(self, tmp_path, base, monkeypatch) -> None:
+        (base / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+        keys = sorted(TRAINED)
+        export = _raw_export(
+            tmp_path, base, monkeypatch, {"model-00001.safetensors": keys[:1], "model-00002.safetensors": keys[1:]}
+        )
+        weight_map = _assert_uniform(export)
+        assert weight_map[keys[0]] == "model-00001-of-00002.safetensors"
+        assert not (export / "passthrough.json").exists()
+
+    def test_a_target_name_held_by_another_shard_is_renamed_in_two_steps(self, tmp_path) -> None:
+        """The base shard model-00001-of-00002 must become model-00002-of-00002 and give its name to the trained one."""
+        export = tmp_path / "export"
+        _write(export, {"model-00001.safetensors": ["a"], "model-00001-of-00002.safetensors": ["b"]},
+               {"a": _tensor("a", 1), "b": _tensor("b", 2)})
+        before = hf_passthrough.tensor_hashes(export, json.loads((export / hf_passthrough.INDEX).read_text())["weight_map"], ["a", "b"])
+        receipt = {"exported_shards": ["model-00001.safetensors"], "whole_base_shards": ["model-00001-of-00002.safetensors"],
+                   "passthrough_files": []}
+        (export / hf_passthrough.RECEIPT).write_text(json.dumps(receipt))
+        renames = hf_passthrough.normalize_shard_names(export, receipt)
+        assert renames == {"model-00001.safetensors": "model-00001-of-00002.safetensors",
+                           "model-00001-of-00002.safetensors": "model-00002-of-00002.safetensors"}
+        weight_map = _assert_uniform(export)
+        assert weight_map == {"a": "model-00001-of-00002.safetensors", "b": "model-00002-of-00002.safetensors"}
+        assert hf_passthrough.tensor_hashes(export, weight_map, ["a", "b"]) == before
+        assert json.loads((export / hf_passthrough.RECEIPT).read_text())["shard_renames"] == renames
+        assert not list(export.glob("*.tmp")) and not list(export.glob(".rename-*"))
+
+    def test_normalizing_twice_changes_nothing(self, tmp_path) -> None:
+        export = tmp_path / "export"
+        _write(export, {"model-00001.safetensors": ["a"], "model-00002.safetensors": ["b"]},
+               {"a": _tensor("a", 1), "b": _tensor("b", 2)})
+        hf_passthrough.normalize_shard_names(export)
+        index = (export / hf_passthrough.INDEX).read_text()
+        inodes = {p.name: p.stat().st_ino for p in export.glob("*.safetensors")}
+        assert hf_passthrough.normalize_shard_names(export) == {}
+        assert (export / hf_passthrough.INDEX).read_text() == index
+        assert {p.name: p.stat().st_ino for p in export.glob("*.safetensors")} == inodes
+
+    def test_a_safetensors_file_outside_the_index_fails_the_export(self, tmp_path, base, monkeypatch) -> None:
+        from miles.backends.megatron_utils import hf_export
+
+        real = hf_passthrough.complete_hf_export
+
+        def leave_a_stray_file(export_dir, *a, **k):
+            receipt = real(export_dir, *a, **k)
+            save_file({"x": torch.zeros(1)}, str(Path(export_dir) / "stray.safetensors"))
+            return receipt
+
+        monkeypatch.setattr(hf_export.hf_passthrough, "complete_hf_export", leave_a_stray_file)
+        with pytest.raises(ExportIncomplete, match="stray.safetensors"):
+            _raw_export(tmp_path, base, monkeypatch, {"model-00001.safetensors": sorted(TRAINED)})
+        assert not (tmp_path / "hf" / "rollout-7").exists()   # write_checkpoint_dir removed the failed export
+
+    def test_a_hardlinked_base_shard_is_renamed_in_the_export_only(self, tmp_path, base, monkeypatch) -> None:
+        monkeypatch.setenv("MILES_HF_PASSTHROUGH", "hardlink")
+        shard = base / "model-00002-of-00004.safetensors"
+        content, inode = shard.read_bytes(), shard.stat().st_ino
+        trained = sorted(TRAINED)
+        export = _raw_export(
+            tmp_path, base, monkeypatch, {"model-00001.safetensors": trained[:2], "model-00002.safetensors": trained[2:]}
+        )
+        weight_map = _assert_uniform(export)
+        renamed = export / weight_map[f"{PLE}.ngram_embedding.shard_0.weight"]
+        assert renamed.name == "model-00003-of-00005.safetensors" and renamed.stat().st_ino == inode
+        assert not (export / shard.name).exists()
+        assert shard.exists() and shard.read_bytes() == content and shard.stat().st_ino == inode
