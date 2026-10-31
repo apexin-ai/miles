@@ -674,12 +674,13 @@ class TestUnsupervisedStep:
         def forward_backward_engine(**kwargs: Any) -> list[dict[str, Any]]:
             parameter.grad = torch.full_like(parameter, grad)
             count = torch.tensor(num_tokens, dtype=torch.int) if per_token else None
+            # the wrapper's `finalize=` default binds Megatron's function at import, so inject the fake the way
+            # setup_train_iteration_config does (functools.partial) instead of patching the module global
             model_module.finalize_model_grads_with_empty_cache(
-                kwargs["model"], count, pg_collection=None, force_all_reduce=False
+                kwargs["model"], count, pg_collection=None, force_all_reduce=False, finalize=finalize_model_grads
             )
             return []
 
-        monkeypatch.setattr(model_module, "finalize_model_grads", finalize_model_grads)
         monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward_engine)
         monkeypatch.setattr(model_module, "mpu", FakeMpu(is_last_pipeline_stage=True))
         monkeypatch.setattr(model_module, "aggregate_train_losses", lambda losses_reduced, num_rollouts: {})
@@ -716,3 +717,77 @@ class TestUnsupervisedStep:
             assert torch.equal(parameter.detach(), weight_before)
             assert env.model[0].model_companion.weight_version.item() == 0
             assert loss_dict == {"skipped_unsupervised_step": 1.0}
+
+
+class TestFinalizeInjection:
+    """setup_train_iteration_config injects the finalize (Megatron core, or Bridge's expert-adapter sync for
+    Bridge LoRA) into finalize_model_grads_with_empty_cache; the step-skip decision needs the token count that
+    finalize reduced in place."""
+
+    @pytest.fixture
+    def finalize_env(self, monkeypatch: pytest.MonkeyPatch):
+        from miles.backends.megatron_utils import model as model_module
+
+        monkeypatch.setattr(model_module, "_step_num_tokens", None)
+        monkeypatch.setattr(model_module, "get_model_config", lambda chunk: SimpleNamespace())
+        monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+        monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (1, 1))
+        return model_module
+
+    @staticmethod
+    def _recording_finalize(calls: list):
+        def finalize(model, num_tokens=None, pg_collection=None, **kwargs):
+            calls.append((model, num_tokens, pg_collection, kwargs))
+            if num_tokens is not None:
+                # what finalize_model_grads does: PP broadcast + DP-CP all-reduce, in place (here: two DP ranks)
+                num_tokens.mul_(2)
+
+        return finalize
+
+    @pytest.mark.parametrize("variant", ["megatron_core", "bridge_lora", "multi_lora"])
+    @pytest.mark.parametrize("local_tokens", [5, 0, None])
+    def test_the_injected_finalize_gets_num_tokens_and_the_wrapper_records_the_global_count(
+        self, finalize_env, monkeypatch: pytest.MonkeyPatch, variant: str, local_tokens: int | None
+    ) -> None:
+        model_module = finalize_env
+        calls: list = []
+        recorder = self._recording_finalize(calls)
+        if variant == "megatron_core":
+            monkeypatch.setattr(model_module, "finalize_model_grads", recorder)
+        else:
+            bridge_utils = pytest.importorskip("megatron.bridge.peft.utils")
+            monkeypatch.setattr(bridge_utils, "finalize_model_grads_with_expert_adapter_sync", recorder)
+        monkeypatch.setattr(model_module, "is_multi_lora_enabled", lambda args: variant == "multi_lora")
+        monkeypatch.setattr(model_module, "is_lora_enabled", lambda args: variant == "bridge_lora")
+        args = SimpleNamespace(
+            megatron_to_hf_mode="bridge",
+            backend=SimpleNamespace(overlap_grad_reduce=False, overlap_param_gather=False, align_param_gather=False),
+        )
+        model = [torch.nn.Linear(2, 2)]
+
+        config = model_module.setup_train_iteration_config(args, model, Mock(), disable_optimizer=False)
+        num_tokens = None if local_tokens is None else torch.tensor(local_tokens, dtype=torch.int)
+        # the call megatron/core/pipeline_parallel/schedules.py makes
+        config.finalize_model_grads_func(model, num_tokens, pg_collection=None, force_all_reduce=False)
+
+        assert len(calls) == 1
+        called_model, called_tokens, called_pg, called_kwargs = calls[0]
+        assert called_model is model
+        assert called_tokens is num_tokens
+        assert called_pg is None and called_kwargs == {"force_all_reduce": False}
+        if local_tokens is None:
+            assert model_module._step_num_tokens is None
+        else:
+            assert model_module._step_num_tokens is num_tokens
+            assert model_module._step_num_tokens.item() == 2 * local_tokens
+
+    def test_bridge_expert_adapter_finalize_takes_num_tokens_positionally(self) -> None:
+        """The wrapper calls finalize(model, num_tokens, ...); the installed Bridge function must bind that."""
+        import inspect
+
+        bridge_utils = pytest.importorskip("megatron.bridge.peft.utils")
+        signature = inspect.signature(bridge_utils.finalize_model_grads_with_expert_adapter_sync)
+        bound = signature.bind([torch.nn.Linear(2, 2)], torch.tensor(3), pg_collection=None, force_all_reduce=False)
+
+        assert list(signature.parameters)[:2] == ["model", "num_tokens"]
+        assert bound.arguments["num_tokens"].item() == 3
