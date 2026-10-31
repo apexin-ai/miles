@@ -102,6 +102,16 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
             "simplified. Run with --num-layers-per-virtual-pipeline-stage unset."
         )
 
+    cp_size = getattr(config, "context_parallel_size", 1) or 1  # config-access-exempt: test configs may omit CP
+    if cp_size > 1:
+        raise NotImplementedError(
+            f"Qwen3.8-Next has no context parallel path (context_parallel_size={cp_size}). "
+            "The QSA indexer and sparse attention treat the local CP shard as the whole "
+            "sequence (wrong positions, local K/V only), and PLE hashes local input ids "
+            "against the global cu_seqlens; both are silently wrong or index out of range. "
+            "Run with --context-parallel-size 1."
+        )
+
     if not args.backend.num_experts:
         config.moe_layer_freq = [0] * config.num_layers
 
