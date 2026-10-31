@@ -2,12 +2,14 @@
 
 本分支是 Qwen3.8-Flash-Next 文本 SFT 的集成分支，只在 `apexin-ai/miles` 上维护，不合回 radixark main。
 
+2026-10-31 起，本分支 rebase 到 radixark main `c62ea5d8`，并换用上游已有的修复，推到 `apex/qwen38-text-sft-rebase` 复审。旧分支 `apex/qwen38-text-sft`（`712aebd8`，基线 `65feb4a6`）保留只读。门禁通过后，从同一个 SHA 建 `apex/main`（方案待用户确认）。下文「rebase 到 c62ea5d8」一节记录这次的变化；更早各节记录的是 `65feb4a6` 上的集成过程，其中的 SHA 指旧分支。
+
 ## 基线
 
 | 项 | 值 |
 |---|---|
-| miles 基线 | `65feb4a616bd935890cdac6ca06b1dca5cee28dd`（radixark main，router #4321） |
-| 镜像 | `docker.io/radixark/miles@sha256:6038e614942f40a4681dff0f02ab7a8239412247da084db678811be9f50fac88`（tag `dev-202610300556`）。镜像内的 miles 就是上面的基线 |
+| miles 基线 | `c62ea5d8c2851f63a21fcb42296fdaa6910bce69`（radixark main，2026-10-31 fetch；旧分支为 `65feb4a6`） |
+| 镜像 | CPU 测试仍在 `docker.io/radixark/miles@sha256:6038e614942f40a4681dff0f02ab7a8239412247da084db678811be9f50fac88`（tag `dev-202610300556`，镜像内 miles 为 `65feb4a6`）里跑，用本分支检出覆盖。新镜像 `dev-202610310237`（多架构 digest `sha256:07eb3a22bae4dd6f1969e2128b205e290602abeeb181a6cf82500a719f3d1ba7`）待 SMOKE 做身份核查和 GPU 门禁后再切换 |
 | Megatron | 镜像自带 `fdf8235667af026219195fd6a1cdf303a12db974`（radixark/Megatron-LM `miles-main`） |
 
 运行时用本分支的检出目录覆盖镜像里的 `/root/miles`（`pip install -e . --no-deps` 或 PYTHONPATH）。记录各 rank 实际 import 的源码 SHA，不要只记镜像 SHA。
@@ -30,6 +32,38 @@
 | `98ec6854` | `miles/utils/ray_utils.py`、`tests/fast/utils/test_ray_utils.py` | 用上游实现。上游 #3640 已有同样的 Ray head GCS 查询 |
 | `8ab157d7` | `miles/backends/megatron_utils/megatron_to_hf/qwen3_8_next.py` | 保留上游签名，加 PR 的视觉前缀两行 |
 | `8ab157d7` | `miles/utils/arguments.py` | 用上游版本。Qwen 视觉参数改进 `Qwen38VisionMegatronPluginsConfig`，在 `miles/utils/args/runtime.py` 六处注册 |
+
+## rebase 到 c62ea5d8（2026-10-31）
+
+做法：先把旧分支 82 个线性提交原样重放到 `c62ea5d8`（试 rebase，`dc809ea9`），再按 REBASE-plan 把上游已有的修复换进来。上游提交用 `cherry-pick -x` 保留原作者；每个引入或适配提交的消息里写 `Upstream-PR`、`Upstream-Head`、`Upstream-Commit`、`Upstream-Scope`、`Local-Adaptation`。
+
+试 rebase 的 3 处冲突：
+
+| 旧提交 | 冲突 | 处理 |
+|---|---|---|
+| `49323ff5` | helm 快照（生成文件） | 先取上游版本，最后按字段重录（`a1817ba2`） |
+| `09c9393a`（原 `b4a21e5d`） | loss-sentinel 与上游 #3899 的 `finalize=` 注入 | 合成 `(model, num_tokens=None, *args, finalize=finalize_model_grads, **kwargs)`，调用 `finalize(model, num_tokens, ...)` |
+| `1c2a5f0d`（原 `a833a1a0`） | scheduler 恢复与上游 #4530 | 保留我们的观察器和严格拒绝，去掉上游推断式 `scheduler_restored`；后由 `3bff1fa1` 换成 #3964 的观察器结构 |
+
+在 `dc809ea9` 之上的提交：
+
+| 提交 | 作者 | 内容 | 上游来源 |
+|---|---|---|---|
+| `3bff1fa1` | Junwei Zhou（`Co-authored-by` rasoolfa） | 唯一的 scheduler 恢复观察器和唯一决策点：已恢复不 step，训练过的存档缺 scheduler 状态就拒绝，其余 step(0)；绝对恢复；只在原 `load_state_dict` 成功后记录 | #3964 `0d9e23e2` 手工移植（cherry-pick 不适用） |
+| `ee1d283a` | Junwei Zhou | 观察器的严格契约测试；改写与严格拒绝相反的上游测试 | 本地 |
+| `5bbb3395` | Palanieppan Muthaia | bridge HF 导出缺少源 checkpoint 张量时拒绝 | #3691 `d9ffa024` |
+| `aaa82af2` | Junwei Zhou | rank0 覆盖检查的异常先广播再统一抛出；双 rank Gloo 测试（修前 rank1 Gloo 超时） | 对 #3691 的补充 |
+| `123a38a7` | Hejian Sang | indexer 共用 top-k 入口和冻结 helper | #3879 `1f5639ff`（只取冻结子功能） |
+| `2f275dcc` | Junwei Zhou | Qwen3.8 indexer 用 `freeze_indexer_parameters` 冻结；保留 provider 全参数断言、tiled scorer、stable tie | #3879 的 Qwen 接线（取自 `1bc0c392`，未整提交引入） |
+| `a3fbc478` | sha7doww | 新 packed QSA kernel：只计算选中的 block。删除旧 bitmap kernel 和旧 int32 修复；tiled scorer 直接把 block id 写进 `[T, K]` int32 缓冲交给 `build_qsa_block_index`；thd 检查 blocks，sbhd 保留 token 选择；保留 mRoPE | #4133 `02cda78b`，含本地适配 |
+| `91f46c43` | Junwei Zhou | indexer monitor 从采样行的 block id 判断 membership，不再读 bitmap | 本地 |
+| `777aff66` | Shikhar | token 分母不计全 mask 样本（与我们 `09c9393a` 的公式相同，只剩一份实现） | #2796 `f01c353a` |
+| `4765b582` | Hejian Sang | `--allgather-cp` 遇到假设 zigzag 的 attention 层时拒绝 | #4471 `b45e6532` |
+| `e6cca277` | Junwei Zhou | Qwen3.8 模型级 CP 防呆（任何 CP>1 都拒绝）与通用检查并存 | 对 #4471 的补充 |
+| `4a3798ff` | Junwei Zhou | 测试改为像生产代码一样用 `finalize=` 注入，并检查 `num_tokens` 的转发 | 本地 |
+| `a1817ba2` | Junwei Zhou | 重录 helm 快照：只加 9 个视觉插件字段；CI 镜像多出的 3 个 `router_args` 字段不录 | 本地 |
+
+上游 #4530（scheduler）、#3899（`finalize=`）、#4562（`load_auto_bridge`）已在 `c62ea5d8` 里，经新基线获得。逐项去留和理由见各 topic 报告（`INT-rebase-qsa.md`、`INT-rebase-sched-export.md`、`INT-rebase-losscp.md`）。
 
 ## 迁移修复
 
@@ -58,7 +92,8 @@
 
 - 视觉路径只有 CPU 契约测试，没有 GPU 验证。最终存档读回检查是 model-only 读回，不证明续训（optimizer、scheduler、RNG、数据游标）。
 - 读回检查失败时只恢复被人为扰动的切片再抛错，不是完整的内存回滚；失败后训练进程应退出。多 rank 下一个 rank 失败、其他 rank 停在 barrier 的情形没有测试（CRV P2-INT-1）。
-- PR #6 没有修改 QSA indexer 的 `score_blocks`；已由合入的 `apex/q38-indexer-tiled` 和 `apex/q38-qsa-bitmap-packed` 处理。
+- PR #6 没有修改 QSA indexer 的 `score_blocks`；由合入的 `apex/q38-indexer-tiled` 处理。旧的 `apex/q38-qsa-bitmap-packed`（T×NB bitmap）在 rebase 到 `c62ea5d8` 时由上游 #4133 的新 kernel（`a3fbc478`）取代，代码已删除。新 kernel 的 262K packed 全路径只在 CPU 解释器上验证过，GPU 验证待 SMOKE。
+- `--no-load-optim` 加训练过的存档：本分支拒绝续训（要求 `--finetune` 开新计划）；上游 #4530 按 `iteration*GBS` 重建。两者契约相反，本分支的上游测试已按严格拒绝改写。
 - `qwen38_vision_trainable` 默认值是 PR 原来的 `"full"`。文本 SFT 不用视觉 provider，所以不受影响。用视觉 provider 时要显式设置。
 - PR #5 的 DeepSeek/PP 路径没有 GPU 资格验证。
 
@@ -78,7 +113,7 @@
 
 ## CPU 测试
 
-从合入 1 起，CPU 测试在官方镜像里跑（`miles/qwen38-ci-dh09`，只用 CPU；没有驱动库，用 `/usr/local/cuda/lib64/stubs/libcuda.so` 作 `libcuda.so.1`）。脚本和日志在 CPFS `/work/qwen38/ci/INT/`。判定标准：同 Pod 同设置下，失败集合与基线 `65feb4a6` 相同。基线：上游相关 3 failed（`charts/miles_run/test_snapshot.py` 2 项、`test_workplace_launch_uses_the_configured_backend`），helm/launcher 2 failed（镜像的 sglang-router 比快照多 3 个 `router_args` 字段）。
+从合入 1 起，CPU 测试在官方镜像里跑（`miles/qwen38-ci-dh09`，只用 CPU；没有驱动库，用 `/usr/local/cuda/lib64/stubs/libcuda.so` 作 `libcuda.so.1`）。脚本和日志在 CPFS `/work/qwen38/ci/INT/`。判定标准：同 Pod 同设置下，失败集合与基线相同。rebase 后的基线是 `c62ea5d8`：up 3 failed / 2071 passed（`charts/miles_run/test_snapshot.py` 2 项、`test_workplace_launch_uses_the_configured_backend`），ext 2 failed（`test_launch_snapshot.py` 的 2 个参数化用例：镜像的 sglang-router 比快照多 3 个 `router_args` 字段）。旧分支的基线是 `65feb4a6`，失败集合相同。
 
 下面是最初在 Mac 上的记录（macOS 环境，只作参考）。
 
