@@ -71,6 +71,58 @@ def test_ray_conversion_uses_saved_hf_config_and_copies_explicit_assets(
         assert (output_dir / "config.json").read_bytes() == (assets_hf / "config.json").read_bytes()
 
 
+@pytest.mark.parametrize(
+    ("model_name", "hf_name"),
+    [
+        ("qwen3_5", "model.language_model.layers.0.linear_attn.A_log"),
+        ("kimi_k3", "language_model.model.layers.0.self_attn.A_log"),
+    ],
+)
+def test_ray_conversion_skips_linear_attention_layout_marker(
+    local_ray_converter: ModuleType, tmp_path: Path, model_name: str, hf_name: str
+) -> None:
+    """The linear-attention layout marker has no HF tensor: it is not planned, and every weight is still written."""
+    input_dir = tmp_path / "checkpoint"
+    layer = "decoder.layers.0.self_attention.linear_attn"
+    a_log = torch.arange(4, dtype=torch.float32)
+    dist_cp.save(
+        {f"{layer}.A_log": a_log, f"{layer}.weight_layout_version": torch.tensor([1], dtype=torch.int32)},
+        checkpoint_id=str(input_dir),
+    )
+    torch.save(
+        {
+            "args": argparse.Namespace(
+                num_layers=1, hidden_size=8, num_attention_heads=2, num_query_groups=1, kv_channels=4
+            )
+        },
+        input_dir / "common.pt",
+    )
+    output_dir = tmp_path / "output"
+    args = local_ray_converter.Args(
+        input_dir=str(input_dir),
+        output_dir=str(output_dir),
+        origin_hf_dir=None,
+        model_name=model_name,
+        force=False,
+        max_file_bytes=1024,
+        concurrency=1,
+        task_group_bytes=1024,
+        source_key_regex=None,
+        dry_run_plan=False,
+        progress=False,
+        progress_interval_seconds=1,
+    )
+
+    assert local_ray_converter.convert_torch_dist_to_hf_ray(args) == str(output_dir)
+
+    index = json.loads((output_dir / "model.safetensors.index.json").read_text())
+    tensors = {}
+    for shard in sorted(set(index["weight_map"].values())):
+        tensors.update(safetensors.torch.load_file(output_dir / shard))
+    assert set(tensors) == {hf_name}
+    torch.testing.assert_close(tensors[hf_name], a_log)
+
+
 class TestExportExpertScaleSelection:
     @pytest.mark.parametrize(
         ("legacy", "flags", "expected"),

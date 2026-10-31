@@ -19,6 +19,7 @@ from megatron.training.checkpointing import save_checkpoint
 from torch.serialization import safe_globals
 
 from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace, has_hf_checkpoint
+from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LINEAR_ATTN_LAYOUT_KEY
 from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
     ModelCompanionSampleConsumptionUtils,
@@ -224,9 +225,6 @@ def publish_as_release(save_dir: str) -> None:
     target_dir = get_checkpoint_name(save_dir, -1, True, return_base_dir=True)
     shutil.rmtree(target_dir, ignore_errors=True)
     shutil.move(source_dir, target_dir)
-
-
-LINEAR_ATTN_LAYOUT_KEY = "weight_layout_version"
 
 
 def _has_linear_attention(ddp_model) -> bool:

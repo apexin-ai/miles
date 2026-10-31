@@ -105,6 +105,7 @@ from typing_extensions import override
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from miles.backends.megatron_utils import megatron_to_hf as m2hf
+from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LINEAR_ATTN_LAYOUT_KEY
 from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.utils.hf_utils.config import load_hf_config as _load_hf_config
 
@@ -700,7 +701,7 @@ def tensor_metadata_from_checkpoint_metadata(
 ) -> dict[str, tuple[torch.Size, torch.dtype]]:
     tensor_metadata = {}
     for key, value in metadata.state_dict_metadata.items():
-        if "optimizer" in key or "_state" in key:
+        if "optimizer" in key or "_state" in key or key.endswith(LINEAR_ATTN_LAYOUT_KEY):
             continue
         if isinstance(value, dist_cp.metadata.TensorStorageMetadata):
             tensor_metadata[key] = (value.size, value.properties.dtype)
