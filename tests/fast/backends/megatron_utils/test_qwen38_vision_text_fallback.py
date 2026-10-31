@@ -155,6 +155,60 @@ def test_mixed_microbatches_train_the_tower_on_images_only(tp_rank_zero, monkeyp
     assert model.calls[-1]["decoder_input"] is None
 
 
+def _grad_reports(model):
+    """Counts gradient accumulations per vision parameter, as Megatron DDP's overlap hooks see them."""
+    reports = {}
+    for name, p in model.vision_model.named_parameters():
+        if p.requires_grad:
+            p.register_post_accumulate_grad_hook(lambda p, name=name: reports.update({name: reports.get(name, 0) + 1}))
+    return reports
+
+
+@pytest.mark.parametrize("scope", ["full", "projector"])
+def test_a_text_microbatch_reports_a_zero_grad_for_every_trainable_tower_parameter(scope, tp_rank_zero, monkeypatch):
+    """--overlap-grad-reduce reduces a bucket only once all its parameters reported a grad in the step's last
+    microbatch, and it expects the same reports every step. A text microbatch must report like an image one."""
+    model = _model(scope=scope, data="mixed")
+    trainable = {name for name, p in model.vision_model.named_parameters() if p.requires_grad}
+    assert trainable and (scope == "full") == (trainable == {n for n, _ in model.vision_model.named_parameters()})
+    reports = _grad_reports(model)
+    ids, inputs = _image_batch()
+    model(input_ids=ids, **inputs).backward()
+    image_reports = dict(reports)
+    assert set(image_reports) == trainable
+    model.zero_grad(set_to_none=True)
+    reports.clear()
+
+    _forbid_vision_forward(model, monkeypatch)
+    loss = model(input_ids=_text_ids())
+    loss.backward()
+    assert reports == image_reports
+    for name, p in model.vision_model.named_parameters():
+        if name in trainable:
+            assert torch.equal(p.grad, torch.zeros_like(p)), name
+        else:
+            assert p.grad is None, name
+
+    # The output and the language model's gradients are those of a run whose tower is frozen.
+    reference = _model(scope="none", data="mixed")
+    reference_loss = reference(input_ids=_text_ids())
+    reference_loss.backward()
+    assert torch.equal(loss, reference_loss)
+    language = {n: p.grad for n, p in model.named_parameters() if not n.startswith("vision_model.")}
+    for name, p in reference.named_parameters():
+        if not name.startswith("vision_model."):
+            assert torch.equal(language[name], p.grad), name
+
+
+def test_a_text_microbatch_without_grad_or_trainable_tower_adds_no_backward_node(monkeypatch):
+    model = _model(scope="full", data="mixed")
+    _forbid_vision_forward(model, monkeypatch)
+    with torch.no_grad():
+        assert model(input_ids=_text_ids()).grad_fn is None
+    frozen = _model(scope="none", data="mixed")
+    assert "ZeroGradsFor" not in type(frozen(input_ids=_text_ids()).grad_fn).__name__
+
+
 @pytest.mark.parametrize("interleaved_mrope", [False, True])
 def test_text_positions_through_mrope_equal_text_rope(interleaved_mrope, monkeypatch):
     """The language model sees the same rotary embedding for a text microbatch as the text-only provider gives."""

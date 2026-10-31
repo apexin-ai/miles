@@ -18,6 +18,24 @@ from miles_plugins.models.qwen3_8_next.vision_inputs import (
 VISION_DATA_MODES = ("image", "text", "mixed")
 
 
+class _ZeroGradsFor(torch.autograd.Function):
+    """Passes the output through unchanged; its backward gives each parameter an exact zero gradient.
+
+    With --overlap-grad-reduce, Megatron DDP reduces a bucket only after every parameter in it reported a gradient in
+    the last microbatch of the step. A trainable tower skipped on a text microbatch would never report.
+    """
+
+    @staticmethod
+    def forward(ctx, output, *parameters):
+        ctx.shapes = [(p.shape, p.dtype, p.device) for p in parameters]
+        return output.view_as(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        zeros = (torch.zeros((), dtype=dtype, device=device).expand(shape) for shape, dtype, device in ctx.shapes)
+        return (grad_output, *zeros)
+
+
 def set_visual_scope(visual, scope, *, sequence_parallel=False):
     if scope not in ("none", "projector", "full"):
         raise ValueError(f"Unknown Qwen visual scope: {scope}")
@@ -65,7 +83,13 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         if all(value is None for value in image_inputs) and data != "image":
             # A text microbatch: the vision tower does not run, and the language model sees text RoPE positions.
             kwargs["position_ids"] = text_rope_positions(ids.shape[1], device=ids.device).T.unsqueeze(1).contiguous()
-            return original_forward(*args, **kwargs)
+            output = original_forward(*args, **kwargs)
+            trainable = [p for p in model.vision_model.parameters() if p.requires_grad] if model.pre_process else []
+            if trainable and torch.is_grad_enabled():
+                if not isinstance(output, torch.Tensor):
+                    raise TypeError("A text microbatch with a trainable vision tower needs a tensor model output")
+                output = _ZeroGradsFor.apply(output, *trainable)
+            return output
         if any(value is None for value in image_inputs):
             raise ValueError("Qwen image SFT requires genuine image patches, grids and mRoPE positions")
         if data == "text":
