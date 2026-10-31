@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
+from miles.backends.training_utils.weight_update.hf_expert_packing import ExpertPacker
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.utils.lora.utils import AdapterSpec, get_adapter_target_modules
 
@@ -62,6 +63,8 @@ class SnapshotPublisher:
         """Collectively write HF model shards into the caller's checkpoint directory."""
         path = Path(path)
         is_writer = dist.get_rank() == 0
+        # per-expert tensors go back into the fused expert layout when the base checkpoint stores it
+        packer = ExpertPacker(hf_checkpoint) if is_writer and Path(hf_checkpoint).is_dir() else None
 
         weight_map: dict[str, str] = {}
         total_size = 0
@@ -70,6 +73,15 @@ class SnapshotPublisher:
         for hf_named_tensors in self._iterator.iter_hf_weights(weights):
             if not is_writer or write_error is not None:
                 continue
+            if packer is not None:
+                try:
+                    hf_named_tensors = packer.pack(hf_named_tensors)
+                except Exception as exc:
+                    # Peers must finish the remaining weight gathers before reporting the failure.
+                    write_error = exc
+                    continue
+                if not hf_named_tensors:
+                    continue  # every tensor of this bucket waits for the rest of its expert layer
             shard_index += 1
             shard_name = f"model-{shard_index:05d}.safetensors"
             shard_tensors = {}
@@ -84,6 +96,8 @@ class SnapshotPublisher:
                 write_error = exc
             del shard_tensors
 
+        if write_error is None and packer is not None:
+            packer.finish()  # after the last gather, so raising here leaves no peer waiting
         if write_error is not None:
             raise write_error
         if is_writer:
