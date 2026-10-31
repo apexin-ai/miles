@@ -75,7 +75,7 @@ class SnapshotPublisher:
         if is_writer and Path(hf_checkpoint).is_dir():
             try:
                 packer = ExpertPacker.for_base(hf_checkpoint)
-                caster = BaseDtypeCaster.for_base(hf_checkpoint)
+                caster = BaseDtypeCaster.from_checkpoint(hf_checkpoint)
             except Exception as exc:
                 # Raised only after every rank drained the iterator: its weight gathers are collective.
                 write_error = exc

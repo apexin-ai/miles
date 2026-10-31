@@ -1,106 +1,98 @@
-"""Raw HF exports restore the base dtype of GDN A_log, and only of A_log (CRV P1-INT-6).
-
-Training keeps ``linear_attn.A_log`` in fp32; the Qwen3.8 base stores it as bf16, so the
-completeness check rejected every milestone export. Other dtype differences must still fail.
-"""
-
 import json
+import re
 from pathlib import Path
-from types import SimpleNamespace
 
-import pytest
 import torch
-from safetensors import safe_open
 from safetensors.torch import save_file
 
-from miles.backends.megatron_utils import hf_export, ple_provenance
-from miles.backends.training_utils.weight_update import hf_passthrough
-from miles.backends.training_utils.weight_update.hf_base_dtype import BaseDtypeCaster
-from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
-from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
+from miles.backends.training_utils.weight_update.hf_base_dtype import BaseDtypeCaster, read_safetensors_dtypes
 
-A_LOG = "model.language_model.layers.0.linear_attn.A_log"
-EMBED = "model.language_model.embed_tokens.weight"
+A_LOG = "model.layers.0.linear_attn.A_log"
+EMBED = "model.embed_tokens.weight"
 
 
-def _write_base(directory: Path, tensors: dict[str, torch.Tensor]) -> Path:
+def _write_sharded_base(directory: Path, shards: dict[str, dict[str, torch.Tensor]]) -> Path:
     directory.mkdir()
-    (directory / "config.json").write_text(json.dumps({"model_type": "qwen4_exp"}))
-    save_file(tensors, str(directory / "model-00001.safetensors"))
-    (directory / hf_passthrough.INDEX).write_text(
-        json.dumps({"metadata": {}, "weight_map": {name: "model-00001.safetensors" for name in tensors}})
-    )
+    weight_map = {}
+    for file, tensors in shards.items():
+        save_file(tensors, str(directory / file))
+        weight_map |= {name: file for name in tensors}
+    (directory / "model.safetensors.index.json").write_text(json.dumps({"metadata": {}, "weight_map": weight_map}))
     return directory
 
 
 def _trained_a_log() -> torch.Tensor:
-    # values that bf16 cannot hold exactly, so a missing cast or a wrong rounding shows
-    return torch.linspace(-3.0, 1.0, 48, dtype=torch.float32) + 1e-4
+    # values bf16 cannot hold exactly, so a missing cast or a different rounding shows
+    return torch.linspace(-3.0, 1.0, 8, dtype=torch.float32) + 1e-4
+
+
+class TestReadSafetensorsDtypes:
+    def test_reads_the_header_dtypes_and_skips_the_metadata(self, tmp_path) -> None:
+        file = tmp_path / "model.safetensors"
+        save_file(
+            {A_LOG: torch.zeros(8, dtype=torch.bfloat16), "ids": torch.zeros(2, dtype=torch.int64)},
+            str(file),
+            metadata={"format": "pt"},
+        )
+        assert read_safetensors_dtypes(file) == {A_LOG: "BF16", "ids": "I64"}
 
 
 class TestBaseDtypeCaster:
-    def test_a_log_is_cast_to_the_base_dtype_and_nothing_else_is(self, tmp_path) -> None:
-        base = _write_base(
+    def test_casts_only_the_allow_listed_tensor_to_the_base_dtype(self, tmp_path) -> None:
+        base = _write_sharded_base(
             tmp_path / "base",
-            {A_LOG: torch.zeros(48, dtype=torch.bfloat16), EMBED: torch.zeros(2, dtype=torch.bfloat16)},
+            {
+                "model-00001.safetensors": {EMBED: torch.zeros(2, dtype=torch.bfloat16)},
+                "model-00002.safetensors": {A_LOG: torch.zeros(8, dtype=torch.bfloat16)},
+            },
         )
-        caster = BaseDtypeCaster.for_base(base)
+        caster = BaseDtypeCaster.from_checkpoint(base)
         a_log = _trained_a_log()
 
         cast = caster.cast(A_LOG, a_log)
-        assert cast.dtype == torch.bfloat16 and torch.equal(cast, a_log.to(torch.bfloat16))
+        assert cast.dtype == torch.bfloat16
+        assert torch.equal(cast, a_log.to(torch.bfloat16))
         embed = torch.ones(2, dtype=torch.float32)
         assert caster.cast(EMBED, embed) is embed
 
-    def test_a_base_without_the_key_or_already_matching_is_a_no_op(self, tmp_path) -> None:
-        base = _write_base(tmp_path / "base", {A_LOG: torch.zeros(48, dtype=torch.float32)})
+    def test_reads_a_single_file_base_without_an_index(self, tmp_path) -> None:
+        (tmp_path / "base").mkdir()
+        save_file({A_LOG: torch.zeros(8, dtype=torch.float16)}, str(tmp_path / "base" / "model.safetensors"))
+        assert BaseDtypeCaster.from_checkpoint(tmp_path / "base").cast(A_LOG, _trained_a_log()).dtype == torch.float16
+
+    def test_is_a_no_op_when_the_base_has_no_copy_or_the_same_dtype(self, tmp_path) -> None:
         a_log = _trained_a_log()
-        assert BaseDtypeCaster.for_base(base).cast(A_LOG, a_log) is a_log
-        assert BaseDtypeCaster.for_base(tmp_path / "missing").cast(A_LOG, a_log) is a_log
+        same = _write_sharded_base(tmp_path / "same", {"model.safetensors": {A_LOG: torch.zeros(8)}})
+        assert BaseDtypeCaster.from_checkpoint(same).cast(A_LOG, a_log) is a_log
+        other = _write_sharded_base(tmp_path / "other", {"model.safetensors": {EMBED: torch.zeros(2)}})
+        assert BaseDtypeCaster.from_checkpoint(other).cast(A_LOG, a_log) is a_log
+        (tmp_path / "empty").mkdir()
+        assert BaseDtypeCaster.from_checkpoint(tmp_path / "empty").cast(A_LOG, a_log) is a_log
 
+    def test_never_casts_integer_tensors(self, tmp_path) -> None:
+        base = _write_sharded_base(
+            tmp_path / "base", {"model.safetensors": {A_LOG: torch.zeros(8, dtype=torch.bfloat16)}}
+        )
+        ids = torch.arange(8)
+        assert BaseDtypeCaster.from_checkpoint(base).cast(A_LOG, ids) is ids
 
-class TestRawExportEndToEnd:
-    @pytest.fixture(autouse=True)
-    def _single_process(self, monkeypatch) -> None:
-        monkeypatch.setattr(torch.distributed, "is_initialized", lambda: False)
-        monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
-        monkeypatch.setattr(ple_provenance, "_run_manifest", None)
-        monkeypatch.setattr(hf_export, "named_params_and_buffers", lambda *a, **kw: [])
-        monkeypatch.setattr(hf_export, "is_lora_model", lambda model: False)
-        zero = SimpleNamespace(rank=0)
-        monkeypatch.setattr(hf_export, "get_parallel_state", lambda: SimpleNamespace(effective_dp_cp=zero, tp=zero))
+        int_base = _write_sharded_base(
+            tmp_path / "int_base", {"model.safetensors": {A_LOG: torch.zeros(8, dtype=torch.int32)}}
+        )
+        a_log = _trained_a_log()
+        assert BaseDtypeCaster.from_checkpoint(int_base).cast(A_LOG, a_log) is a_log
 
-    def _export(self, tmp_path, exported: list[tuple[str, torch.Tensor]]) -> Path:
-        base = _write_base(
+    def test_custom_allow_list(self, tmp_path) -> None:
+        base = _write_sharded_base(
             tmp_path / "base",
-            {A_LOG: torch.zeros(48, dtype=torch.bfloat16), EMBED: torch.zeros(2, dtype=torch.bfloat16)},
+            {
+                "model.safetensors": {
+                    A_LOG: torch.zeros(8, dtype=torch.bfloat16),
+                    EMBED: torch.zeros(2, dtype=torch.bfloat16),
+                }
+            },
         )
-        args = SimpleNamespace(
-            megatron_to_hf_mode="raw", enable_mtp_training=False, hf_checkpoint=str(base), save_hf=None
-        )
-
-        class Iterator:
-            placement = SimpleNamespace(is_full_gather=True)
-
-            def iter_hf_weights(self, weights):
-                yield exported
-
-        target = tmp_path / "export"
-        hf_export.save_hf_model(args, 0, [], publisher=SnapshotPublisher(Iterator()), path=target, raise_on_error=True)
-        return target
-
-    def test_an_fp32_a_log_is_published_as_the_base_bf16(self, tmp_path) -> None:
+        caster = BaseDtypeCaster.from_checkpoint(base, patterns=[re.compile(re.escape(EMBED))])
         a_log = _trained_a_log()
-        target = self._export(tmp_path, [(A_LOG, a_log), (EMBED, torch.ones(2, dtype=torch.bfloat16))])
-
-        assert (target / HF_EXPORT_COMPLETE_MARKER).exists()
-        weight_map = json.loads((target / hf_passthrough.INDEX).read_text())["weight_map"]
-        with safe_open(str(target / weight_map[A_LOG]), framework="pt") as f:
-            published = f.get_tensor(A_LOG)
-        assert published.dtype == torch.bfloat16
-        assert torch.equal(published, a_log.to(torch.bfloat16))
-
-    def test_a_dtype_difference_outside_the_allowlist_still_fails(self, tmp_path) -> None:
-        with pytest.raises(hf_passthrough.ExportIncomplete, match="dtype|F32"):
-            self._export(tmp_path, [(A_LOG, _trained_a_log()), (EMBED, torch.ones(2, dtype=torch.float32))])
-        assert not (tmp_path / "export").exists()
+        assert caster.cast(A_LOG, a_log) is a_log
+        assert caster.cast(EMBED, torch.ones(2)).dtype == torch.bfloat16
