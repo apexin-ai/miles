@@ -24,11 +24,11 @@ _SMALL = {"head", "kv_head"}
 
 
 def _jit_functions(src: str) -> dict[str, list[str]]:
-    """``{name: body lines}`` of every ``@triton.jit`` function."""
+    """``{name: body lines}`` of every ``@triton.jit`` function (bare or with options)."""
     out, name, body = {}, None, []
     lines = src.splitlines()
     for i, line in enumerate(lines):
-        if line.startswith("def ") and i and lines[i - 1].strip() == "@triton.jit":
+        if line.startswith("def ") and i and re.match(r"@triton\.jit\b", lines[i - 1].strip()):
             name, body = line[4:].split("(")[0], []
             out[name] = body
         elif line and not line[0].isspace() and not line.startswith(")"):
