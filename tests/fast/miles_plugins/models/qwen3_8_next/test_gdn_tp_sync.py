@@ -20,7 +20,7 @@ import torch.distributed as dist
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-# two gloo TP2 runs: about 45 s on the qwen38 smoke pod's CPU
+# two gloo TP2 runs: about 45 s on a CPU-only runner
 register_cpu_ci(est_time=70, suite="stage-b-cpu", labels=["megatron"])
 
 _ROOT = Path(__file__).resolve().parents[5]
@@ -101,18 +101,27 @@ class _Chunk(torch.nn.Module):
         self.ddp_config = SimpleNamespace(use_megatron_fsdp=False)
 
 
+def _params_differing_from_rank0(chunk: torch.nn.Module) -> list[str]:
+    """Names of the params whose bytes on some rank differ from TP rank 0's copy."""
+    differing = []
+    for name, param in chunk.named_parameters():
+        copies = [torch.empty_like(param.data) for _ in range(dist.get_world_size())]
+        dist.all_gather(copies, param.data.contiguous())
+        if any(not torch.equal(copy.view(torch.uint8), copies[0].view(torch.uint8)) for copy in copies[1:]):
+            differing.append(name)
+    return differing
+
+
 def _train_steps_worker(rank: int, world_size: int, port: int, *, keep_tp_average: bool) -> None:
     from megatron.core.distributed.finalize_model_grads import _allreduce_non_tensor_model_parallel_grads
-
-    from miles.backends.megatron_utils.tp_replica_check import check_tp_replicas
 
     init_gloo(rank, world_size, port=port)
     try:
         chunk = _Chunk(_build_layer(_load_gdn(pytest.MonkeyPatch())))
         if not keep_tp_average:
             for param in chunk.parameters():
-                del param.average_gradients_across_tp_domain
-        assert check_tp_replicas([chunk], None, group=dist.group.WORLD, where="init") > 0
+                param.__dict__.pop("average_gradients_across_tp_domain", None)
+        assert _params_differing_from_rank0(chunk) == []
 
         config = SimpleNamespace(sequence_parallel=True, qk_layernorm=False)
         for step in range(3):
@@ -126,11 +135,11 @@ def _train_steps_worker(rank: int, world_size: int, port: int, *, keep_tp_averag
                 for param in chunk.parameters():
                     param.sub_(0.1 * param.main_grad.to(param.dtype))
 
+        differing = _params_differing_from_rank0(chunk)
         if keep_tp_average:
-            check_tp_replicas([chunk], None, group=dist.group.WORLD, where="after 3 steps")
+            assert differing == []
         else:
-            with pytest.raises(RuntimeError, match="TP-replicated tensors differ across TP ranks"):
-                check_tp_replicas([chunk], None, group=dist.group.WORLD, where="after 3 steps")
+            assert differing, "without TP averaging no replica drifted: the comparison would miss a real drift"
     finally:
         dist.destroy_process_group()
 
@@ -160,5 +169,5 @@ class TestGdnTpSync:
         run_multiprocess(partial(_train_steps_worker, keep_tp_average=True), world_size=2)
 
     def test_without_the_flag_the_replicas_drift_and_the_check_fails(self) -> None:
-        """Positive control: the same run without TP averaging is caught by the replica check."""
+        """Positive control: without TP averaging every copy drifts, and the bitwise comparison sees it."""
         run_multiprocess(partial(_train_steps_worker, keep_tp_average=False), world_size=2)
