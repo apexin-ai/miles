@@ -39,6 +39,8 @@ _ATTENTION_LAYER_KINDS = {
     "sliding_attention": "sliding",
     "linear_attention": "linear",
     "deepseek_sparse_attention": "full",
+    # transformers' Qwen4ExpTextConfig renames the QSA layers that the Qwen3.8-Next checkpoint lists as full_attention
+    "indexed_attention": "qwen_sparse",
 }
 _MOE_MLP_LAYER_TYPES = {"dense": False, "sparse": True, "moe": True, "hash_moe": True}
 
@@ -215,6 +217,8 @@ def _attention_kind(config: Any, layer: int) -> str:
     layer_types = _first(config, "layer_types")
     if layer_types is not None:
         kind = _known(_ATTENTION_LAYER_KINDS, layer_types[layer], "attention layer type")
+        if kind == "qwen_sparse" and _first(config, "indexer_budget") is None:
+            raise ValueError(f"attention layer type {layer_types[layer]!r} needs indexer_budget")
         return "qwen_sparse" if kind == "full" and _first(config, "indexer_budget") is not None else kind
     hybrid_pattern = _first(config, "hybrid_layer_pattern")
     if hybrid_pattern is not None:
