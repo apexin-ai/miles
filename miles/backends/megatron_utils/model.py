@@ -973,6 +973,11 @@ def save(
             (e.g. ``{'local_checkpoint_manager': manager}`` for in-memory checkpoints).
         non_persistent_ckpt (bool): If True, save a non-persistent (in-memory) checkpoint.
     """
+    if not non_persistent_ckpt:
+        # Megatron publishes the tracker inside save_checkpoint (sync) or in a later finalize (async), so the
+        # PLE manifest must be on disk before it is called
+        ple_provenance.before_save(args.backend.save, iteration)
+
     hashes = None
     if args.ci_test and args.ci_save_model_hash:
         hashes = compute_model_hashes_by_layer(model)
