@@ -141,7 +141,10 @@ def _selectable(block, first, whole):
     return (block >= first) & (block < first + whole)
 
 
-@triton.jit
+# not specialized on stride_b: a stride divisible by 16 turned the BLOCKS row load into ld.global.v4, whose
+# layout conversions on sm_100 use ldmatrix; at query tile 21 / 32 ptxas emitted them without a warp re-sync and
+# a partial warp faulted ("misaligned address", TP8 / 3-1 heads). Scalar loads of one row need no conversion.
+@triton.jit(do_not_specialize=["stride_b"])
 def _mark_kernel(
     BLOCKS,
     TAIL,
@@ -277,7 +280,10 @@ def _fill_key_side(block, query, KMAP, K_BEFORE, K_OFFSETS, K_QUERY, K_BITS, k_w
     tl.store(K_QUERY + pos, query + tl.zeros_like(block), mask=valid)
 
 
-@triton.jit
+# not specialized on stride_b: a stride divisible by 16 turned the BLOCKS row load into ld.global.v4, whose
+# layout conversions on sm_100 use ldmatrix; at query tile 21 / 32 ptxas emitted them without a warp re-sync and
+# a partial warp faulted ("misaligned address", TP8 / 3-1 heads). Scalar loads of one row need no conversion.
+@triton.jit(do_not_specialize=["stride_b"])
 def _fill_kernel(
     BLOCKS,
     TAIL,
