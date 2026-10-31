@@ -425,6 +425,86 @@ def test_qwen3_8_next_full_attention_layers_are_sparse_when_the_config_has_an_in
     )
 
 
+# The text config of the native Qwen3.8-Flash-Next checkpoint, with layer_types as its config.json lists them
+_QWEN3_8_NEXT_TEXT = {
+    "model_type": "qwen4_exp_text",
+    "hidden_size": 2560,
+    "num_hidden_layers": 48,
+    "layer_types": ["full_attention" if (i + 1) % 4 == 0 else "linear_attention" for i in range(48)],
+    "full_attention_interval": 4,
+    "num_attention_heads": 24,
+    "num_key_value_heads": 2,
+    "head_dim": 256,
+    "partial_rotary_factor": 0.25,
+    "output_gate_type": "sigmoid",
+    "indexer_budget": 2048,
+    "indexer_compress_ratio": 4,
+    "indexer_head_dim": 128,
+    "indexer_kv_heads": 1,
+    "indexer_n_heads": 4,
+    "linear_conv_kernel_dim": 4,
+    "linear_key_head_dim": 128,
+    "linear_num_key_heads": 16,
+    "linear_num_value_heads": 48,
+    "linear_value_head_dim": 128,
+    "num_experts": 512,
+    "num_experts_per_tok": 10,
+    "moe_intermediate_size": 640,
+    "shared_expert_intermediate_size": 640,
+    "hc_count": 4,
+    "hc_lowrank": 320,
+    "ple_layer_ids": [2],
+    "ple_embed_dim": 2560,
+    "ple_conv_kernel_size": 4,
+    "ngram_size": 3,
+    "ngram_vocab_size_base": 20000000,
+    "heads_per_ngram": 8,
+    "split_ngram_parts": 128,
+    "make_ngram_vocab_size_divisible_by": 128,
+    "mtp_num_hidden_layers": 1,
+    "vocab_size": 248320,
+    "bos_token_id": 248044,
+    "eos_token_id": 248044,
+    "tie_word_embeddings": False,
+}
+
+
+def qwen3_8_next_checkpoint_config(**text_fields):
+    return {"model_type": "qwen4_exp", "text_config": _QWEN3_8_NEXT_TEXT | text_fields}
+
+
+def test_qwen3_8_next_indexed_attention_layers_size_like_the_checkpoint_full_attention_layers():
+    checkpoint = model_flops_from_hf_config(qwen3_8_next_checkpoint_config())
+    assert per_layer(checkpoint, 3).key_terms == (
+        KeyTerm(4 * 24 * 256, cap=2048),
+        KeyTerm(2 * 4 * 128, pool=4, indexer=True),
+    )
+    renamed = ["indexed_attention" if kind == "full_attention" else kind for kind in _QWEN3_8_NEXT_TEXT["layer_types"]]
+    assert model_flops_from_hf_config(qwen3_8_next_checkpoint_config(layer_types=renamed)) == checkpoint
+
+
+def test_qwen3_8_next_config_object_sizes_like_its_checkpoint_config():
+    """miles sizes the loaded config object; transformers' Qwen4ExpTextConfig lists the QSA layers as
+    indexed_attention, which once left the model without MFU."""
+    transformers = pytest.importorskip("transformers")
+    try:
+        loaded = transformers.AutoConfig.for_model("qwen4_exp", text_config=dict(_QWEN3_8_NEXT_TEXT))
+    except ValueError:
+        pytest.skip("this transformers has no qwen4_exp config")
+    assert model_flops_from_hf_config(loaded) == model_flops_from_hf_config(qwen3_8_next_checkpoint_config())
+
+
+def test_indexed_attention_without_an_indexer_budget_has_no_flops_definition():
+    text = {k: v for k, v in _QWEN3_8_NEXT_TEXT.items() if k != "indexer_budget"}
+    with pytest.raises(ValueError, match="needs indexer_budget"):
+        model_flops_from_hf_config(
+            {
+                "model_type": "qwen4_exp",
+                "text_config": text | {"num_hidden_layers": 1, "layer_types": ["indexed_attention"]},
+            }
+        )
+
+
 def test_deepseek_v4_sizes_the_same_from_transformers_per_type_compress_rates():
     with open(hf_hub_download("deepseek-ai/DeepSeek-V4-Flash", "config.json")) as f:
         checkpoint_config = json.load(f)
