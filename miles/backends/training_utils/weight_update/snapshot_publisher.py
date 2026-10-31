@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
+from miles.backends.training_utils.weight_update.hf_base_dtype import BaseDtypeCaster
 from miles.backends.training_utils.weight_update.hf_expert_packing import ExpertPacker
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.utils.lora.utils import AdapterSpec, get_adapter_target_modules
@@ -68,11 +69,13 @@ class SnapshotPublisher:
         total_size = 0
         shard_index = 0
         write_error = None
-        # base checkpoints that store MoE experts fused get the same fused keys back
-        packer = None
+        # base checkpoints that store MoE experts fused get the same fused keys back; tensors
+        # training holds wider than the base (GDN A_log) go back to the base dtype
+        packer = caster = None
         if is_writer and Path(hf_checkpoint).is_dir():
             try:
                 packer = ExpertPacker.for_base(hf_checkpoint)
+                caster = BaseDtypeCaster.for_base(hf_checkpoint)
             except Exception as exc:
                 # Raised only after every rank drained the iterator: its weight gathers are collective.
                 write_error = exc
@@ -83,6 +86,8 @@ class SnapshotPublisher:
             try:
                 for name, tensor in hf_named_tensors:
                     for out_name, out_tensor in packer.feed(name, tensor) if packer else [(name, tensor)]:
+                        if caster is not None:
+                            out_tensor = caster.cast(out_name, out_tensor)
                         shard_tensors[out_name] = out_tensor.detach().to("cpu").contiguous()
                 if not shard_tensors:
                     continue  # every tensor of this bucket is buffered for an expert layer
