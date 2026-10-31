@@ -5,7 +5,8 @@ full fp32 ``[T, blocks, heads]`` score, ReLU, head sum, causal mask and one ``to
 over every block. ``torch.topk`` leaves the choice among equal scores unspecified, so the
 tiled path fixes it (higher score, then lower block id). The tests check the tiled selection
 against the untiled one row by row, against the untiled one with that tie rule exactly, and
-bound the memory a tile may hold.
+bound the memory a tile may hold. The block ids the packed attention path takes from the same
+tiles (``qsa_selected_blocks``) are checked against the untiled selection too.
 """
 
 import json
@@ -28,8 +29,8 @@ from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import (  # noqa: E402
     packed_block_causal_mask,
 )
 
-# 180 cases, about 80 s on one CPU pod
-register_cpu_ci(est_time=90, suite="stage-b-cpu", labels=["miles-plugin"])
+# 195 cases, about 90 s on one CPU pod
+register_cpu_ci(est_time=100, suite="stage-b-cpu", labels=["miles-plugin"])
 
 HIDDEN = 64
 RATIO = 4
@@ -412,6 +413,47 @@ def test_plan_rejects_a_non_positive_budget(tile_bytes):
 def test_plan_scores_a_row_wider_than_the_budget_alone():
     tiles = qsa_indexer.plan_query_tiles([0, 0, 0], [4096, 4096, 4096], 65536, 20)
     assert tiles == [(0, 1), (1, 2), (2, 3)]
+
+
+def _reference_selected_blocks(indexer, hidden, positions, rope, cu):
+    """Whole blocks the untiled scorer selects, ``[T, blocks]`` bool, and its logits.
+
+    The query's own partial block is not part of it: the packed kernel's index adds that tail.
+    """
+    selection, logits, layout = _full_scorer_forward(indexer, hidden, positions, rope, cu)
+    return _block_sets(selection, layout, logits.shape[-1]), logits
+
+
+def dense_blocks(blocks, num_blocks):
+    """``[T, K]`` block ids (``-1`` unused) -> ``[T, num_blocks]`` bool; test-side only."""
+    out = torch.zeros(blocks.shape[0], num_blocks, dtype=torch.bool, device=blocks.device)
+    used = blocks >= 0
+    rows = torch.arange(blocks.shape[0], device=blocks.device).unsqueeze(1).expand_as(blocks)
+    out[rows[used], blocks[used].long()] = True
+    return out
+
+
+@pytest.mark.parametrize("tile_bytes", TILE_BYTES)
+@pytest.mark.parametrize("lens", CASES)
+def test_selected_blocks_match_untiled_attention(monkeypatch, lens, tile_bytes):
+    """The ids the packed path hands to ``build_qsa_block_index`` are a valid untiled top-k, row by row."""
+    from miles_plugins.models.qwen3_8_next.ops.attention import qsa_selected_blocks
+
+    indexer = _indexer(monkeypatch, tile_bytes)
+    hidden, positions, rope, cu = _inputs(lens)
+    with torch.no_grad():
+        want, logits = _reference_selected_blocks(indexer, hidden, positions, rope, cu)
+        blocks, cu_out = qsa_selected_blocks(indexer, hidden, positions, rope, cu)
+    k = min(indexer.block_topk, logits.shape[-1])
+    assert blocks.dtype == torch.int32 and blocks.shape == (positions.shape[0], k)
+    if cu is None:
+        assert cu_out.tolist() == [0, positions.shape[0]]
+    else:
+        assert cu_out is cu
+    got = dense_blocks(blocks, logits.shape[-1])
+    # distinct ids: a repeated id would be lost in the dense set
+    assert torch.equal(got.sum(-1), (blocks >= 0).sum(-1))
+    check_block_selection(got, want, logits, k)
 
 
 PEAK_TOKENS = 8192

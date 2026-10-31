@@ -18,7 +18,6 @@ import torch
 
 from tests.fast.test_qsa_indexer_tiled import (
     _packed_positions,
-    _reference_forward,
     _reference_selected_blocks,
     check_block_selection,
     classify_differences,
