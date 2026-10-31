@@ -46,6 +46,17 @@ def missing_hf_weights(source_dir: str | Path, export_dir: str | Path) -> list[s
     return sorted(k for k in expected if written.get(k) not in shards)
 
 
+def _bridge_export_gap(hf_checkpoint: str, checkpoint_dir: Path) -> str | None:
+    """Why a bridge export in ``checkpoint_dir`` is incomplete, or None. Runs on rank 0 only."""
+    if not any(checkpoint_dir.glob("*.safetensors")) and not any(checkpoint_dir.glob("*.bin")):
+        return "no weight files"
+    if missing := missing_hf_weights(hf_checkpoint, checkpoint_dir):
+        # A partly mapped model still writes files, but drops every shard
+        # holding an unmapped tensor -- and whatever else shares it.
+        return f"{len(missing)} tensor(s) of {hf_checkpoint} missing, e.g. {missing[:8]}"
+    return None
+
+
 @cache
 def _get_hf_bridge(hf_checkpoint: str):
     return load_auto_bridge(hf_checkpoint)
@@ -95,17 +106,22 @@ def save_hf_model(
             with patch_megatron_model(model):
                 bridge.save_hf_pretrained(model, path=checkpoint_dir)
             torch.distributed.barrier(group=get_gloo_group())
-            missing_weights = [None]
+            # Every rank waits in the broadcast below, so rank 0 must reach it whatever its local check does:
+            # a local error (unreadable or malformed index) travels as the payload, then all ranks raise.
+            incomplete = [None]
+            local_error = None
             if torch.distributed.get_rank() == 0:
-                if not any(checkpoint_dir.glob("*.safetensors")) and not any(checkpoint_dir.glob("*.bin")):
-                    missing_weights[0] = "no weight files"
-                elif missing := missing_hf_weights(args.hf_checkpoint, checkpoint_dir):
-                    # A partly mapped model still writes files, but drops every shard
-                    # holding an unmapped tensor -- and whatever else shares it.
-                    missing_weights[0] = f"{len(missing)} tensor(s) of {args.hf_checkpoint} missing, e.g. {missing[:8]}"
-            torch.distributed.broadcast_object_list(missing_weights, src=0, group=get_gloo_group())
-            if missing_weights[0] is not None:
-                raise RuntimeError(f"HF export to {path} is incomplete ({missing_weights[0]}) — the megatron bridge likely has no mapping for part of this model architecture.")
+                try:
+                    incomplete[0] = _bridge_export_gap(args.hf_checkpoint, checkpoint_dir)
+                except Exception as exc:
+                    local_error = exc
+                    incomplete[0] = f"coverage check failed: {type(exc).__name__}: {exc}"
+            torch.distributed.broadcast_object_list(incomplete, src=0, group=get_gloo_group())
+            if incomplete[0] is not None:
+                raise RuntimeError(
+                    f"HF export to {path} is incomplete ({incomplete[0]}) — the megatron bridge likely has "
+                    "no mapping for part of this model architecture."
+                ) from local_error
         if is_lora_model(model):
             publisher.write_adapter(None, checkpoint_dir / "adapter")
 
