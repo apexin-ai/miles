@@ -21,7 +21,7 @@ import torch.nn.functional as F
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-# measured 143-151 s on the official image's CPU (smoke pod, 8 threads); hosted CI not timed
+# 8 spawned gloo cases; about 150 s on an 8-thread CPU
 register_cpu_ci(est_time=150, suite="stage-b-cpu", labels=["miles-plugin"])
 
 N_STREAMS, HIDDEN, LOWRANK = 2, 8, 4
