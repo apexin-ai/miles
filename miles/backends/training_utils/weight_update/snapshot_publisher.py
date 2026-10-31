@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
+from miles.backends.training_utils.weight_update.hf_passthrough import ExportPassthrough, complete_hf_export
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.utils.lora.utils import AdapterSpec, get_adapter_target_modules
 
@@ -24,10 +25,17 @@ def _is_hf_metadata_file(path: Path) -> bool:
 
 
 class SnapshotPublisher:
-    def __init__(self, iterator: HfWeightIteratorBase, adapter_config: dict | None = None) -> None:
+    def __init__(
+        self,
+        iterator: HfWeightIteratorBase,
+        adapter_config: dict | None = None,
+        *,
+        export_passthrough: ExportPassthrough | None = None,
+    ) -> None:
         assert iterator.placement.is_full_gather, "publishing requires full weights on rank 0"
         self._iterator = iterator
         self._adapter_config = adapter_config
+        self._export_passthrough = export_passthrough
 
     def publish_adapter(self, adapter: AdapterSpec | None, path: str, metadata: dict | None = None) -> None:
         write_checkpoint_dir(
@@ -97,3 +105,18 @@ class SnapshotPublisher:
                 logger.warning(f"hf_checkpoint {hf_checkpoint} is not a local dir; metadata not copied to {path}")
             index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
             (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
+
+    def complete_model(self, path: str | Path, *, hf_checkpoint: str) -> dict | None:
+        """Add the base checkpoint tensors the model does not hold to the model written by ``write_model``.
+
+        Runs on the writer rank only and has no collectives, so callers run it after every other write.
+        Returns the receipt, or None when the model has no passthrough.
+        """
+        if self._export_passthrough is None or dist.get_rank() != 0:
+            return None
+        receipt = complete_hf_export(path, hf_checkpoint, self._export_passthrough)
+        logger.info(
+            f"HF export {path}: {receipt['exported_keys']} exported + {receipt['passthrough_keys']} passed through "
+            f"from {receipt['base']} {receipt['passthrough_groups']}"
+        )
+        return receipt

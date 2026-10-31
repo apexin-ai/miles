@@ -69,6 +69,9 @@ def save_hf_model(
                 )
         if is_lora_model(model):
             publisher.write_adapter(None, checkpoint_dir / "adapter")
+        if args.megatron_to_hf_mode == "raw":
+            # base checkpoint tensors the training model does not hold; writer rank only, after every collective
+            publisher.complete_model(checkpoint_dir, hf_checkpoint=args.hf_checkpoint)
 
     if should_log:
         logger.info(f"Saving model in HuggingFace format to {path}")

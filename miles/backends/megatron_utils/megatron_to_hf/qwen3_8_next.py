@@ -9,6 +9,7 @@ import re
 import torch
 
 from miles.backends.megatron_utils.megatron_to_hf.qwen3_5 import convert_qwen3_5_to_hf
+from miles.backends.training_utils.weight_update.hf_passthrough import PassthroughGroup, register_hf_export_passthrough
 from miles.utils.args.runtime import TrainerConfig
 
 # mcore suffix (under decoder.layers.N.) -> HF suffix (under the HF layer prefix)
@@ -62,3 +63,23 @@ def convert_qwen3_8_next_to_hf(args: TrainerConfig, name: str, param: torch.Tens
             return [(f"model.language_model.layers.{layer_idx}.{hf_rest}", param)]
 
     return convert_qwen3_5_to_hf(args, name, param)
+
+
+def _hf_export_passthrough(args: TrainerConfig) -> dict[str, PassthroughGroup]:
+    """Base checkpoint tensors a raw export takes from the base: the converter never emits them."""
+    groups = {
+        # the frozen n-gram table is a buffer, not a parameter
+        "ple_table": PassthroughGroup(
+            r"model\.language_model\.layers\.\d+\.ple\.ple_embedding\."
+            r"(?:layer_multipliers|ngram_heads_offsets|ngram_heads_vocab_sizes|ngram_embedding\.shard_\d+\.weight)"
+        ),
+        # the vision tower is not built for text-only training
+        "visual": PassthroughGroup(r"model\.visual\..+", only_if_absent=True),
+    }
+    if not args.enable_mtp_training:
+        # a trained MTP head must be exported, never replaced by the base copy
+        groups["mtp"] = PassthroughGroup(r"mtp\..+", only_if_absent=True)
+    return groups
+
+
+register_hf_export_passthrough("qwen4_exp", _hf_export_passthrough)
