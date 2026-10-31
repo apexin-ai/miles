@@ -118,11 +118,23 @@
 | `8d70b962` | packer 初始化错误存入 write_error，rank 0 走完权重 gather 后再报（CRV P1-INT-5） | 双 rank Gloo：损坏 index 下两 rank 都完成 gather，下一 collective 正常；修前 Gloo 连接断开 |
 | `611b3dad` | raw HF 导出把 GDN `linear_attn.A_log` 转回基座 dtype（只此白名单，只在落盘路径；CRV P1-INT-6；`hf_base_dtype.py`） | `test_hf_base_dtype.py` 4 项；修前端到端报 `A_log: F32[48] vs base BF16[48]` |
 
+## apex/main（2026-10-31 23:4x UTC 建立）
+
+- `apex/main` = **`bd622ca7ff377405c11be2c2758366ad74999414`**，由 `promote-apex-main.sh` 首次创建（不强推）。它是候选 2 `a6ac20ee` 加一个转换器提交：上游 open PR #3925（head `a03df3bd`）的 `cherry-pick -x`，只取转换器部分（无 `common.pt` 时从 DCP 的 `common_state` 读 args；M-031）。
+- 门禁：第 1–4 组在 `a6ac20ee` 上通过并沿用（CX1 确认 `a6ac20ee..bd622ca7` 只改转换器工具、读档模块和测试）；M-020 转换器在 `bd622ca7` 上通过。验收记录 `r3/req/INT-cand2-gate.accept.md`（工作区，不在本仓库）。
+- 本门禁不覆盖的开放项：M-015 真正的 `--async-save`；release 格式首次加载和 `kill -9` 资格项（P2，正式训练前做）；CRV-FIX-025、CRV-FIX-026（P1）；M-032、M-033。
+
+## 发布 / 评测用的 HF 导出（协调者 2026-10-31 23:46 UTC）
+
+- **发布和评测一律用训练里的在线 HF 导出，再跑 `verify_export`。不用离线转换器**（`tools/convert_torch_dist_to_hf.py`、`tools/convert_torch_dist_to_hf_ray.py`）。
+- 原因（M-033）：离线转换器只转存档里的训练张量，对 Qwen3.8 输出逐专家拆开的键（4 层 6243 个），不补 base 的 495 个 passthrough 键（PLE 表、视觉、MTP），也不做 fused 专家打包。在线导出是 602 键（4 层）/ 1658 键（全模型），与基座的键集、dtype、shape 一致。
+- 离线转换器只用于读档和排查。对 Qwen3.8 要加 `--model-name qwen3_8_next`（M-032：从 HF config 推出的 `qwen4expconfig` 不在分派里）。
+
 ## 已知限制
 
 - 视觉路径只有 CPU 契约测试，没有 GPU 验证。最终存档读回检查是 model-only 读回，不证明续训（optimizer、scheduler、RNG、数据游标）。
 - 读回检查失败时只恢复被人为扰动的切片再抛错，不是完整的内存回滚；失败后训练进程应退出。多 rank 下一个 rank 失败、其他 rank 停在 barrier 的情形没有测试（CRV P2-INT-1）。
-- PR #6 没有修改 QSA indexer 的 `score_blocks`；由合入的 `apex/q38-indexer-tiled` 处理。旧的 `apex/q38-qsa-bitmap-packed`（T×NB bitmap）在 rebase 到 `c62ea5d8` 时由上游 #4133 的新 kernel（`a3fbc478`）取代，代码已删除。新 kernel 的 262K packed 全路径只在 CPU 解释器上验证过，GPU 验证待 SMOKE。
+- PR #6 没有修改 QSA indexer 的 `score_blocks`；由合入的 `apex/q38-indexer-tiled` 处理。旧的 `apex/q38-qsa-bitmap-packed`（T×NB bitmap）在 rebase 到 `c62ea5d8` 时由上游 #4133 的新 kernel（`a3fbc478`）取代，代码已删除。新 kernel 的 262K packed 全路径已在 GPU 上验证（候选 2 门禁）；TP8 头形状的 `misaligned address` 由 `9ba4f70a` 修复（M-030）。
 - `--no-load-optim` 加训练过的存档：本分支拒绝续训（要求 `--finetune` 开新计划）；上游 #4530 按 `iteration*GBS` 重建。两者契约相反，本分支的上游测试已按严格拒绝改写。
 - `qwen38_vision_trainable` 默认值是 PR 原来的 `"full"`。文本 SFT 不用视觉 provider，所以不受影响。用视觉 provider 时要显式设置。
 - PR #5 的 DeepSeek/PP 路径没有 GPU 资格验证。

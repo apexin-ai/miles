@@ -2,7 +2,7 @@
 
 本文件是 BRANCH-PR 方案第 5.3.2 节第 6 条要求的清单：**下一次换上游基线重建候选时，只按本清单重放，不重放 `U..apex/main` 里的全部历史提交。** 每一项写来源、基线、在当前候选里的提交、状态。历史上被取代的提交列在最后一节，重建时不要重放。
 
-- 当前候选：`apex/qwen38-text-sft-rebase`（候选 2）。上游基线 U = radixark/miles main **`c62ea5d8c2851f63a21fcb42296fdaa6910bce69`**。
+- `apex/main` = `apex/qwen38-text-sft-rebase` = **`bd622ca7`**（2026-10-31 23:4x UTC，候选 2 + #3925 转换器部分）。上游基线 U = radixark/miles main **`c62ea5d8c2851f63a21fcb42296fdaa6910bce69`**。
 - 本清单覆盖 `c62ea5d8..` 候选 2 的全部 117 个提交（加上之后的文档 / 脚本提交）。
 - 「提交」一列写的是**候选 2 里的 SHA**（短 SHA）；`apex/pr/*` 分支的 SHA 写在「来源」里。
 - 状态：`有效` = 树里的实现来自这一项；`上游 open` = 上游 PR 还没合入，合入后按第 5.3.3 节判断能否去掉。
@@ -19,11 +19,12 @@
 | 上游 PR | 固定 head | 选入的提交 → 候选 2 | 本地适配 / 补充（候选 2） | 状态 |
 |---|---|---|---|---|
 | #3879（只取冻结子功能） | `9ed6eacf` | `1f5639ff` → `123a38a7` | `2f275dcc`：Qwen3.8 indexer 用共享 freeze helper；保留 provider 全参数冻结断言 | 上游 open |
-| #4133 | `02cda78b` | `02cda78b` → `a3fbc478`（**混有本地适配**：tiled scorer 直接喂 block id、mRoPE、thd / sbhd 分开） | `91f46c43`：monitor 读 block id；TP8 修复（M-030）：`0bd5c396`（改 dense query tile，**改错了地方，已被下一个提交撤回**）+ `9ba4f70a`（`rebase/fix-qsa-fill` 上 `3c47f395` + `421c3653` 的净改动：`_fill_kernel`、`_mark_kernel` 不按 `stride_b` 特化，kernel 体与 #4133 相同）。`f5439d3a`：本地 int64 行偏移测试（来自 `a3fbc478`）的源码解析也认 `@triton.jit(...)`。重建时只重放 `1193d35b` 对 `69c8d5c0` 的改动（装饰器 + 3 个测试文件）。`apex/pr` 分支待 GPU 确认后建 | 上游 open |
+| #4133 | `02cda78b` | `02cda78b` → `a3fbc478`（**混有本地适配**：tiled scorer 直接喂 block id、mRoPE、thd / sbhd 分开） | `91f46c43`：monitor 读 block id；TP8 修复（M-030）：`0bd5c396`（改 dense query tile，**改错了地方，已被下一个提交撤回**）+ `9ba4f70a`（`rebase/fix-qsa-fill` 上 `3c47f395` + `421c3653` 的净改动：`_fill_kernel`、`_mark_kernel` 不按 `stride_b` 特化，kernel 体与 #4133 相同）。`f5439d3a`：本地 int64 行偏移测试（来自 `a3fbc478`）的源码解析也认 `@triton.jit(...)`。重建时只重放 `1193d35b` 对 `69c8d5c0` 的改动（装饰器 + 3 个测试文件）。`apex/pr/qsa-block-index-fill-bits` = `99aa2abe`（以 #4133 head 为基，GPU 已确认） | 上游 open |
 | #2796 | `f01c353a` | `f01c353a` → `777aff66` | 无（生产代码与我们旧 `09c9393a` 相同，只剩这一份） | 上游 open |
 | #4471 | `b45e6532` | `b45e6532` → `4765b582` | `e6cca277`：Qwen3.8 模型级 CP 防呆的错误文字 | 上游 open |
 | #3964（观察器结构） | `e320b1a0` | `0d9e23e2` 手工移植 → `3bff1fa1`（作者 Junwei Zhou，`Ported-from` + `Co-authored-by: rasoolfa`） | `ee1d283a`：严格契约测试（训练过的存档缺 scheduler 状态就拒绝，与上游 #4530 契约相反） | 上游 open |
 | #3691 | `f4d93f1d` | `d9ffa024` → `5bbb3395` | `aaa82af2`：rank0 覆盖检查的异常先广播再统一抛出 | 上游 open |
+| #3925（只取转换器部分） | `a03df3bd` | `a03df3bd` → `bd622ca7`（作者 Yu Shi Jie） | 冲突处理：保留上游后加的 `hf_checkpoint` 覆盖、Ray 工具的 `argparse.Namespace` 复制；没取：删 `tools/convert_to_hf.py`、删 `dist_ckpt_save_pre_mcore_014`、#3924（M-031） | 上游 open |
 
 ## L2：我们的修复（`apex/pr/<topic>`，以上游 main 为基，push 在 apexin-ai/miles，不开上游 PR）
 
