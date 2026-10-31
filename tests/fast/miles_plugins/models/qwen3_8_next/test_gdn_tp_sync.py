@@ -115,6 +115,9 @@ def _params_differing_from_rank0(chunk: torch.nn.Module) -> list[str]:
 def _train_steps_worker(rank: int, world_size: int, port: int, *, keep_tp_average: bool) -> None:
     from megatron.core.distributed.finalize_model_grads import _allreduce_non_tensor_model_parallel_grads
 
+    # Fork-only: the load / save TP replica checker must agree with the bitwise comparison.
+    from miles.backends.megatron_utils.tp_replica_check import check_tp_replicas
+
     init_gloo(rank, world_size, port=port)
     try:
         chunk = _Chunk(_build_layer(_load_gdn(pytest.MonkeyPatch())))
@@ -122,6 +125,7 @@ def _train_steps_worker(rank: int, world_size: int, port: int, *, keep_tp_averag
             for param in chunk.parameters():
                 param.__dict__.pop("average_gradients_across_tp_domain", None)
         assert _params_differing_from_rank0(chunk) == []
+        assert check_tp_replicas([chunk], None, group=dist.group.WORLD, where="init") > 0
 
         config = SimpleNamespace(sequence_parallel=True, qk_layernorm=False)
         for step in range(3):
@@ -140,6 +144,11 @@ def _train_steps_worker(rank: int, world_size: int, port: int, *, keep_tp_averag
             assert differing == []
         else:
             assert differing, "without TP averaging no replica drifted: the comparison would miss a real drift"
+        if differing:
+            with pytest.raises(RuntimeError, match="TP-replicated tensors differ across TP ranks"):
+                check_tp_replicas([chunk], None, group=dist.group.WORLD, where="after 3 steps")
+        else:
+            check_tp_replicas([chunk], None, group=dist.group.WORLD, where="after 3 steps")
     finally:
         dist.destroy_process_group()
 
