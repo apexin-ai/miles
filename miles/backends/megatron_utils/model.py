@@ -56,7 +56,8 @@ from miles.utils.types import SampleLineage
 
 from ...utils.misc import filter_keys
 from ..training_utils.parallel import get_parallel_state
-from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
+from . import ple_provenance
+from .checkpoint import is_release_checkpoint, load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
     check_model_hashes,
     check_peak_gpu_memory_after_load,
@@ -945,6 +946,11 @@ def save(
             (e.g. ``{'local_checkpoint_manager': manager}`` for in-memory checkpoints).
         non_persistent_ckpt (bool): If True, save a non-persistent (in-memory) checkpoint.
     """
+    if not non_persistent_ckpt:
+        # Megatron publishes the tracker inside save_checkpoint (sync) or in a later finalize (async), so the
+        # PLE manifest must be on disk before it is called
+        ple_provenance.before_save(args.backend.save, iteration)
+
     hashes = None
     if args.ci_test and args.ci_save_model_hash:
         hashes = compute_model_hashes_by_layer(model)
@@ -1049,6 +1055,7 @@ def load_model_state(
         or "local_checkpoint_manager" in (checkpointing_context or {})
     )
     explicit_selection = args.backend.ckpt_step is not None or args.backend.exit_on_missing_checkpoint
+    trained_checkpoint_dir = None
     if load_dir is None or explicit_selection or _has_loadable_ckpt(load_dir):
         with load_ctx:
             iteration, restored_trained_iteration = load_checkpoint(
@@ -1059,6 +1066,15 @@ def load_model_state(
                 args=args,
                 skip_load_to_model_and_opt=False,
             )
+        # a checkpoint written by training, rollout 0 included; a release, --finetune or an in-memory
+        # checkpoint starts a new PLE binding
+        if (
+            restored_trained_iteration
+            and load_dir is not None
+            and "local_checkpoint_manager" not in (checkpointing_context or {})
+            and not is_release_checkpoint(load_dir, args.backend.ckpt_step)
+        ):
+            trained_checkpoint_dir = ple_provenance.manifest_path(load_dir, iteration).parent
         # MCore loads scheduler state with the optimizer state, and its load_state_dict
         # replays the saved step count whatever use_checkpoint_opt_param_scheduler says;
         # that flag only picks which scheduler settings win. A release checkpoint returns
@@ -1080,11 +1096,16 @@ def load_model_state(
             iteration = adapter_iteration
             restored_trained_iteration = True
             scheduler_restored = True
+            # a native adapter is saved to <save>/iter_NNNNNNN/adapter, next to the manifest
+            trained_checkpoint_dir = Path(args.lora_adapter_path).resolve().parent
 
     check_peak_gpu_memory_after_load(args)
     clear_memory()
 
     check_model_hashes(args, model, iteration)
+    # the frozen PLE table is re-read from --hf-checkpoint on every start: verify it is the one the
+    # resumed checkpoint trained with, or bind this run to it
+    ple_provenance.on_load(args.hf_checkpoint, trained_checkpoint_dir=trained_checkpoint_dir)
 
     if opt_param_scheduler is not None and not scheduler_restored:
         opt_param_scheduler.step(increment=iteration * args.backend.global_batch_size)
