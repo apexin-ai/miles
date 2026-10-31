@@ -74,6 +74,7 @@
 | 5 | INT：`2b5a2bc6`（专家 packed 导出） | `2b5a2bc6` | 失败集合与基线相同；`weight_update/` 等自带测试 494 passed |
 | 6 | INT：`8d70b962`；FIX-B：`apex/q38-fixb-crv`（CRV-FIX-002、014、015、018、016） | `25cefca9` | 失败集合与基线相同；新测试合集 548 passed |
 | 7 | INT：`611b3dad`（A_log dtype） | `611b3dad` | 失败集合与基线相同；`weight_update/` 等 510 passed |
+| 8 | FIX-A：`apex/q38-skip-save-state`（从未 step 过的优化器在存档前补状态） | `2281850b` | 失败集合与基线相同；自带测试 72 passed |
 
 ## CPU 测试
 
