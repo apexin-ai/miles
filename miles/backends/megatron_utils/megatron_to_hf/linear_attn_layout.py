@@ -14,6 +14,9 @@ import torch
 
 from miles.utils.hf_utils.config import load_hf_config
 
+# Buffer the linear-attention layer saves with its weights to mark this layout. It has no HF tensor.
+LINEAR_ATTN_LAYOUT_KEY = "weight_layout_version"
+
 
 @dataclass(frozen=True)
 class LinearAttnHeads:

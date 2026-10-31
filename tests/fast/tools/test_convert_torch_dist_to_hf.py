@@ -62,3 +62,53 @@ class TestSerialCheckpointExport:
         tensors = safetensors.torch.load_file(shard)
         torch.testing.assert_close(tensors["model.llm.layers.0.mlp.experts.0.gate_proj.weight"], tensor[:2])
         torch.testing.assert_close(tensors["model.llm.layers.0.mlp.experts.0.up_proj.weight"], tensor[2:])
+
+
+class TestLinearAttentionLayoutMarker:
+    @pytest.mark.parametrize(
+        ("model_name", "hf_name"),
+        [
+            ("qwen3_5", "model.language_model.layers.0.linear_attn.A_log"),
+            ("kimi_k3", "language_model.model.layers.0.self_attn.A_log"),
+        ],
+    )
+    def test_layout_marker_is_skipped_and_weights_are_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model_name: str, hf_name: str
+    ) -> None:
+        """The linear-attention layout marker has no HF tensor: export drops it and still writes every weight."""
+        input_dir = tmp_path / "checkpoint"
+        layer = "decoder.layers.0.self_attention.linear_attn"
+        a_log = torch.arange(4, dtype=torch.float32)
+        dist_cp.save(
+            {f"{layer}.A_log": a_log, f"{layer}.weight_layout_version": torch.tensor([1], dtype=torch.int32)},
+            checkpoint_id=str(input_dir),
+        )
+        backend = argparse.Namespace(
+            num_layers=1,
+            hidden_size=8,
+            num_attention_heads=2,
+            num_query_groups=1,
+            kv_channels=4,
+            vocab_size=None,
+            hf_checkpoint=None,
+        )
+        torch.save({"args": backend}, input_dir / "common.pt")
+        output_dir = tmp_path / "output"
+        argv = [
+            "convert_torch_dist_to_hf.py",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--model-name",
+            model_name,
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(pickle, "Unpickler", pickle.Unpickler)
+
+        runpy.run_module("tools.convert_torch_dist_to_hf", run_name="__main__")
+
+        [shard] = output_dir.glob("*.safetensors")
+        tensors = safetensors.torch.load_file(shard)
+        assert set(tensors) == {hf_name}
+        torch.testing.assert_close(tensors[hf_name], a_log)
