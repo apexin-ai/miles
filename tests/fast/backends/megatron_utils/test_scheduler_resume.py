@@ -217,3 +217,174 @@ def test_release_classification_follows_what_megatron_reads(tmp_path: Path, dirn
         (load_dir / "latest_checkpointed_iteration.txt").write_text(tracker)
     assert is_release_checkpoint(load_dir, ckpt_step) is release
     assert is_release_checkpoint(None, None) is False
+
+
+def _groups(scheduler) -> list[tuple[float, float]]:
+    return [(g["lr"], g["weight_decay"]) for g in scheduler.optimizer.param_groups]
+
+
+class TestTheRestoreIsObservedNotInferred:
+    """REBASE-plan (#3964 observer): the decision follows a real load_state_dict call, not a flag, the
+    iteration or a change of num_steps."""
+
+    def test_a_restore_that_leaves_num_steps_unchanged_is_still_a_restore(self, tmp_path: Path) -> None:
+        """The scheduler already holds the saved count: a before/after comparison would see no restore."""
+        first = _new_scheduler(True)
+        _train(first, _INCREMENTS[:5])
+        resumed = _new_scheduler(True)
+        _train(resumed, _INCREMENTS[:5])
+        assert resumed.num_steps == first.num_steps
+        output = _load(tmp_path, resumed, iteration=4, saved_state=first.state_dict())
+        assert output.start_rollout_id == 5
+        assert resumed.num_steps == first.num_steps
+        assert _groups(resumed) == _groups(first)
+
+    def test_loading_the_same_checkpoint_twice_gives_the_same_lr_and_wd(self, tmp_path: Path) -> None:
+        """Absolute restore: the second load must not add the saved count to the first one."""
+        first = _new_scheduler(False)
+        _train(first, _INCREMENTS[:6])
+        saved = first.state_dict()
+        resumed = _new_scheduler(False)
+        _load(tmp_path, resumed, iteration=5, saved_state=saved)
+        once = (resumed.num_steps, _groups(resumed))
+        _load(tmp_path, resumed, iteration=5, saved_state=saved)
+        assert (resumed.num_steps, _groups(resumed)) == once == (first.num_steps, _groups(first))
+
+
+class TestTheObserverOnAFailedLoad:
+    """A load that raises propagates; the scheduler keeps exactly the load_state_dict it had."""
+
+    @pytest.mark.parametrize("restore_before_failing", [True, False])
+    def test_the_class_method_comes_back(self, tmp_path: Path, restore_before_failing: bool) -> None:
+        scheduler = _new_scheduler(True)
+        saved = _new_scheduler(True).state_dict()
+
+        def failing_load(model, optimizer, opt_param_scheduler, **kwargs):
+            if restore_before_failing:
+                opt_param_scheduler.load_state_dict(saved)
+            raise OSError("checkpoint read failed")
+
+        with pytest.raises(OSError, match="checkpoint read failed"):
+            self._load_with(tmp_path, scheduler, failing_load)
+        assert "load_state_dict" not in vars(scheduler)
+        assert scheduler.load_state_dict.__func__ is type(scheduler).load_state_dict
+
+    @pytest.mark.parametrize("load_fails", [True, False])
+    def test_an_instance_override_is_put_back_not_deleted(self, tmp_path: Path, load_fails: bool) -> None:
+        scheduler = _new_scheduler(True)
+        calls = []
+        class_method = scheduler.load_state_dict
+
+        def override(state_dict):
+            calls.append(state_dict["num_steps"])
+            return class_method(state_dict)
+
+        scheduler.load_state_dict = override
+        first = _new_scheduler(True)
+        _train(first, _INCREMENTS[:3])
+        saved = first.state_dict()
+
+        def load(model, optimizer, opt_param_scheduler, **kwargs):
+            opt_param_scheduler.load_state_dict(saved)
+            if load_fails:
+                raise OSError("checkpoint read failed")
+            return 2, True
+
+        if load_fails:
+            with pytest.raises(OSError, match="checkpoint read failed"):
+                self._load_with(tmp_path, scheduler, load)
+        else:
+            self._load_with(tmp_path, scheduler, load)
+            assert scheduler.num_steps == first.num_steps
+        assert vars(scheduler)["load_state_dict"] is override
+        assert calls == [first.num_steps]
+
+    @staticmethod
+    def _load_with(tmp_path: Path, scheduler, load_checkpoint):
+        from miles.backends.megatron_utils.model import load_model_state
+
+        load_dir = tmp_path / "ckpt"
+        load_dir.mkdir(exist_ok=True)
+        (load_dir / "latest_checkpointed_iteration.txt").write_text("2")
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("miles.backends.megatron_utils.model.load_checkpoint", side_effect=load_checkpoint)
+            )
+            _patch_initialize_side_effects(stack)
+            return load_model_state(
+                make_trainer_args(use_checkpoint_opt_param_scheduler=True, global_batch_size=8, load=str(load_dir)),
+                model=[_FakeModelChunk()],
+                optimizer=None,
+                opt_param_scheduler=scheduler,
+                role="actor",
+                checkpointing_context=None,
+                resume_from_ckpt=True,
+            )
+
+
+class TestTheObserverCoversTheLoraRestore:
+    """The observer scope includes restore_lora_adapter: a native LoRA training state restores the scheduler
+    there, after the base load under --finetune restored nothing."""
+
+    @staticmethod
+    def _load_lora(tmp_path: Path, scheduler, *, adapter_iteration: int | None, saved_state: dict | None):
+        from miles.backends.megatron_utils.model import load_model_state
+
+        load_dir = tmp_path / "base"
+        load_dir.mkdir(exist_ok=True)
+        (load_dir / "latest_checkpointed_iteration.txt").write_text("release")
+
+        def restore_lora_adapter(model, args, *, optimizer, opt_param_scheduler):
+            if saved_state is not None:
+                opt_param_scheduler.load_state_dict(saved_state)
+            return adapter_iteration
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(0, False)))
+            stack.enter_context(
+                patch("miles.backends.megatron_utils.model.restore_lora_adapter", side_effect=restore_lora_adapter)
+            )
+            _patch_initialize_side_effects(stack)
+            return load_model_state(
+                make_trainer_args(
+                    use_checkpoint_opt_param_scheduler=True,
+                    global_batch_size=8,
+                    finetune=True,
+                    lora_rank=8,
+                    lora_adapter_path=str(tmp_path / "adapter"),
+                    load=str(load_dir),
+                ),
+                model=[_FakeModelChunk()],
+                optimizer=None,
+                opt_param_scheduler=scheduler,
+                role="actor",
+                checkpointing_context=None,
+                resume_from_ckpt=False,
+            )
+
+    @pytest.mark.parametrize("adapter_iteration", [0, 3])
+    def test_a_native_training_state_with_scheduler_continues_the_schedule(
+        self, tmp_path: Path, adapter_iteration: int
+    ) -> None:
+        uninterrupted = _train(_new_scheduler(True), _INCREMENTS)
+        first = _new_scheduler(True)
+        before = _train(first, _INCREMENTS[:4])
+        resumed = _new_scheduler(True)
+        output = self._load_lora(
+            tmp_path, resumed, adapter_iteration=adapter_iteration, saved_state=first.state_dict()
+        )
+        assert output.start_rollout_id == adapter_iteration + 1
+        assert before + _train(resumed, _INCREMENTS[4:]) == uninterrupted
+
+    @pytest.mark.parametrize("adapter_iteration", [0, 3])
+    def test_a_native_training_state_without_scheduler_is_refused(self, tmp_path: Path, adapter_iteration: int) -> None:
+        """lora/utils.py returns the iteration even when training_state.opt_param_scheduler is None."""
+        with pytest.raises(RuntimeError, match="no LR scheduler state"):
+            self._load_lora(tmp_path, _new_scheduler(True), adapter_iteration=adapter_iteration, saved_state=None)
+
+    def test_hf_adapter_weights_only_start_a_new_schedule(self, tmp_path: Path) -> None:
+        """An HF/PEFT adapter has no iteration: a new stage at step 0, not a refusal."""
+        scheduler = _new_scheduler(True)
+        output = self._load_lora(tmp_path, scheduler, adapter_iteration=None, saved_state=None)
+        assert output.start_rollout_id == 0
+        assert scheduler.num_steps == 0

@@ -277,6 +277,33 @@ def test_initialize_refuses_a_trained_iteration_without_scheduler_state():
     opt_param_scheduler.step.assert_not_called()
 
 
+def test_initialize_refreshes_scheduler_after_a_release_checkpoint(tmp_path: Path):
+    """Upstream #4530 test, adapted: a release checkpoint returns iteration 0 without scheduler state, so
+    step(0) must still refresh lr/wd. Upstream used no --load at all; under this branch's strict contract
+    an unclassified iteration-0 load counts as a trained rollout 0 and is refused, so the release is named
+    the way Megatron reads it, by the tracker."""
+    from miles.backends.megatron_utils.model import load_model_state
+
+    load_dir = tmp_path / "ckpt"
+    load_dir.mkdir()
+    (load_dir / "latest_checkpointed_iteration.txt").write_text("release")
+    scheduler = MagicMock()
+    with ExitStack() as stack:
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(0, True)))
+        _patch_initialize_side_effects(stack)
+        load_model_state(
+            make_trainer_args(global_batch_size=8, finetune=False, load=str(load_dir)),
+            model=[_FakeModelChunk()],
+            optimizer=None,
+            opt_param_scheduler=scheduler,
+            role="actor",
+            checkpointing_context=None,
+            resume_from_ckpt=True,
+        )
+
+    scheduler.step.assert_called_once_with(increment=0)
+
+
 def _load_model_state_with(
     *,
     tmp_path: Path,
