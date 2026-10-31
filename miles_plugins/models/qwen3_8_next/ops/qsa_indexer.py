@@ -12,6 +12,8 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
+from miles_plugins.models.indexer import freeze_indexer_parameters
+
 
 def _indexer_acc_dtype(x):
     return x.dtype if x.dtype in (torch.float32, torch.float64) else torch.float32
@@ -183,6 +185,9 @@ def select_topk_blocks(logits: Tensor, k: int) -> tuple[Tensor, Tensor]:
     return values, idx.gather(-1, order)
 
 
+INDEXER_PARAM_GLOBS = ("index_qk_proj.*", "q_layernorm", "k_layernorm")
+
+
 class Qwen38NextQSAIndexer(MegatronModule):
     """Selects the sparse-attention budget for one full-attention layer."""
 
@@ -217,7 +222,9 @@ class Qwen38NextQSAIndexer(MegatronModule):
             p.sequence_parallel = config.sequence_parallel
         # No training objective reaches the indexer (it runs under no_grad). Freeze it so
         # DDP gives it no main_grad and the optimizer never applies weight decay to it.
-        self.requires_grad_(False)
+        # The helper raises when the globs match nothing; assert_qsa_indexers_frozen in the
+        # provider checks that no ``.indexer.`` parameter escaped the globs.
+        freeze_indexer_parameters(self, INDEXER_PARAM_GLOBS)
 
     def project_qk(
         self,

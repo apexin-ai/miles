@@ -86,6 +86,14 @@ def test_indexer_parameters_do_not_require_grad(layer):
     assert not any(p.requires_grad for p in params.values())
 
 
+def test_upstream_freeze_globs_cover_every_indexer_parameter(layer):
+    """The shared helper's globs, not a blanket requires_grad_(False), must reach every parameter."""
+    from miles_plugins.models.indexer import freeze_indexer_parameters
+
+    frozen = freeze_indexer_parameters(layer.indexer, qsa_indexer.INDEXER_PARAM_GLOBS)
+    assert set(frozen) == {name for name, _ in layer.indexer.named_parameters()}
+
+
 def test_indexer_parameters_are_in_no_optimizer_param_group(layer):
     groups = _get_param_groups([layer], OptimizerConfig(lr=1e-3, weight_decay=0.1), None)
     grouped = {id(p) for g in groups for p in g["params"]}
