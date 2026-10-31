@@ -79,8 +79,10 @@ def _hf_export_passthrough(args: TrainerConfig) -> dict[str, PassthroughGroup]:
         "visual": PassthroughGroup(r"model\.visual\..+", only_if_absent=True),
     }
     if not args.enable_mtp_training:
-        # a trained MTP head must be exported, never replaced by the base copy
-        groups["mtp"] = PassthroughGroup(r"mtp\..+", only_if_absent=True)
+        # a trained MTP head must be exported, never replaced by the base copy. An untrained one always
+        # comes from the base: an export that holds MTP keys without MTP training is refused (stricter than
+        # only_if_absent=True upstream; pending coordinator decision)
+        groups["mtp"] = PassthroughGroup(r"mtp\..+", only_if_absent=False)
     return groups
 
 

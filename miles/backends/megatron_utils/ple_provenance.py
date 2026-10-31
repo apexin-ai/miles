@@ -21,16 +21,21 @@ import hashlib
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import torch.distributed as dist
 
-from miles.backends.training_utils.weight_update.hf_passthrough import QWEN38_GROUPS, read_header, tensor_hashes
+from miles.backends.training_utils.weight_update.hf_passthrough import read_header, tensor_hashes
 
 logger = logging.getLogger(__name__)
 
 MANIFEST_NAME = "ple_provenance.json"
 MODEL_TYPE = "qwen4_exp"
+PLE_KEY = re.compile(
+    r"model\.language_model\.layers\.\d+\.ple\.ple_embedding\."
+    r"(?:layer_multipliers|ngram_heads_offsets|ngram_heads_vocab_sizes|ngram_embedding\.shard_\d+\.weight)"
+)
 _run_manifest: dict | None = None
 
 
@@ -60,7 +65,7 @@ def compute_manifest(hf_checkpoint) -> dict:
     """Manifest of the base's PLE table; collective when torch.distributed is initialized."""
     base = Path(hf_checkpoint)
     weight_map = json.loads((base / "model.safetensors.index.json").read_text())["weight_map"]
-    keys = sorted(k for k in weight_map if QWEN38_GROUPS["ple_table"].fullmatch(k))
+    keys = sorted(k for k in weight_map if PLE_KEY.fullmatch(k))
     if not keys:
         raise PleProvenanceError(f"{base} has no PLE table keys")
     distributed = dist.is_initialized()

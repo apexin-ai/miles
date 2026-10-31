@@ -15,7 +15,6 @@ from miles.backends.megatron_utils import ple_provenance
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update import hf_passthrough
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
@@ -87,20 +86,6 @@ def save_hf_model(
                 weights=merge_lora_into_weights(model, weights) if is_lora_model(model) else weights,
                 hf_checkpoint=args.hf_checkpoint,
             )
-            is_writer = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
-            # a run bound to a PLE table at load must complete its export, whatever the base's config says now
-            required = ple_provenance.run_manifest() is not None
-            if is_writer and (required or hf_passthrough.applies(args.hf_checkpoint)):
-                # base tensors the model does not hold (Qwen3.8: PLE table, untrained MTP, unbuilt vision tower)
-                receipt = hf_passthrough.complete_hf_export(
-                    checkpoint_dir, args.hf_checkpoint, mtp_trained=args.enable_mtp_training, required=required
-                )
-                if receipt is not None:
-                    ple_provenance.check_export(receipt["passthrough_sha256"])
-                    logger.info(
-                        f"HF export {checkpoint_dir}: {receipt['exported_keys']} exported + "
-                        f"{receipt['passthrough_keys']} passed through from {receipt['base']} {receipt['passthrough_groups']}"
-                    )
         else:
             bridge = _get_hf_bridge(args.hf_checkpoint)
             with patch_megatron_model(model):
@@ -126,7 +111,10 @@ def save_hf_model(
             publisher.write_adapter(None, checkpoint_dir / "adapter")
         if args.megatron_to_hf_mode == "raw":
             # base checkpoint tensors the training model does not hold; writer rank only, after every collective
-            publisher.complete_model(checkpoint_dir, hf_checkpoint=args.hf_checkpoint)
+            receipt = publisher.complete_model(checkpoint_dir, hf_checkpoint=args.hf_checkpoint)
+            if receipt is not None:
+                # the PLE table was copied from --hf-checkpoint now: it must still be the one this run trained with
+                ple_provenance.check_export(receipt["passthrough_sha256"])
 
     if should_log:
         logger.info(f"Saving model in HuggingFace format to {path}")

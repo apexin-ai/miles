@@ -17,14 +17,21 @@ export is marked complete:
   keys) and checks their bytes against the base.
 
 Any violation raises ``ExportIncomplete``.
+
+``python -m miles.backends.training_utils.weight_update.hf_passthrough <export> <base> [--expect-unchanged RE]``
+compares all keys of a finished export with the base (``verify_export``): passthrough and ``--expect-unchanged``
+keys must be byte identical, and at least one exported key must have changed. It prints how many keys of each
+registered group changed and exits 1 on a violation.
 """
 
+import argparse
 import hashlib
 import json
 import math
 import re
 import shutil
 import struct
+import sys
 from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Callable, Mapping
@@ -304,3 +311,77 @@ def complete_hf_export(export_dir, base_dir, passthrough: ExportPassthrough) -> 
     }
     (export_dir / RECEIPT).write_text(json.dumps(receipt, indent=1))
     return receipt
+
+
+def _report_groups(base_dir: Path) -> Mapping[str, PassthroughGroup]:
+    """The registered groups of the base's model_type, for reporting only (as a run without MTP training)."""
+    config = base_dir / "config.json"
+    model_type = json.loads(config.read_text()).get("model_type") if config.is_file() else None
+    passthrough = hf_export_passthrough(model_type, Namespace(enable_mtp_training=False))
+    return {} if passthrough is None else passthrough.groups
+
+
+def verify_export(export_dir, base_dir, *, expect_unchanged=()) -> dict:
+    """Key-by-key comparison of a completed export with its base; raises ExportIncomplete on a violation.
+
+    The keys that must equal the base are the receipt's passthrough keys plus ``expect_unchanged`` (regexes,
+    searched); the export must hold every base key, with the base dtype and shape, and change at least one.
+    """
+    export_dir, base_dir = Path(export_dir), Path(base_dir)
+    base_map, export_map = weight_map(base_dir), weight_map(export_dir)
+    if set(base_map) != set(export_map):
+        raise ExportIncomplete(
+            f"keys differ: missing {sorted(set(base_map) - set(export_map))[:5]}, "
+            f"extra {sorted(set(export_map) - set(base_map))[:5]}"
+        )
+    _check_dtype_and_shape(base_dir, base_map, export_dir, export_map)
+    check_payloads(base_dir, base_map.values())
+    check_payloads(export_dir, export_map.values())
+    passthrough = set(json.loads((export_dir / RECEIPT).read_text())["passthrough_sha256"])
+    exported_hashes = tensor_hashes(export_dir, export_map, export_map)
+    base_hashes = tensor_hashes(base_dir, base_map, base_map)
+    changed = {k for k in base_map if exported_hashes[k] != base_hashes[k]}
+    must_match = passthrough | {k for k in base_map for p in expect_unchanged if re.search(p, k)}
+    report = {
+        "keys": len(base_map),
+        "passthrough": len(passthrough),
+        "changed": len(changed),
+        "changed_by_group": {},
+        "unchanged_trained_keys": sorted(set(base_map) - changed - must_match),
+    }
+    patterns = {name: re.compile(group.pattern) for name, group in _report_groups(base_dir).items()}
+    for key in base_map:
+        group = next((name for name, pattern in patterns.items() if pattern.fullmatch(key)), "other")
+        counts = report["changed_by_group"].setdefault(group, [0, 0])
+        counts[0] += key in changed
+        counts[1] += 1
+    bad = sorted(changed & must_match)
+    if bad:
+        raise ExportIncomplete(f"{len(bad)} keys that must equal the base changed: {bad[:5]}")
+    if not changed - passthrough:
+        raise ExportIncomplete("no exported key differs from the base: the export holds untrained weights")
+    return report
+
+
+def main(argv=None) -> int:
+    # Under ``python -m`` this file runs as __main__; the models register into the imported module, so the
+    # check goes through that one.
+    import miles.backends.megatron_utils.megatron_to_hf  # noqa: F401  (registers each model's passthrough)
+    from miles.backends.training_utils.weight_update import hf_passthrough
+
+    parser = argparse.ArgumentParser(description="Key-by-key check of a completed HF export against its base checkpoint")
+    parser.add_argument("export")
+    parser.add_argument("base")
+    parser.add_argument("--expect-unchanged", action="append", default=[], help="regex of keys that must equal the base")
+    args = parser.parse_args(argv)
+    try:
+        report = hf_passthrough.verify_export(args.export, args.base, expect_unchanged=args.expect_unchanged)
+    except hf_passthrough.ExportIncomplete as exc:
+        print(f"FAILED: {exc}")
+        return 1
+    print(json.dumps(report, indent=1))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
