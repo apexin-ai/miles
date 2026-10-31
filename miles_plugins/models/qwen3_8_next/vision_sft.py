@@ -25,10 +25,23 @@ def _processor(checkpoint):
 
 
 def encode_sft_sample(
-    processor, config, messages, images, *, template_kwargs=None, tools=None, final_answer_format="dataset"
+    processor,
+    config,
+    messages,
+    images,
+    *,
+    template_kwargs=None,
+    tools=None,
+    final_answer_format="dataset",
+    allow_text=False,
 ):
+    """Tokens, loss mask and model inputs of one SFT sample.
+
+    The inputs are None for a sample without images, which only ``allow_text`` (text or mixed data) accepts:
+    the model then skips the vision tower for it.
+    """
     normalized = normalize_image_messages(messages, len(images))
-    if not images or not normalized or normalized[-1]["role"] != "assistant":
+    if (not images and not allow_text) or not normalized or normalized[-1]["role"] != "assistant":
         raise ValueError("Image SFT needs real images and a final assistant target")
     normalized = apply_final_answer_format(normalized, final_answer_format)
     options = dict(template_kwargs or {})
@@ -55,6 +68,10 @@ def encode_sft_sample(
     raw_mask = [
         int(any(start <= left < right <= end for start, end in spans)) for left, right in raw["offset_mapping"]
     ]
+    if not images:
+        if config["image_token_id"] in raw["input_ids"] or not any(raw_mask):
+            raise ValueError("A text sample must have no image placeholder and some supervised tokens")
+        return list(raw["input_ids"]), raw_mask, None
     encoded = processor(text=[text], images=images, return_tensors="pt", add_special_tokens=False)
     if "pixel_values" not in encoded or "image_grid_thw" not in encoded:
         raise ValueError("The native processor did not return image patches and grids")
@@ -95,11 +112,14 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
     if evaluation or not args.rollout_global_dataset:
         raise ValueError("Qwen image SFT consumes a global supervised dataset, not generated rollouts")
     processor, config = _processor(args.hf_checkpoint)
+    data = args.qwen38_vision_data
     samples = []
     for (sample,) in data_buffer.get_samples(args.rollout_batch_size):
         if not isinstance(sample.prompt, list):
             raise ValueError("Pass messages to image SFT without --apply-chat-template")
         images = (sample.multimodal_inputs or {}).get("images", [])
+        if images and data == "text":
+            raise ValueError(f"Sample {sample.index} has images but --qwen38-vision-data is text")
         tokens, mask, inputs = encode_sft_sample(
             processor,
             config,
@@ -108,6 +128,7 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
             template_kwargs=args.apply_chat_template_kwargs,
             tools=sample.metadata.get("tools"),
             final_answer_format=args.qwen38_sft_final_answer_format,
+            allow_text=data != "image",
         )
         if len(tokens) > args.seq_length:
             raise ValueError(f"Expanded sample {sample.index} exceeds --seq-length: {len(tokens)}")
