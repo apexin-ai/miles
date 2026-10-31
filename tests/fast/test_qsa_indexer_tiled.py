@@ -1,15 +1,23 @@
-"""The tiled QSA indexer must select exactly the blocks the untiled scorer selects.
+"""The Qwen3.8-Next QSA indexer scores query tiles, not the full ``[T, blocks, heads]`` matrix.
 
-``_reference_*`` below is the untiled implementation as of 65feb4a6: it builds the full
-``[T, blocks, heads]`` fp32 score. ``torch.topk`` there leaves the choice among equal
-scores unspecified; the tiled path fixes it (higher score, then lower block id), so rows
-whose k-th score is tied are compared on the strictly-better blocks plus the tie count.
+``_full_scorer_forward`` below is the untiled scorer the tiled one replaces: it builds the
+full fp32 ``[T, blocks, heads]`` score, ReLU, head sum, causal mask and one ``torch.topk``
+over every block. ``torch.topk`` leaves the choice among equal scores unspecified, so the
+tiled path fixes it (higher score, then lower block id). The tests check the tiled selection
+against the untiled one row by row, against the untiled one with that tie rule exactly, and
+bound the memory a tile may hold.
 """
 
+import json
 import math
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 
 torch = pytest.importorskip("torch")
 
@@ -18,12 +26,14 @@ from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import (  # noqa: E402
     PackedBlockLayout,
     block_causal_mask,
     packed_block_causal_mask,
-    plan_query_tiles,
-    select_topk_blocks,
 )
+
+# 180 cases, about 80 s on one CPU pod
+register_cpu_ci(est_time=90, suite="stage-b-cpu", labels=["miles-plugin"])
 
 HIDDEN = 64
 RATIO = 4
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class _DuplicatedLinear(torch.nn.Module):
@@ -37,8 +47,7 @@ class _DuplicatedLinear(torch.nn.Module):
         return x @ self.weight.t(), None
 
 
-def _indexer(monkeypatch, tile_bytes, budget=2048, heads=4, head_dim=128):
-    monkeypatch.setattr(qsa_indexer, "TELinear", _DuplicatedLinear)
+def _build_indexer(tile_bytes, budget=2048, heads=4, head_dim=128):
     config = SimpleNamespace(
         hidden_size=HIDDEN,
         init_method=None,
@@ -60,6 +69,11 @@ def _indexer(monkeypatch, tile_bytes, budget=2048, heads=4, head_dim=128):
     return indexer
 
 
+def _indexer(monkeypatch, tile_bytes, **kwargs):
+    monkeypatch.setattr(qsa_indexer, "TELinear", _DuplicatedLinear)
+    return _build_indexer(tile_bytes, **kwargs)
+
+
 def _packed_positions(cu, total):
     idx = torch.arange(total)
     starts = cu[:-1].long()
@@ -69,37 +83,44 @@ def _packed_positions(cu, total):
     return idx - starts[seg]
 
 
-def _inputs(lens, head_dim=128):
+def _inputs(lens, rotary_dim=64):
     cu = torch.tensor([0, *lens]).cumsum(0).to(torch.int32)
     total = int(cu[-1])
     positions = _packed_positions(cu, total) if len(lens) > 1 else torch.arange(total)
     torch.manual_seed(1)
     hidden = torch.randn(total, HIDDEN)
-    inv_freq = 1.0 / (1e7 ** (torch.arange(0, 64, 2, dtype=torch.float32) / 64))
+    inv_freq = 1.0 / (1e7 ** (torch.arange(0, rotary_dim, 2, dtype=torch.float32) / rotary_dim))
     freqs = torch.outer(torch.arange(max(lens) + 1, dtype=torch.float32), inv_freq)
     rope = torch.cat((freqs, freqs), dim=-1)[:, None, None, :]
     return hidden, positions, rope, (cu if len(lens) > 1 else None)
 
 
-def _reference_logits(indexer, q, block_k, query_positions, layout):
-    scores = torch.einsum("mhd,nd->mnh", q.float(), block_k.float())
-    logits = torch.relu(scores).sum(dim=-1) / math.sqrt(indexer.head_dim)
-    if layout is None:
-        valid = block_causal_mask(query_positions, block_k.shape[0], indexer.compress_ratio)
-    else:
-        valid = packed_block_causal_mask(query_positions, layout, indexer.compress_ratio)
-    return logits.masked_fill(~valid, float("-inf"))
+def _stable_topk(logits, k):
+    """Top-k by score descending, then index ascending: a stable sort of the whole row."""
+    values, idx = torch.sort(logits, dim=-1, descending=True, stable=True)
+    return values[:, :k], idx[:, :k]
 
 
-def _reference_forward(indexer, hidden_states, positions, rotary_pos_emb, cu_seqlens=None):
-    """Untiled selection at 65feb4a6; also returns the logits it ranked."""
+def _full_scorer_forward(indexer, hidden_states, positions, rotary_pos_emb, cu_seqlens=None, topk=torch.topk):
+    """The untiled scorer: full ``[T, blocks, heads]`` score, one top-k per row over all blocks.
+
+    Returns the ``[T, token_budget]`` token selection, the ``[T, blocks]`` logits it ranked and
+    the packed layout. ``topk`` picks the tie rule.
+    """
     layout = None
     if cu_seqlens is not None and cu_seqlens.numel() > 2:
         layout = PackedBlockLayout(cu_seqlens, positions, indexer.compress_ratio)
     q, block_k = indexer.project_qk(hidden_states, positions, rotary_pos_emb, layout=layout)
-    logits = _reference_logits(indexer, q, block_k, positions, layout)
+    scores = torch.einsum("mhd,nd->mnh", q.float(), block_k.float())
+    logits = torch.relu(scores).sum(dim=-1) / math.sqrt(indexer.head_dim)
+    if layout is None:
+        valid = block_causal_mask(positions, block_k.shape[0], indexer.compress_ratio)
+    else:
+        valid = packed_block_causal_mask(positions, layout, indexer.compress_ratio)
+    logits = logits.masked_fill(~valid, float("-inf"))
+
     k = min(indexer.block_topk, logits.shape[-1])
-    block_scores, block_idx = torch.topk(logits, k, dim=-1)
+    block_scores, block_idx = topk(logits, k)
     block_idx = block_idx.masked_fill(block_scores == float("-inf"), -1)
     offsets = torch.arange(indexer.compress_ratio)
     if layout is None:
@@ -134,8 +155,8 @@ def _block_sets(tokens, layout, num_blocks):
 def check_block_selection(got, want, logits, k, tol=0.0, lowest_index=True):
     """Per row, the selection ``got`` must be a valid top-k of ``logits``; returns the rows where it differs from ``want``.
 
-    ``got`` / ``want`` are ``[T, blocks]`` 0/1; ``logits`` the untiled reference scores,
-    ``-inf`` outside each row's candidate blocks. Every row of ``got`` must:
+    ``got`` / ``want`` are ``[T, blocks]`` 0/1; ``logits`` the untiled scores, ``-inf``
+    outside each row's candidate blocks. Every row of ``got`` must:
 
     - match ``want`` exactly outside the candidates (that is the query's partial tail block);
     - when a row has at most ``k`` candidates, select all of them;
@@ -143,7 +164,7 @@ def check_block_selection(got, want, logits, k, tol=0.0, lowest_index=True):
       more than ``tol``, none below it by more than ``tol``; only blocks inside that band
       may differ from ``want``, and with ``lowest_index`` an exact tie keeps the lowest ids.
 
-    ``tol`` is the fp band the GPU allows for scores summed in a different order.
+    ``tol`` is the fp band a device may allow for scores summed in a different order.
     """
     got, want = got.bool(), want.bool()
     cand = torch.isfinite(logits)
@@ -197,13 +218,6 @@ def test_classification_counts_a_near_swap_next_to_an_exact_tie():
     assert near.tolist() == [True, False]
 
 
-def _compare(got, want, logits, k, layout):
-    assert got.shape == want.shape
-    g = _block_sets(got, layout, logits.shape[-1])
-    w = _block_sets(want, layout, logits.shape[-1])
-    return int(check_block_selection(g, w, logits, k).sum())
-
-
 @pytest.mark.parametrize(
     "logits,k,got,ok",
     [
@@ -240,28 +254,61 @@ CASES = [
     pytest.param([4096], id="T4096"),
     pytest.param([1, 3, 2055, 1, 5, 1000], id="packed-short-docs"),
     pytest.param([2600, 1497], id="packed-two-long"),
+    pytest.param([4093, 6], id="packed-tails"),
+]
+# token budgets: Qwen3.8's 2048; small ones, one not a multiple of the ratio; one under the ratio (no blocks)
+BUDGETS = [pytest.param(b, id=f"budget{b}") for b in (2048, 64, 10, 4, 2)]
+TILE_BYTES = [
+    pytest.param(1 << 30, id="tile1GiB"),
+    pytest.param(64 << 10, id="tile64KiB"),
+    pytest.param(1, id="tile1B"),
 ]
 
 
+@pytest.mark.parametrize("tile_bytes", TILE_BYTES)
+@pytest.mark.parametrize("budget", BUDGETS)
 @pytest.mark.parametrize("lens", CASES)
-@pytest.mark.parametrize("tile_bytes", [1 << 30, 64 << 10], ids=["1GiB", "64KiB"])
-def test_tiled_selection_matches_untiled(monkeypatch, lens, tile_bytes):
-    indexer = _indexer(monkeypatch, tile_bytes)
+def test_selection_is_a_top_k_of_the_full_scorer(monkeypatch, lens, budget, tile_bytes):
+    """Row by row the same blocks as the untiled ``torch.topk``, except among blocks tied at the k-th score."""
+    indexer = _indexer(monkeypatch, tile_bytes, budget=budget)
     hidden, positions, rope, cu = _inputs(lens)
     with torch.no_grad():
-        want, logits, layout = _reference_forward(indexer, hidden, positions, rope, cu)
+        want, logits, layout = _full_scorer_forward(indexer, hidden, positions, rope, cu)
         got = indexer(hidden, positions, rope, cu_seqlens=cu)
+    assert got.dtype == want.dtype and got.shape == want.shape
     k = min(indexer.block_topk, logits.shape[-1])
-    tie_rows = _compare(got, want, logits, k, layout)
-    assert tie_rows <= max(2, want.shape[0] // 20)
-    if lens == [4096]:
-        assert tie_rows > 0, "the k-th-score tie path was not exercised"
+    if k == 0:
+        assert got.numel() == 0
+        return
+    g = _block_sets(got, layout, logits.shape[-1])
+    w = _block_sets(want, layout, logits.shape[-1])
+    differ = check_block_selection(g, w, logits, k, lowest_index=False)
+    exact, near = classify_differences(g, w, logits, k)
+    assert not bool(near.any()), f"rows {near.nonzero().flatten()[:8].tolist()} differ off the k-th score"
+    assert torch.equal(differ, exact)
 
 
-def test_tiles_never_score_more_than_the_budget(monkeypatch):
-    tile_bytes = 256 << 10
-    indexer = _indexer(monkeypatch, tile_bytes)
-    hidden, positions, rope, cu = _inputs([4096])
+@pytest.mark.parametrize("tile_bytes", TILE_BYTES)
+@pytest.mark.parametrize("budget", BUDGETS)
+@pytest.mark.parametrize("lens", CASES)
+def test_selection_equals_the_full_scorer_with_lowest_id_ties(monkeypatch, lens, budget, tile_bytes):
+    """Exactly the untiled selection, column order included, when ties go to the lower block id."""
+    indexer = _indexer(monkeypatch, tile_bytes, budget=budget)
+    hidden, positions, rope, cu = _inputs(lens)
+    with torch.no_grad():
+        want, logits, _ = _full_scorer_forward(indexer, hidden, positions, rope, cu, topk=_stable_topk)
+        got = indexer(hidden, positions, rope, cu_seqlens=cu)
+    assert got.dtype == want.dtype and got.shape == want.shape
+    mismatch = (got != want).any(-1)
+    assert not bool(mismatch.any()), f"rows {mismatch.nonzero().flatten()[:8].tolist()} differ"
+    if lens == [4096] and budget == 2048:
+        k = min(indexer.block_topk, logits.shape[-1])
+        kth = torch.topk(logits, k, dim=-1).values[:, -1:]
+        tied = torch.isfinite(kth.squeeze(-1)) & ((logits >= kth).sum(-1) > k)
+        assert bool(tied.any()), "the k-th-score tie path was not exercised"
+
+
+def _einsum_spy(monkeypatch):
     sizes = []
     einsum = torch.einsum
 
@@ -272,11 +319,41 @@ def test_tiles_never_score_more_than_the_budget(monkeypatch):
         return out
 
     monkeypatch.setattr(qsa_indexer.torch, "einsum", spy)
+    return sizes
+
+
+@pytest.mark.parametrize("lens", [[4096], [2600, 1497]], ids=["T4096", "packed-two-long"])
+def test_tiles_never_score_more_than_the_budget(monkeypatch, lens):
+    tile_bytes = 256 << 10
+    indexer = _indexer(monkeypatch, tile_bytes)
+    hidden, positions, rope, cu = _inputs(lens)
+    sizes = _einsum_spy(monkeypatch)
+    with torch.no_grad():
+        indexer(hidden, positions, rope, cu_seqlens=cu)
+    total = sum(lens)
+    full = total * (-(-total // RATIO)) * indexer.n_heads * 4
+    assert len(sizes) > 1, "the scorer ran in one piece"
+    # the score is 16 of the 20 bytes a 4-head tile cell is charged
+    assert max(sizes) <= tile_bytes * 16 // 20 < full
+
+
+def test_a_query_row_wider_than_the_budget_is_scored_alone(monkeypatch):
+    indexer = _indexer(monkeypatch, 1)
+    hidden, positions, rope, _ = _inputs([257])
+    sizes = _einsum_spy(monkeypatch)
     with torch.no_grad():
         indexer(hidden, positions, rope)
-    full = 4096 * 1024 * 4 * 4
-    assert len(sizes) > 1
-    assert max(sizes) <= tile_bytes * 16 // 20 < full
+    # rows 0..2 see no block; every other row is its own tile
+    assert len(sizes) == 257 - 3
+    assert max(sizes) == 64 * indexer.n_heads * 4
+
+
+@pytest.mark.parametrize("tile_bytes", [0, -1])
+def test_indexer_rejects_a_non_positive_tile_budget(monkeypatch, tile_bytes):
+    indexer = _indexer(monkeypatch, tile_bytes)
+    hidden, positions, rope, _ = _inputs([64])
+    with torch.no_grad(), pytest.raises(ValueError, match="positive"):
+        indexer(hidden, positions, rope)
 
 
 def test_tie_rule_prefers_higher_score_then_lower_index():
@@ -287,21 +364,19 @@ def test_tie_rule_prefers_higher_score_then_lower_index():
             [5.0, float("-inf"), float("-inf"), 4.0, float("-inf"), float("-inf")],
         ]
     )
-    values, idx = select_topk_blocks(logits.clone(), 4)
+    values, idx = qsa_indexer.select_topk_blocks(logits.clone(), 4)
     assert idx[0].tolist() == [1, 4, 0, 2]
     assert idx[1].tolist() == [0, 1, 2, 3]
     assert idx[2, :2].tolist() == [0, 3]
     assert values[2, 2:].tolist() == [float("-inf")] * 2
     # the rule does not depend on how the rows are batched
     for row in range(2):
-        _, alone = select_topk_blocks(logits[row : row + 1].clone(), 4)
+        _, alone = qsa_indexer.select_topk_blocks(logits[row : row + 1].clone(), 4)
         assert alone[0].tolist() == idx[row].tolist()
+    assert qsa_indexer.select_topk_blocks(logits, 0)[1].shape == (3, 0)
 
 
-@pytest.mark.parametrize("seed", range(5))
-def test_plan_covers_every_row_once_within_budget(seed):
-    g = torch.Generator().manual_seed(seed)
-    lens = (torch.randint(1, 300, (8,), generator=g)).tolist()
+def _rows(lens):
     lo, hi = [], []
     block_start = 0
     for length in lens:
@@ -309,60 +384,94 @@ def test_plan_covers_every_row_once_within_budget(seed):
             lo.append(block_start)
             hi.append(block_start + (pos + 1) // RATIO)
         block_start += -(-length // RATIO)
-    cap_bytes = 20 * 64
-    tiles = plan_query_tiles(lo, hi, cap_bytes)
+    return lo, hi
+
+
+@pytest.mark.parametrize("row_bytes", [0, 100])
+@pytest.mark.parametrize("seed", range(5))
+def test_plan_covers_every_row_once_within_budget(seed, row_bytes):
+    g = torch.Generator().manual_seed(seed)
+    lo, hi = _rows(torch.randint(1, 300, (8,), generator=g).tolist())
+    tile_bytes, per_cell = 20 * 64 + 4 * row_bytes, 20
+    tiles = qsa_indexer.plan_query_tiles(lo, hi, tile_bytes, per_cell, row_bytes)
     assert tiles[0][0] == 0 and tiles[-1][1] == len(lo)
     assert all(a[1] == b[0] for a, b in zip(tiles, tiles[1:], strict=False))
     for s, e in tiles:
-        assert e - s == 1 or (e - s) * max(1, hi[e - 1] - lo[s]) <= 64
-
-
-def _reference_selected_blocks(indexer, hidden, positions, rope, cu):
-    """Whole blocks the untiled scorer at 65feb4a6 selects, ``[T, blocks]`` bool, and its logits.
-
-    The query's own partial block is not part of it: the packed kernel's index adds that tail.
-    """
-    selection, logits, layout = _reference_forward(indexer, hidden, positions, rope, cu)
-    return _block_sets(selection, layout, logits.shape[-1]), logits
-
-
-def dense_blocks(blocks, num_blocks):
-    """``[T, K]`` block ids (``-1`` unused) -> ``[T, num_blocks]`` bool; test-side only."""
-    out = torch.zeros(blocks.shape[0], num_blocks, dtype=torch.bool, device=blocks.device)
-    used = blocks >= 0
-    rows = torch.arange(blocks.shape[0], device=blocks.device).unsqueeze(1).expand_as(blocks)
-    out[rows[used], blocks[used].long()] = True
-    return out
-
-
-@pytest.mark.parametrize("lens", CASES)
-def test_selected_blocks_match_untiled_attention(monkeypatch, lens):
-    """The ids the packed path hands to ``build_qsa_block_index`` are a valid untiled top-k, row by row."""
-    from miles_plugins.models.qwen3_8_next.ops.attention import qsa_selected_blocks
-
-    indexer = _indexer(monkeypatch, 64 << 10)
-    hidden, positions, rope, cu = _inputs(lens)
-    with torch.no_grad():
-        want, logits = _reference_selected_blocks(indexer, hidden, positions, rope, cu)
-        blocks, cu_out = qsa_selected_blocks(indexer, hidden, positions, rope, cu)
-    k = min(indexer.block_topk, logits.shape[-1])
-    assert blocks.dtype == torch.int32 and blocks.shape == (positions.shape[0], k)
-    if cu is None:
-        assert cu_out.tolist() == [0, positions.shape[0]]
-    else:
-        assert cu_out is cu
-    got = dense_blocks(blocks, logits.shape[-1])
-    # distinct ids: a repeated id would be lost in the dense set
-    assert torch.equal(got.sum(-1), (blocks >= 0).sum(-1))
-    check_block_selection(got, want, logits, k)
+        cost = lambda n: n * (max(1, hi[s + n - 1] - lo[s]) * per_cell + row_bytes)  # noqa: E731
+        assert e - s == 1 or cost(e - s) <= tile_bytes
+        # tiles are as large as the budget allows
+        assert e == len(lo) or cost(e - s + 1) > tile_bytes
 
 
 @pytest.mark.parametrize("tile_bytes", [0, -1])
 def test_plan_rejects_a_non_positive_budget(tile_bytes):
     with pytest.raises(ValueError, match="positive"):
-        plan_query_tiles([0, 0], [1, 2], tile_bytes)
+        qsa_indexer.plan_query_tiles([0, 0], [1, 2], tile_bytes, 20)
 
 
-def test_a_row_wider_than_the_budget_is_scored_alone():
-    tiles = plan_query_tiles([0, 0, 0], [4096, 4096, 4096], 65536)
+def test_plan_scores_a_row_wider_than_the_budget_alone():
+    tiles = qsa_indexer.plan_query_tiles([0, 0, 0], [4096, 4096, 4096], 65536, 20)
     assert tiles == [(0, 1), (1, 2), (2, 3)]
+
+
+PEAK_TOKENS = 8192
+PEAK_BUDGET = 256
+PEAK_TILE_BYTES = 8 << 20
+
+
+def _peak_child(mode):
+    """Run in a fresh process: peak resident growth (bytes) of one indexer call, printed as JSON."""
+    qsa_indexer.TELinear = _DuplicatedLinear
+    torch.set_num_threads(1)
+    # a small head_dim keeps the projected queries and keys small next to the score
+    indexer = _build_indexer(PEAK_TILE_BYTES, budget=PEAK_BUDGET, head_dim=32)
+    with torch.no_grad():
+        warm = _inputs([256], rotary_dim=16)
+        indexer(warm[0], warm[1], warm[2])
+        _full_scorer_forward(indexer, warm[0], warm[1], warm[2])
+        hidden, positions, rope, _ = _inputs([PEAK_TOKENS], rotary_dim=16)
+
+        def status(field):
+            with open("/proc/self/status") as f:
+                return next(int(line.split()[1]) << 10 for line in f if line.startswith(field))
+
+        before = status("VmRSS:")
+        with open("/proc/self/clear_refs", "w") as f:
+            f.write("5")  # reset the resident high-water mark to the current size
+        if mode == "tiled":
+            out = indexer(hidden, positions, rope)
+        else:
+            out, _, _ = _full_scorer_forward(indexer, hidden, positions, rope)
+        peak = status("VmHWM:")
+    print(json.dumps({"peak_growth": peak - before, "out_bytes": out.numel() * out.element_size()}))
+
+
+def _measure_peak(mode):
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(REPO_ROOT), os.environ.get("PYTHONPATH", "")]))
+    # glibc: a fixed mmap threshold returns every large freed buffer to the OS, so the resident
+    # size follows the live tensors instead of the heap's fragmentation
+    env.update(MALLOC_MMAP_THRESHOLD_="131072", MALLOC_TRIM_THRESHOLD_="131072")
+    code = f"import tests.fast.test_qsa_indexer_tiled as t; t._peak_child({mode!r})"
+    proc = subprocess.run(
+        [sys.executable, "-c", code], cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=600
+    )
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.skipif(not os.access("/proc/self/clear_refs", os.W_OK), reason="needs Linux /proc/self/clear_refs")
+def test_peak_memory_is_bounded_by_the_tile_budget():
+    """Resident memory, measured in a fresh process: the full scorer's peak, the tiled one stays small.
+
+    The untiled score of one 8192-token sequence is 256 MiB (fp32, 4 heads) plus its ReLU
+    copy; the tiled call may hold its 8 MiB tile, the 8 MiB selection it returns and the
+    projected queries and keys (head_dim 32) with their temporaries, about 20 MiB.
+    """
+    full = _measure_peak("full")
+    tiled = _measure_peak("tiled")
+    mib = 1 << 20
+    score_bytes = PEAK_TOKENS * (PEAK_TOKENS // RATIO) * 4 * 4
+    print(f"\nfull peak {full['peak_growth'] / mib:.0f} MiB, tiled peak {tiled['peak_growth'] / mib:.0f} MiB")
+    # positive control: the measurement sees the full score
+    assert full["peak_growth"] >= score_bytes
+    assert tiled["peak_growth"] <= tiled["out_bytes"] + PEAK_TILE_BYTES + 64 * mib < score_bytes
