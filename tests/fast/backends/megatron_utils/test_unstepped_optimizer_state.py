@@ -110,7 +110,7 @@ def assert_bitwise(a, b):
 def test_hybrid_save_after_skipped_steps_finds_fresh_state_and_moves_nothing():
     optimizer = hybrid(bf16_params())
     dist_opt = distributed(optimizer, precision_aware=True)
-    with pytest.raises(KeyError, match="master_param"):  # SMOKE FIX-A-5 C2: the save before any step
+    with pytest.raises(KeyError, match="master_param"):  # the save before any step
         saved_tensors(dist_opt)
     weights = [p.detach().clone() for p in optimizer.param_groups[0]["params"]]
     masters = [p.detach().clone() for p in optimizer.param_to_fp32_param.values()]

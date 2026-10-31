@@ -12,7 +12,7 @@ register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])
 _VOCAB_SIZE = 13
 # (prompt length, response loss mask) per real sample
 _REAL_SAMPLES = ((3, [1, 1, 0, 1]), (2, [1, 1, 1]), (4, [0, 1, 1, 1, 1]))
-_SENTINEL = (5, [0, 0, 0, 0])
+_MASKED = (5, [0, 0, 0, 0])
 
 
 @pytest.fixture(scope="module")
@@ -74,7 +74,7 @@ def _step_grad(micro_batches: list[dict], megatron_scaling: bool) -> tuple[torch
 
 class TestCountLossTokens:
     def test_a_fully_masked_sample_adds_nothing_to_the_token_count(self) -> None:
-        """The per-token denominator is the real supervised-token count, so a sentinel sample does not dilute it."""
+        """The per-token denominator is the real supervised-token count, so a fully masked sample does not dilute it."""
         masks = [torch.tensor([1, 1, 0, 1]), torch.tensor([0, 0, 0]), torch.tensor([1, 1])]
 
         assert count_loss_tokens(masks).item() == 5
@@ -100,17 +100,17 @@ class TestFullyMaskedSampleInvariance:
         self, process_group: None, megatron_scaling: bool, placement: str
     ) -> None:
         """Same real samples in the same step give the same normalizer and the same gradient bits,
-        whether or not a padding/sentinel sample also takes part in the step."""
+        whether or not a fully masked (padding) sample also takes part in the step."""
         real = [_sample(prompt_len, mask, seed) for seed, (prompt_len, mask) in enumerate(_REAL_SAMPLES)]
-        sentinel = _sample(*_SENTINEL, seed=99)
+        masked = _sample(*_MASKED, seed=99)
         without = [_micro_batch(real[:2]), _micro_batch(real[2:])]
         if placement == "own_micro_batch":
-            with_sentinel = [*without, _micro_batch([sentinel])]
+            with_masked = [*without, _micro_batch([masked])]
         else:
-            with_sentinel = [_micro_batch(real[:2]), _micro_batch([real[2], sentinel])]
+            with_masked = [_micro_batch(real[:2]), _micro_batch([real[2], masked])]
 
         grad_without, tokens_without = _step_grad(without, megatron_scaling)
-        grad_with, tokens_with = _step_grad(with_sentinel, megatron_scaling)
+        grad_with, tokens_with = _step_grad(with_masked, megatron_scaling)
 
         num_real_tokens = sum(sum(mask) for _, mask in _REAL_SAMPLES)
         if megatron_scaling:
