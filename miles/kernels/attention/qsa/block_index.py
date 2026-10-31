@@ -334,11 +334,22 @@ def _fill_kernel(
         leader = tl.min(tl.where(row_inside, slot, QTP), 0) == query % QT
         if tile_dense:
             if leader:
+                # Bit ``s`` of an entry is set when row ``s`` of the tile covers it. Built one row at a time into a
+                # [KP] vector rather than as a [KP, QTP] tile reduced over the rows: on sm_100 the reduced vector's
+                # layout conversion before the store faulted with "misaligned address" for QTP = 32 at KP = 512.
+                list_start = tl.load(Q_OFFSETS + tile)
                 for e0 in range(0, tl.max(tl.where(row_inside, row_end - first, 0), 0), KP):
                     e = e0 + offs
-                    covered = row_inside[None, :] & (e[:, None] < (row_end - first)[None, :])
-                    bits = tl.sum(covered.to(tl.int32) << slot[None, :], 1)
-                    pos = tl.load(Q_OFFSETS + tile) + e
+                    bits = tl.zeros([KP], dtype=tl.int32)
+                    one = tl.full([KP], 1, tl.int32)  # int32 shift: bit 31 is the sign bit, as in the lists
+                    for s in tl.static_range(QT):
+                        r = tile * QT + s
+                        live = r < n_queries
+                        r_inside = tl.load(INSIDE + r, mask=live, other=0) != 0
+                        r_end = tl.load(ROW_FIRST + r, mask=live, other=0) + tl.load(ROW_WHOLE + r, mask=live, other=0)
+                        r_end += (tl.load(TAIL + r, mask=live, other=-1) >= 0).to(tl.int32)
+                        bits |= tl.where(r_inside & (e < r_end - first), one << s, 0)
+                    pos = list_start + e
                     tl.store(Q_BITS + pos, bits, mask=bits != 0)
                     tl.store(
                         Q_KEY_START + pos, tl.load(BLOCK_START + first + e, mask=bits != 0, other=0), mask=bits != 0

@@ -71,7 +71,7 @@ def _peak(fn):
     return out, (torch.cuda.max_memory_allocated() - base) / GiB
 
 
-@pytest.mark.parametrize("heads,kv_heads", [(24, 2), (12, 1)], ids=["TP1", "TP2"])
+@pytest.mark.parametrize("heads,kv_heads", [(24, 2), (12, 1), (6, 1), (3, 1)], ids=["TP1", "TP2", "TP4", "TP8"])
 def test_long_packed_matches_fp64_at_the_far_end(heads, kv_heads):
     from miles.kernels.attention.qsa import build_qsa_block_index, qsa_block_attention
 

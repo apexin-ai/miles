@@ -216,6 +216,41 @@ def test_index_lists_the_attended_pairs_once_in_order(lens, heads, kv_heads):
     _assert_lists(*_pair_case(lens, budget=5, heads=heads, kv_heads=kv_heads, pad_rows=7))
 
 
+
+def _dense_case(lens, k, seed):
+    """Production-budget selections: per query ``min(k, whole)`` distinct whole blocks of its own sequence, so the
+    rows before ``k`` whole blocks select all of them (dense rows, whole query tiles of them) and later rows a
+    stratified spread; with the attended (query, block) pairs, causal tails included."""
+    g = torch.Generator().manual_seed(seed)
+    rows, pairs, start, first = [], set(), 0, 0
+    j = torch.arange(k)
+    for length in lens:
+        whole = ((torch.arange(length) + 1) // RATIO).unsqueeze(1)
+        u = (torch.rand(length, 1, generator=g) * whole).long()
+        ids = torch.where(whole >= k, (j * whole + u) // k, torch.where(j < whole, j, -1))
+        part = torch.where(ids >= 0, ids + first, -1).to(torch.int32)
+        rows.append(part)
+        for pos, chosen in enumerate(part.tolist()):
+            pairs |= {(start + pos, b) for b in chosen if b >= 0}
+            if (pos + 1) % RATIO:
+                pairs.add((start + pos, first + pos // RATIO))
+        start += length
+        first += -(-length // RATIO)
+    return torch.cat(rows).cuda(), pairs
+
+
+@pytest.mark.parametrize(
+    "heads,kv_heads", [(24, 2), (12, 1), (6, 1), (3, 1), (1, 1)], ids=["g12", "g12-tp2", "g6", "g3", "g1"]
+)
+def test_index_at_the_production_budget(heads, kv_heads):
+    """K = 512 blocks per query, so the fill kernel's dense query tiles span 512-wide entry chunks. Every group gives
+    a different query tile (5, 5, 10, 21, 32); group 3 (24 / 2 heads under TP8) once faulted there with a
+    misaligned address."""
+    lens = [2600, 700, 2049]
+    blocks, pairs = _dense_case(lens, k=512, seed=heads)
+    index = build_qsa_block_index(blocks, _cu(lens), compress_ratio=RATIO, num_heads=heads, num_kv_heads=kv_heads)
+    _assert_lists(index, pairs)
+
 def test_index_of_a_long_sequence():
     """Long enough that the prefix scans over the query tiles and over a key tile's bitmap take several chunks."""
     n = 33_000
