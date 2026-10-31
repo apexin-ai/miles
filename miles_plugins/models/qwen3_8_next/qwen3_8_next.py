@@ -121,8 +121,8 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
             f"Qwen3.8-Next has no context parallel path (context_parallel_size={cp_size}). "
             "The QSA indexer and sparse attention treat the local CP shard as the whole "
             "sequence (wrong positions, local K/V only), and PLE hashes local input ids "
-            "against the global cu_seqlens; both are silently wrong or index out of range. "
-            "Run with --context-parallel-size 1."
+            "against the global cu_seqlens; both are silently wrong or index out of range, "
+            "with or without --allgather-cp. Run with --context-parallel-size 1."
         )
 
     if not args.backend.num_experts:
