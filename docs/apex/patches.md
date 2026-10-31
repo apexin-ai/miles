@@ -19,7 +19,7 @@
 | 上游 PR | 固定 head | 选入的提交 → 候选 2 | 本地适配 / 补充（候选 2） | 状态 |
 |---|---|---|---|---|
 | #3879（只取冻结子功能） | `9ed6eacf` | `1f5639ff` → `123a38a7` | `2f275dcc`：Qwen3.8 indexer 用共享 freeze helper；保留 provider 全参数冻结断言 | 上游 open |
-| #4133 | `02cda78b` | `02cda78b` → `a3fbc478`（**混有本地适配**：tiled scorer 直接喂 block id、mRoPE、thd / sbhd 分开） | `91f46c43`：monitor 读 block id；`0bd5c396`：TP8 fill kernel 修复（M-030，`apex/pr/qsa-block-index-fill-bits`，GPU 待确认） | 上游 open |
+| #4133 | `02cda78b` | `02cda78b` → `a3fbc478`（**混有本地适配**：tiled scorer 直接喂 block id、mRoPE、thd / sbhd 分开） | `91f46c43`：monitor 读 block id；TP8 修复（M-030）：`0bd5c396`（改 dense query tile，**改错了地方，已被下一个提交撤回**）+ `3c47f395` 的 cherry-pick（所有 block index buffer 从 16 字节边界开始，kernel 源码与 #4133 相同）。`apex/pr` 分支待 GPU 确认后建 | 上游 open |
 | #2796 | `f01c353a` | `f01c353a` → `777aff66` | 无（生产代码与我们旧 `09c9393a` 相同，只剩这一份） | 上游 open |
 | #4471 | `b45e6532` | `b45e6532` → `4765b582` | `e6cca277`：Qwen3.8 模型级 CP 防呆的错误文字 | 上游 open |
 | #3964（观察器结构） | `e320b1a0` | `0d9e23e2` 手工移植 → `3bff1fa1`（作者 Junwei Zhou，`Ported-from` + `Co-authored-by: rasoolfa`） | `ee1d283a`：严格契约测试（训练过的存档缺 scheduler 状态就拒绝，与上游 #4530 契约相反） | 上游 open |
@@ -58,7 +58,7 @@
 | PLE SP 梯度的 GPU 测试 | `346051f4`、`b1038bef` | M-001 PR 不带它 |
 | 冻结 indexer 测试的 Gloo fixture 清理 | `82869d19` | 我们的测试 |
 | 集成文档与本清单 | `208cff48`、`775336f6`、`9b3e44bb`、`1166f214`、`dc809ea9`、`69c8d5c0`、`ff39424a` 及之后的文档提交 | apex 内部记录 |
-| `apex/main` 准备脚本 | `docs/apex/promote-apex-main.sh` | apex 内部流程 |
+| `apex/main` 准备脚本 | `docs/apex/promote-apex-main.sh`、`docs/apex/test-promote-apex-main.sh` | apex 内部流程。门禁凭严格的验收记录（`candidate:` / `status: PASSED`），见脚本开头 |
 
 ## 已被取代、重建时不要重放的提交
 
