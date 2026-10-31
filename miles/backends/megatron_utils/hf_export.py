@@ -90,6 +90,7 @@ def save_hf_model(
             is_writer = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
             # a run bound to a PLE table at load must complete its export, whatever the base's config says now
             required = ple_provenance.run_manifest() is not None
+            receipt = None
             if is_writer and (required or hf_passthrough.applies(args.hf_checkpoint)):
                 # base tensors the model does not hold (Qwen3.8: PLE table, untrained MTP, unbuilt vision tower)
                 receipt = hf_passthrough.complete_hf_export(
@@ -101,6 +102,9 @@ def save_hf_model(
                         f"HF export {checkpoint_dir}: {receipt['exported_keys']} exported + "
                         f"{receipt['passthrough_keys']} passed through from {receipt['base']} {receipt['passthrough_groups']}"
                     )
+            if is_writer:
+                # one naming for every shard (exported, whole base, passthrough): model-i-of-N, before .complete
+                hf_passthrough.normalize_shard_names(checkpoint_dir, receipt)
         else:
             bridge = _get_hf_bridge(args.hf_checkpoint)
             with patch_megatron_model(model):

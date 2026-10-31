@@ -17,6 +17,11 @@ declares those parts and the checkpoint cannot be served.
 - every shard read or written must hold exactly the bytes its header declares (no truncation, gap or overlap);
 - every passthrough tensor's raw bytes are hashed in the export and in the base and must match.
 
+``normalize_shard_names`` (rank 0, after completion, also for raw exports without a policy) then names every shard
+``model-{i:05d}-of-{N:05d}.safetensors``: the exporter's shards first in write order, then the whole base shards
+in base order, then the passthrough shards. Without it one directory mixed model-NNNNN, the base's
+model-NNNNN-of-00131 and passthrough-NNNNN, and a tool counting shards by -of- saw 31 of 131 (SMOKE REPO-3).
+
 ``python -m miles.backends.training_utils.weight_update.hf_passthrough <export> <base> [--expect-unchanged RE]``
 compares all keys of a finished export with the base: passthrough and ``--expect-unchanged`` keys must be byte
 identical, and at least one exported key must have changed. It prints how many keys of each group changed.
@@ -249,7 +254,7 @@ def complete_hf_export(
     for key, filename in base_map.items():
         by_file[filename].add(key)
     new_map = dict(export_map)
-    whole, partial = [], 0
+    whole, partial, partial_files = [], 0, []
     for filename in sorted(by_file):
         keys = by_file[filename] & selected
         if not keys:
@@ -262,6 +267,7 @@ def complete_hf_export(
             partial += 1
             target = f"passthrough-{partial:05d}.safetensors"
             _write_raw_shard(export_dir / target, base_dir / filename, keys)
+            partial_files.append(target)
         new_map.update({key: target for key in keys})
 
     if set(new_map) != set(base_map):
@@ -289,12 +295,64 @@ def complete_hf_export(
         "exported_keys": len(export_map),
         "passthrough_keys": len(selected),
         "total_keys": len(new_map),
+        "exported_shards": sorted(set(export_map.values())),
         "whole_base_shards": whole,
         "passthrough_shards": partial,
+        "passthrough_files": partial_files,
         "passthrough_sha256": {k: exported_hashes[k] for k in sorted(selected)},
     }
     (export_dir / RECEIPT).write_text(json.dumps(receipt, indent=1))
     return receipt
+
+
+SHARD_NAME = re.compile(r"model-(\d{5})-of-(\d{5})\.safetensors")
+
+
+def normalize_shard_names(export_dir, receipt: dict | None = None) -> dict[str, str]:
+    """Rename every indexed shard to model-i-of-N and rewrite the index; returns {old: new} for the renamed ones.
+
+    Order: ``receipt``'s exported_shards, whole_base_shards, passthrough_files (a completed export), or all indexed
+    shards by name (a raw export without a policy: the exporter's zero-padded write order). A ``*.safetensors``
+    file the index does not name fails the export. Renames go through temporary names, since a final name may be
+    held by another shard (a whole base shard keeps the base's name until now). Tensor bytes are not touched;
+    hardlinked base shards are renamed in the export only. With a receipt, ``shard_renames`` is added to it.
+    Runs before ``.complete``: a failure leaves an export that write_checkpoint_dir removes.
+    """
+    export_dir = Path(export_dir)
+    index = json.loads((export_dir / INDEX).read_text())
+    indexed = set(index["weight_map"].values())
+    stray = sorted(p.name for p in export_dir.glob("*.safetensors") if p.name not in indexed)
+    if stray:
+        raise ExportIncomplete(f"{export_dir}: safetensors files the index does not name: {stray[:5]}")
+    if receipt is not None:
+        order = [*receipt["exported_shards"], *receipt["whole_base_shards"], *receipt["passthrough_files"]]
+        if len(order) != len(set(order)) or set(order) != indexed:
+            raise ExportIncomplete(
+                f"{export_dir}: the receipt's shards {sorted(set(order) ^ indexed)[:5]} do not match the index"
+            )
+    else:
+        order = sorted(indexed)
+    total = len(order)
+    target = {old: f"model-{i:05d}-of-{total:05d}.safetensors" for i, old in enumerate(order, 1)}
+    renames = {old: new for old, new in target.items() if old != new}
+    # step 1 frees every name that is changing; step 2 takes the final names (no final name is held any more:
+    # a shard keeping its name is the only one with that target)
+    temporary = {old: f".rename-{i:05d}.safetensors.tmp" for i, old in enumerate(renames, 1)}
+    for old, tmp in temporary.items():
+        os.rename(export_dir / old, export_dir / tmp)
+    for old, tmp in temporary.items():
+        if (export_dir / renames[old]).exists():
+            raise ExportIncomplete(f"{export_dir}: {renames[old]} exists while renaming {old}")
+        os.rename(export_dir / tmp, export_dir / renames[old])
+    if renames:
+        index["weight_map"] = {k: target[f] for k, f in sorted(index["weight_map"].items())}
+        tmp = export_dir / (INDEX + ".tmp")
+        tmp.write_text(json.dumps(index, indent=2))
+        tmp.replace(export_dir / INDEX)
+    if receipt is not None:
+        receipt["shard_renames"] = renames
+        (export_dir / RECEIPT).write_text(json.dumps(receipt, indent=1))
+    return renames
 
 
 def verify_export(export_dir, base_dir, *, expect_unchanged=()) -> dict:
