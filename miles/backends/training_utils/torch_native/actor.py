@@ -29,7 +29,7 @@ from miles.backends.training_utils.metrics.log_utils import (
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.replay import routing_replay
 from miles.backends.training_utils.torch_native.offload import move_train_state
-from miles.backends.training_utils.torch_native.step_runner import StepRunner
+from miles.backends.training_utils.torch_native.step_runner import StepMetrics, StepRunner
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -265,14 +265,21 @@ class TorchNativeTrainRayActor(TrainRayActor):
 
         for step_id, microbatches in enumerate(num_microbatches):
             runner.zero_grad()
+            # The count is DP-global, so every rank agrees. Without a supervised token the step still runs
+            # its collectives on a zero loss, but no update: weight decay and the LR schedule must not move.
+            unsupervised_step = args.backend.calculate_per_token_loss and num_step_tokens[step_id].item() == 0
             progress = tqdm(range(microbatches), desc="actor_train", disable=dist.get_rank() != 0)
             batches = self._fetch_batches(self.prof.iterate_train_actor(progress), data_iterator, keys)
             losses_reduced = runner.forward_backward_step(
-                batches, partial(_step_loss, args, microbatches, num_step_tokens[step_id])
+                batches, partial(_step_loss, args, microbatches, num_step_tokens[step_id].clamp_min(1))
             )
-            metrics = runner.apply_step()
+            if unsupervised_step:
+                runner.zero_grad()
+                metrics = StepMetrics(grad_norm=0.0, extra_metrics={"skipped_unsupervised_step": 1.0})
+            else:
+                metrics = runner.apply_step()
 
-            if args.ci_test:
+            if args.ci_test and not unsupervised_step:
                 check_grad_norm(
                     args=args,
                     grad_norm=metrics.grad_norm,

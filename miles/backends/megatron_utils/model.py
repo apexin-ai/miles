@@ -27,6 +27,7 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.megatron_utils.unstepped_optimizer_state import materialize_unstepped_optimizer_states
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.loss.objective import loss_function
@@ -591,6 +592,8 @@ def train_one_step(
     if args.enable_sample_ownership_checker:
         sample_consumption_start = data_iterator[0].offset
     _zero_grads(model, optimizer, disable_optimizer)
+    global _step_num_tokens
+    _step_num_tokens = None
 
     if (x := args.custom_megatron_before_train_step_hook_path) is not None:
         from miles.utils.args.custom_view import compute_custom_function_config
@@ -612,9 +615,22 @@ def train_one_step(
         )
         consumed_identities: list[SampleLineage] = []
 
+    # finalize_model_grads clamps a zero token count to one: no nan, but the optimizer and the scheduler would
+    # still step and apply weight decay with nothing to learn. The count is global, so every rank skips alike.
+    unsupervised_step = _step_num_tokens is not None and _step_num_tokens.item() == 0
+    if unsupervised_step and is_first_replica_megatron_main_rank():
+        logger.warning(f"rollout {rollout_id} step {step_id} has no supervised token; skipping its update")
+        if getattr(
+            args.backend, "moe_router_enable_expert_bias", False
+        ):  # config-access-exempt: minimal backend namespaces (tests, non-MoE models) omit MoE router fields
+            # finalize_model_grads runs the router expert-bias update before the token count decides the skip
+            logger.warning(
+                "the skipped step may still have moved the MoE router expert bias (--moe-router-enable-expert-bias)"
+            )
+
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
-    valid_step = True
+    valid_step = not unsupervised_step
     indep_dp_loss_reduced: dict[str, float] = {}
 
     if parallel_state.indep_dp.size > 1:
@@ -711,12 +727,20 @@ def train_one_step(
                 if parallel_state.indep_dp.size > 1
                 else aggregate_train_losses(losses_reduced, metric_num_rollouts)
             )
+            if unsupervised_step:
+                loss_reduced = {**loss_reduced, "skipped_unsupervised_step": 1.0}
             return loss_reduced, grad_norm, outcome
 
     return {}, grad_norm, outcome
 
 
-def finalize_model_grads_with_empty_cache(*args, finalize=finalize_model_grads, **kwargs):
+# This step's supervised-token count as finalize_model_grads leaves it: broadcast over PP and all-reduced over
+# DP-CP in place, so every rank holds the same value. None unless the loss is per-token normalized.
+_step_num_tokens: torch.Tensor | None = None
+
+
+def finalize_model_grads_with_empty_cache(model, num_tokens=None, *args, finalize=finalize_model_grads, **kwargs):
+    global _step_num_tokens
     # TODO: this is an ad-hoc method and we should figure out why the oom happens in the first place.
     device = torch.cuda.current_device()
     free, total = torch.cuda.mem_get_info(device)
@@ -724,8 +748,10 @@ def finalize_model_grads_with_empty_cache(*args, finalize=finalize_model_grads, 
         clear_memory()
     from .lora.utils import reduce_marked_lora_grads
 
-    reduce_marked_lora_grads(args[0])
-    return finalize(*args, **kwargs)
+    reduce_marked_lora_grads(model)
+    result = finalize(model, num_tokens, *args, **kwargs)
+    _step_num_tokens = num_tokens
+    return result
 
 
 def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
@@ -950,6 +976,9 @@ def save(
         hashes = compute_model_hashes_by_layer(model)
     if should_disable_forward_pre_hook(args):
         disable_forward_pre_hook(model)
+    # every step so far may have been skipped as unsupervised: Megatron's save reads state the first step builds
+    if materialize_unstepped_optimizer_states(optimizer) and is_first_replica_megatron_main_rank():
+        logger.warning(f"optimizer has not stepped before save iteration {iteration}; filled its initial state")
 
     if is_lora_model(model):
         save_checkpoint_with_lora(

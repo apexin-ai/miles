@@ -510,6 +510,9 @@ def aggregate_train_losses(
     else:
         num_samples_or_tokens = values[0]
         cp_factor = parallel_state.cp.size
+        if num_samples_or_tokens == 0:
+            # a step without a supervised token has no per-token mean; its update is skipped
+            return loss_reduced
 
     for key, value in zip(keys, values[1:], strict=False):
         loss_reduced[key] = value * cp_factor / num_samples_or_tokens
