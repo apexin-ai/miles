@@ -29,6 +29,7 @@ from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_l
 from miles.backends.megatron_utils import ple_provenance
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.backends.megatron_utils.tp_replica_check import check_tp_replicas
+from miles.backends.megatron_utils.unstepped_optimizer_state import materialize_unstepped_optimizer_states
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.loss.objective import loss_function
@@ -979,6 +980,9 @@ def save(
         # also finishes the param all-gather an overlapped optimizer step left pending
         disable_forward_pre_hook(model)
     try:
+        # every step so far may have been skipped as unsupervised: Megatron's save reads state the first step builds
+        if materialize_unstepped_optimizer_states(optimizer) and is_first_replica_megatron_main_rank():
+            logger.warning(f"optimizer has not stepped before save iteration {iteration}; filled its initial state")
         # after that sync, so the check sees the values the checkpoint stores
         check_tp_replicas(model, optimizer, where=f"save iteration {iteration}")
         if is_lora_model(model):
