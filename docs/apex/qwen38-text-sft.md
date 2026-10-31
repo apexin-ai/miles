@@ -2,7 +2,7 @@
 
 本分支是 Qwen3.8-Flash-Next 文本 SFT 的集成分支，只在 `apexin-ai/miles` 上维护，不合回 radixark main。
 
-2026-10-31 起，本分支 rebase 到 radixark main `c62ea5d8`，并换用上游已有的修复，推到 `apex/qwen38-text-sft-rebase` 复审。旧分支 `apex/qwen38-text-sft`（`712aebd8`，基线 `65feb4a6`）保留只读。门禁通过后，从同一个 SHA 建 `apex/main`（方案待用户确认）。下文「rebase 到 c62ea5d8」一节记录这次的变化；更早各节记录的是 `65feb4a6` 上的集成过程，其中的 SHA 指旧分支。
+2026-10-31 起，本分支 rebase 到 radixark main `c62ea5d8`，并换用上游已有的修复，推到 `apex/qwen38-text-sft-rebase` 复审（候选 1 = `69c8d5c0`；候选 2 在其上追加 10 个 `apex/pr/*`，见「候选 2」一节）。旧分支 `apex/qwen38-text-sft`（`712aebd8`，基线 `65feb4a6`）保留只读。门禁通过后，从同一个 SHA 建 `apex/main`（方案待用户确认）。下文「rebase 到 c62ea5d8」一节记录这次的变化；更早各节记录的是 `65feb4a6` 上的集成过程，其中的 SHA 指旧分支。
 
 ## 基线
 
@@ -64,6 +64,32 @@
 | `a1817ba2` | Junwei Zhou | 重录 helm 快照：只加 9 个视觉插件字段；CI 镜像多出的 3 个 `router_args` 字段不录 | 本地 |
 
 上游 #4530（scheduler）、#3899（`finalize=`）、#4562（`load_auto_bridge`）已在 `c62ea5d8` 里，经新基线获得。逐项去留和理由见各 topic 报告（`INT-rebase-qsa.md`、`INT-rebase-sched-export.md`、`INT-rebase-losscp.md`）。
+
+## 候选 2：合入 10 个 `apex/pr/*`（2026-10-31）
+
+做法按 BRANCH-PR 方案第 5.3.2 节：在候选 1（`69c8d5c0`）上，每个 `apex/pr/<topic>` 先 `cherry-pick -x`，紧跟一个 adapter 提交，删掉候选 1 里同一修复的旧实现，**每个修复只留一份实现**。adapter 提交消息里写 `Adapts`、`Replaces`、`Kept`、`Tests`。各分区的详细记录在 INT 的 `INT-cand2-model.md`、`INT-cand2-qsa.md`、`INT-cand2-export.md`。
+
+| PR 分支 | M | pick | adapter | 说明 |
+|---|---|---|---|---|
+| `apex/pr/converter-skip-layout-version` | M-020 | `e3d587bf` | — | 候选 1 没有对应代码；两个 torch_dist→HF 转换器跳过 `weight_layout_version` 标记 |
+| `apex/pr/ple-sp-input-grad` | M-001 | `05239a03` | `89334834`（无代码改动） | 生产代码与候选 1 相同；测试用 PR 版本，保留 GPU 测试 |
+| `apex/pr/qwen38-reject-cp` | M-017 | `d6907702` | `38d2dc31` | 只留一个模型级 CP 防呆；恢复「与 `--allgather-cp` 无关」的错误文字和 8 例测试矩阵；#4471 通用检查不变 |
+| `apex/pr/qwen38-gdn-tp-avg` | M-002 | `850c05f6` | `85e18e48` | `gdn.py` 与候选 1 相同；TP 副本检查器保留，并在 PR 的 TP2 测试里加 3 个断言 |
+| `apex/pr/skip-unsupervised-step` | M-011、M-012 | `3a00e1b2` | `a451584a`（无代码改动） | PR 里自带的 #2796 移植没有 pick（与候选 1 的 `777aff66` 等价）；`finalize=` 注入和 torch-native 路径不变 |
+| `apex/pr/qwen38-indexer-tiled-scorer` | M-009 | `549c6b93` | `466798d0` | 只留一个分块 scorer：PR 的分块规划和字节预算，输出 block id 给 #4133 的 `build_qsa_block_index`；保留冻结、mRoPE、稳定 tie、monitor 接口。`MILES_QWEN38_INDEXER_TILE_BYTES` 改为在 import 时读一次 |
+| `apex/pr/hf-export-base-dtype` | M-016 | `a9867ea5` | `b8047f19` | `hf_base_dtype.py` 用 PR 版本 |
+| `apex/pr/hf-export-fused-experts` | M-005 | `0ff2969f` | `e5f98684` | `hf_expert_packing.py` 用 PR 版本 |
+| `apex/pr/hf-export-complete` | M-006 | `6c4a6a49` | `2a7a041b` | 补全逻辑用 PR 的「模型注册键组」；`verify_export` 命令行移植到新模块，名字、报告字段、退出码不变；去掉 `MILES_HF_PASSTHROUGH=hardlink` |
+| `apex/pr/ple-provenance` | M-015 | `58fb417f` | `2ccd17e8` | 用 PR 的存档顺序（sidecar 早于 `save_checkpoint`，fsync，所有 rank 一起失败）；保留 `check_export` 和 `MILES_PLE_MANIFEST`；`check_tp_replicas` 仍在 `on_load` 之前 |
+
+另有 `d2a5f35c`：black `-l 119` 格式化 export adapter 新加的行（只有这些行）。
+
+注意：
+
+- 单独检出 pick 提交（不带它的 adapter）可能 import 失败。把每对「pick + adapter」当成一个单元。
+- **M-006 的未训练 MTP 规则待协调者决定。** 候选 2 保持候选 1 的严格规则（Qwen3.8 注册里 `mtp` 组 `only_if_absent=False`），FIX-B-3 的期望键数不变。文本 SFT 的导出里不应出现 `mtp.*` 键，否则会被拒绝。
+- M-015：每次存档多一条无害的 Megatron 告警 `Overwriting old incomplete / corrupted checkpoint...`（`iter_N/` 在 save 之前已有 sidecar）。
+- `test_ple_provenance.py` 的 fixture 比 PR 版本多 4 行（复位 `_run_manifest` 和 `MILES_PLE_MANIFEST`），应回补到 PR 分支。
 
 ## 迁移修复
 
