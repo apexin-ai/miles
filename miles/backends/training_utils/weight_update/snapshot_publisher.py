@@ -64,38 +64,43 @@ class SnapshotPublisher:
         """Collectively write HF model shards into the caller's checkpoint directory."""
         path = Path(path)
         is_writer = dist.get_rank() == 0
+        # per-expert tensors go back into the fused expert layout when the base checkpoint stores it
+        packer = ExpertPacker(hf_checkpoint) if is_writer and Path(hf_checkpoint).is_dir() else None
 
         weight_map: dict[str, str] = {}
         total_size = 0
         shard_index = 0
         write_error = None
-        # base checkpoints that store MoE experts fused get the same fused keys back; tensors
-        # training holds wider than the base (GDN A_log) go back to the base dtype
-        packer = caster = None
+        # tensors that training holds wider than the base checkpoint are written in the base dtype
+        caster = None
         if is_writer and Path(hf_checkpoint).is_dir():
             try:
-                packer = ExpertPacker.for_base(hf_checkpoint)
                 caster = BaseDtypeCaster.from_checkpoint(hf_checkpoint)
             except Exception as exc:
-                # Raised only after every rank drained the iterator: its weight gathers are collective.
+                # Peers must finish the remaining weight gathers before reporting the failure.
                 write_error = exc
         for hf_named_tensors in self._iterator.iter_hf_weights(weights):
             if not is_writer or write_error is not None:
                 continue
+            if packer is not None:
+                try:
+                    hf_named_tensors = packer.pack(hf_named_tensors)
+                except Exception as exc:
+                    # Peers must finish the remaining weight gathers before reporting the failure.
+                    write_error = exc
+                    continue
+                if not hf_named_tensors:
+                    continue  # every tensor of this bucket waits for the rest of its expert layer
+            shard_index += 1
+            shard_name = f"model-{shard_index:05d}.safetensors"
             shard_tensors = {}
+            for name, tensor in hf_named_tensors:
+                if caster is not None:
+                    tensor = caster.cast(name, tensor)
+                shard_tensors[name] = tensor.detach().to("cpu").contiguous()
+                weight_map[name] = shard_name
+                total_size += shard_tensors[name].numel() * shard_tensors[name].element_size()
             try:
-                for name, tensor in hf_named_tensors:
-                    for out_name, out_tensor in packer.feed(name, tensor) if packer else [(name, tensor)]:
-                        if caster is not None:
-                            out_tensor = caster.cast(out_name, out_tensor)
-                        shard_tensors[out_name] = out_tensor.detach().to("cpu").contiguous()
-                if not shard_tensors:
-                    continue  # every tensor of this bucket is buffered for an expert layer
-                shard_index += 1
-                shard_name = f"model-{shard_index:05d}.safetensors"
-                for name, tensor in shard_tensors.items():
-                    weight_map[name] = shard_name
-                    total_size += tensor.numel() * tensor.element_size()
                 safetensors.torch.save_file(shard_tensors, path / shard_name)
             except Exception as exc:
                 # Peers must finish the remaining weight gathers before reporting a write failure.
@@ -103,10 +108,7 @@ class SnapshotPublisher:
             del shard_tensors
 
         if write_error is None and packer is not None:
-            try:
-                packer.finish()
-            except Exception as exc:
-                write_error = exc
+            packer.finish()  # after the last gather, so raising here leaves no peer waiting
         if write_error is not None:
             raise write_error
         if is_writer:
