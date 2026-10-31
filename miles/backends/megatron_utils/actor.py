@@ -36,6 +36,7 @@ from miles.backends.training_utils.model_companion import (
 )
 from miles.backends.training_utils.replay.data import fill_replay_data, register_replay_list_sequential
 from miles.backends.training_utils.types import TrainStepOutput
+from miles.backends.training_utils.weight_update.hf_passthrough import hf_export_passthrough
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
@@ -338,7 +339,10 @@ class MegatronTrainRayActor(TrainRayActor):
                 quantization_config=None if is_lora else quantization_config,
             )
             self.snapshot_publisher = SnapshotPublisher(
-                iterator, build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None
+                iterator,
+                build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None,
+                # fixed from the config the run started with, so a base checkpoint changed later fails the export
+                export_passthrough=hf_export_passthrough(self.hf_config.model_type, args),
             )
 
     def _clear_quantized_weight_workspaces(self) -> None:
