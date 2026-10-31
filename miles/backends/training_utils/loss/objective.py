@@ -127,8 +127,11 @@ def compute_advantages_and_returns(
 
 
 def count_loss_tokens(loss_masks: list[torch.Tensor]) -> torch.Tensor:
-    """The per-token loss normalizer: supervised tokens, with a fully masked sample counting as one."""
-    return sum(torch.clamp_min(loss_mask.sum(), 1) for loss_mask in loss_masks)
+    """The per-token loss normalizer: the supervised-token count; a fully masked sample adds nothing."""
+    # Fully masked samples must contribute neither numerator nor denominator.
+    # Clamping each sample to one silently shrinks per-token gradients as the
+    # masked-sample fraction grows.
+    return sum(loss_mask.sum() for loss_mask in loss_masks)
 
 
 def loss_function(
