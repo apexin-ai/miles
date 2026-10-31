@@ -226,9 +226,12 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         if sp_size > 1:
             sp_rank = get_tensor_model_parallel_rank()
             local_seq = hidden_states.shape[0]
+            # The causal conv reads (kernel - 1) * dilation tokens back, so this rank's loss also
+            # reaches the tail of the previous rank's slice: the backward must reduce-scatter
+            # (SUM) the full-sequence grad, not just keep this rank's slice of it.
             full = gather_from_sequence_parallel_region(
                 hidden_states,
-                tensor_parallel_output_grad=False,
+                tensor_parallel_output_grad=True,
                 group=get_tensor_model_parallel_group(),
             )
             updated = self._apply_ple(full, ngram_ids, cu_seqlens)
