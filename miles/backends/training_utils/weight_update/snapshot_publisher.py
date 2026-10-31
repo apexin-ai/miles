@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
+from miles.backends.training_utils.weight_update.hf_base_dtype import BaseDtypeCaster
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.utils.lora.utils import AdapterSpec, get_adapter_target_modules
 
@@ -67,6 +68,14 @@ class SnapshotPublisher:
         total_size = 0
         shard_index = 0
         write_error = None
+        # tensors that training holds wider than the base checkpoint are written in the base dtype
+        caster = None
+        if is_writer and Path(hf_checkpoint).is_dir():
+            try:
+                caster = BaseDtypeCaster.from_checkpoint(hf_checkpoint)
+            except Exception as exc:
+                # Peers must finish the remaining weight gathers before reporting the failure.
+                write_error = exc
         for hf_named_tensors in self._iterator.iter_hf_weights(weights):
             if not is_writer or write_error is not None:
                 continue
@@ -74,6 +83,8 @@ class SnapshotPublisher:
             shard_name = f"model-{shard_index:05d}.safetensors"
             shard_tensors = {}
             for name, tensor in hf_named_tensors:
+                if caster is not None:
+                    tensor = caster.cast(name, tensor)
                 shard_tensors[name] = tensor.detach().to("cpu").contiguous()
                 weight_map[name] = shard_name
                 total_size += shard_tensors[name].numel() * shard_tensors[name].element_size()
