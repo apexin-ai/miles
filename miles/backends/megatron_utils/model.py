@@ -1006,9 +1006,6 @@ def save(
                 checkpointing_context=checkpointing_context,
                 non_persistent_ckpt=non_persistent_ckpt,
             )
-        if not non_persistent_ckpt:
-            ple_provenance.on_save(args.backend.save, iteration)
-
         if hashes is not None:
             save_model_hashes(args, model, iteration, hashes)
     finally:
@@ -1092,7 +1089,13 @@ def load_model_state(
     )
     explicit_selection = args.backend.ckpt_step is not None or args.backend.exit_on_missing_checkpoint
     with _record_scheduler_restore(opt_param_scheduler) as restore_record:
-        iteration, restored_trained_iteration, adapter_iteration, trained_checkpoint = _load_weights_and_training_state(
+        (
+            iteration,
+            restored_trained_iteration,
+            adapter_iteration,
+            trained_checkpoint,
+            trained_checkpoint_dir,
+        ) = _load_weights_and_training_state(
             args,
             model=model,
             optimizer=optimizer,
@@ -1108,11 +1111,9 @@ def load_model_state(
 
     check_model_hashes(args, model, iteration)
     check_tp_replicas(model, optimizer, where=f"load iteration {iteration}")
-    # the frozen PLE table is re-read from --hf-checkpoint on every start; bind it to this run's checkpoints.
-    # Only a trained checkpoint carries a manifest: a release, an empty --load or --finetune starts a new binding.
-    ple_provenance.on_load(
-        args.hf_checkpoint, load_dir=args.backend.load, iteration=iteration, resumed=trained_checkpoint
-    )
+    # the frozen PLE table is re-read from --hf-checkpoint on every start: verify it is the one the
+    # resumed checkpoint trained with, or bind this run to it
+    ple_provenance.on_load(args.hf_checkpoint, trained_checkpoint_dir=trained_checkpoint_dir)
 
     # A restored scheduler already carries the exact progress of every successful update (dynamic batch
     # sizes and skipped steps included); stepping it again by iteration*GBS doubled the LR progress.
@@ -1195,14 +1196,17 @@ def _load_weights_and_training_state(
     checkpointing_context: dict | None,
     load_ctx,
     explicit_selection: bool,
-) -> tuple[int, bool, int | None, bool]:
-    """(iteration, restored_trained_iteration, adapter_iteration, trained_checkpoint).
+) -> tuple[int, bool, int | None, bool, Path | None]:
+    """(iteration, restored_trained_iteration, adapter_iteration, trained_checkpoint, trained_checkpoint_dir).
 
     trained_checkpoint: the load continued a run that had trained (a Megatron checkpoint that is not a
     release and not read with --finetune, or a LoRA training state), whatever its iteration.
+    trained_checkpoint_dir: the iteration directory of that checkpoint, where its PLE manifest is; None for
+    an in-memory checkpoint and for every load that is not trained_checkpoint (a new PLE binding).
     """
     load_dir = args.backend.load
     trained_checkpoint = False
+    trained_checkpoint_dir = None
     if load_dir is None or explicit_selection or _has_loadable_ckpt(load_dir):
         with load_ctx:
             iteration, restored_trained_iteration = load_checkpoint(
@@ -1214,6 +1218,8 @@ def _load_weights_and_training_state(
                 skip_load_to_model_and_opt=False,
             )
         trained_checkpoint = restored_trained_iteration and not is_release_checkpoint(load_dir, args.backend.ckpt_step)
+        if trained_checkpoint and load_dir is not None and "local_checkpoint_manager" not in (checkpointing_context or {}):
+            trained_checkpoint_dir = ple_provenance.manifest_path(load_dir, iteration).parent
     else:
         if is_first_replica_megatron_main_rank():
             logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
@@ -1229,4 +1235,6 @@ def _load_weights_and_training_state(
             iteration = adapter_iteration
             restored_trained_iteration = True
             trained_checkpoint = True
-    return iteration, restored_trained_iteration, adapter_iteration, trained_checkpoint
+            # a native adapter is saved to <save>/iter_NNNNNNN/adapter, next to the manifest
+            trained_checkpoint_dir = Path(args.lora_adapter_path).resolve().parent
+    return iteration, restored_trained_iteration, adapter_iteration, trained_checkpoint, trained_checkpoint_dir

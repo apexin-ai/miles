@@ -6,6 +6,7 @@ under the same path or another, would silently train a different model.
 
 - A new binding (HF weights, a release checkpoint, an empty ``--load``, ``--finetune``) records a manifest of
   the base: dtype, shape and raw-byte sha256 of each PLE tensor, the config / index sha256 and the HF revision.
+  ``MILES_PLE_MANIFEST=<file>`` makes a new binding verify the base against that manifest first.
 - Every save writes the run's manifest to ``<save>/iter_NNNNNNN/ple_provenance.json`` *before* Megatron's
   ``save_checkpoint`` runs, so neither a sync save (tracker written before it returns) nor an async one
   (tracker written by a later finalize) can publish an iteration without its manifest.
@@ -13,6 +14,7 @@ under the same path or another, would silently train a different model.
   it. PLE bytes, dtype, shape or the config differing is an error; only the path, the index or the revision
   differing is logged. A trained checkpoint without a manifest is an error unless
   ``MILES_PLE_PROVENANCE_ADOPT=1``, which adopts the current base (checkpoints written before this check).
+- A completed HF export must carry the PLE bytes of the run's manifest (``check_export``).
 
 Bases without PLE tensors are not touched: every hook is a no-op for them.
 The hashing is split over all ranks.
@@ -33,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 MANIFEST_NAME = "ple_provenance.json"
 ADOPT_ENV = "MILES_PLE_PROVENANCE_ADOPT"
+MANIFEST_ENV = "MILES_PLE_MANIFEST"
 INDEX = "model.safetensors.index.json"
 PLE_KEY = re.compile(
     r"model\.language_model\.layers\.\d+\.ple\.ple_embedding\."
@@ -179,6 +182,10 @@ def on_load(hf_checkpoint, *, trained_checkpoint_dir) -> dict | None:
                 f"resuming {trained_checkpoint_dir} but {expected_path} is missing, so the PLE table this run "
                 f"trained with is unknown. Set {ADOPT_ENV}=1 only if the base is known to be unchanged."
             )
+    elif os.environ.get(MANIFEST_ENV):
+        # a new binding pinned to a known manifest, e.g. the one recorded in the run's lock file
+        source = os.environ[MANIFEST_ENV]
+        expected = json.loads(Path(source).read_text())
     if source is not None:
         errors, notes = compare(expected, current)
         if errors:
@@ -226,3 +233,14 @@ def before_save(save_dir, iteration: int) -> None:
         error = box[0]
     if error is not None:
         raise PleProvenanceError(f"not saving iteration {iteration}: {error}")
+
+
+def check_export(passthrough_sha256: dict[str, str]) -> None:
+    """The PLE tensors a completed HF export copied from the base must be the ones the run is bound to."""
+    if _run_manifest is None:
+        return
+    differ = sorted(k for k, entry in _run_manifest["ple"].items() if passthrough_sha256.get(k) != entry["sha256"])
+    if differ:
+        raise PleProvenanceError(
+            f"{len(differ)} exported PLE tensors are not the ones this run trained with: {differ[:3]}"
+        )

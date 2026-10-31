@@ -26,6 +26,7 @@ from tests.fast.fixtures.args_fixtures import make_trainer_args
 
 from miles.backends.megatron_utils import checkpoint as checkpoint_module
 from miles.backends.megatron_utils import model as model_module
+from miles.backends.megatron_utils import ple_provenance
 
 # two spawned gloo cases; the rest are file-level and take milliseconds
 register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["megatron"])
@@ -128,7 +129,10 @@ def _fake_megatron_load(args):
 
 @pytest.fixture(autouse=True)
 def _no_gpu_side_effects(monkeypatch):
+    # each test starts like a new trainer process, and leaves no binding to later test modules
+    monkeypatch.setattr(ple_provenance, "_run_manifest", None)
     monkeypatch.delenv("MILES_PLE_PROVENANCE_ADOPT", raising=False)
+    monkeypatch.delenv("MILES_PLE_MANIFEST", raising=False)
     monkeypatch.setattr(model_module, "check_peak_gpu_memory_after_load", lambda *a, **k: None)
     monkeypatch.setattr(model_module, "clear_memory", lambda *a, **k: None)
     monkeypatch.setattr(model_module, "check_model_hashes", lambda *a, **k: None)

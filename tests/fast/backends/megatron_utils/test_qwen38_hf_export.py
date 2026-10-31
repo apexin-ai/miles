@@ -221,7 +221,7 @@ class TestPleProvenanceOfTheExport:
     """The completion copies the PLE table from --hf-checkpoint at export time; it must be the run's table."""
 
     def _bind(self, base: Path) -> None:
-        assert ple_provenance.on_load(str(base), load_dir=None, iteration=0, resumed=False) is not None
+        assert ple_provenance.on_load(str(base), trained_checkpoint_dir=None) is not None
 
     def test_the_unchanged_base_completes(self, tmp_path) -> None:
         base = _qwen38_base(tmp_path / "base")
