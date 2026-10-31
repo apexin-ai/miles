@@ -84,7 +84,7 @@
 
 另有 `afc60779`：black `-l 119` 格式化 export adapter 新加的行（只有这些行）。
 
-候选 2 的第一个提交是 TP8 修复 `0bd5c396`（M-030）：#4133 block index 的 `_fill_kernel` 在每 rank 3 / 1 头（query_tile 21）、K = 512 时报 `misaligned address`；dense query tile 分支改为逐行把 bit OR 进 `[KP]` 向量，不再建二维 tile 再归约。CPU 解释器上旧 / 新 kernel 的列表逐字段相同；GPU 确认见 INT 的 `req/INT-rebase-gpu.md`。
+候选 2 的第一个提交是 TP8 修复 `0bd5c396`（M-030），它改错了地方；真正的修复是之后的 `9ba4f70a`（`rebase/fix-qsa-fill` 的 `421c3653`）。#4133 block index 的 `_fill_kernel` 在 query tile 21 / 32（每 rank 3 / 1 头即 TP8，以及 group 3 / 1）、K = 512 时报 `misaligned address`：`stride_b` = 512 被 Triton 按「能被 16 整除」特化，行加载变成 `ld.global.v4`，之后的 layout 转换用 `ldmatrix`，ptxas 没有发 warp 重同步，partial warp 出错（FIX-A 分析）。修法是 `_fill_kernel`、`_mark_kernel` 加 `do_not_specialize=["stride_b"]`；kernel 体与 #4133 相同。sm_100 交叉编译：LDSM 从 5–6 降到 0。GPU 确认见 INT 的 `req/INT-rebase-gpu.md`「追加 3」。
 
 **有效补丁清单** 在 [patches.md](patches.md)：下一次换上游基线时只按它重放。`apex/main` 的建法和以后的更新用 [promote-apex-main.sh](promote-apex-main.sh)（默认 dry run；断言新 head 的树等于候选的树、祖先关系、远端没有移动；不强推）；它的玩具测试是 [test-promote-apex-main.sh](test-promote-apex-main.sh)。
 
