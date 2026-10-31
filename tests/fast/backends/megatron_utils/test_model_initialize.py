@@ -1,6 +1,6 @@
 import sys
 import types
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
@@ -11,6 +11,12 @@ from tests.fast.fixtures.args_fixtures import make_trainer_args, make_trainer_co
 
 if TYPE_CHECKING:
     from miles.backends.megatron_utils.model import LoadCheckpointOutput
+
+try:
+    # Import the real scheduler before the module fixture below swaps megatron for stubs.
+    from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler as _MegatronScheduler
+except ImportError:
+    _MegatronScheduler = None
 
 
 def _stub_module(name: str, attrs: dict[str, object] | None = None, is_package: bool = False) -> types.ModuleType:
@@ -478,3 +484,150 @@ class TestCheckpointSourceRequirement:
                 )
 
         load.assert_not_called()
+
+
+_GLOBAL_BATCH_SIZE = 256
+_OPTIMIZER_STEPS_PER_ROLLOUT = 2
+
+
+def _megatron_scheduler(*, use_checkpoint_opt_param_scheduler: bool):
+    optimizer = types.SimpleNamespace(param_groups=[{"lr": 0.0, "weight_decay": 0.0, "default_config": True}])
+    return _MegatronScheduler(
+        optimizer,
+        init_lr=0.0,
+        max_lr=1e-6,
+        min_lr=0.0,
+        lr_warmup_steps=10 * _GLOBAL_BATCH_SIZE,
+        lr_decay_steps=400 * _GLOBAL_BATCH_SIZE,
+        lr_decay_style="cosine",
+        start_wd=0.0,
+        end_wd=0.1,
+        wd_incr_steps=400 * _GLOBAL_BATCH_SIZE,
+        wd_incr_style="linear",
+        use_checkpoint_opt_param_scheduler=use_checkpoint_opt_param_scheduler,
+        override_opt_param_scheduler=False,
+    )
+
+
+def _load_model_state_into(
+    scheduler, *, tmp_path: Path, iteration: int, use_checkpoint_opt_param_scheduler: bool, load_checkpoint
+) -> "LoadCheckpointOutput":
+    from miles.backends.megatron_utils.model import load_model_state
+
+    load_dir = tmp_path / "ckpt"
+    load_dir.mkdir(exist_ok=True)
+    (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", side_effect=load_checkpoint))
+        _patch_initialize_side_effects(stack)
+        return load_model_state(
+            make_trainer_args(
+                use_checkpoint_opt_param_scheduler=use_checkpoint_opt_param_scheduler,
+                global_batch_size=_GLOBAL_BATCH_SIZE,
+                finetune=False,
+                lora_rank=0,
+                megatron_to_hf_mode="core",
+                lora_adapter_path=None,
+                load=str(load_dir),
+            ),
+            model=[_FakeModelChunk()],
+            optimizer=None,
+            opt_param_scheduler=scheduler,
+            role="actor",
+            checkpointing_context=None,
+            resume_from_ckpt=True,
+        )
+
+
+def _restoring_load_checkpoint(*, saved_state: dict, iteration: int):
+    """A load that restores the scheduler as Megatron's load_checkpoint does without --no-load-optim."""
+
+    def load_checkpoint(model, optimizer, opt_param_scheduler, **kwargs):
+        opt_param_scheduler.load_state_dict(saved_state)
+        return iteration, True
+
+    return load_checkpoint
+
+
+@pytest.mark.skipif(_MegatronScheduler is None, reason="needs Megatron-LM on PYTHONPATH, as the CPU CI has")
+class TestTheSchedulerAfterALoad:
+    @pytest.mark.parametrize("use_checkpoint_opt_param_scheduler", [False, True])
+    @pytest.mark.parametrize("saved_rollout", [0, 4, 49, 149])
+    def test_a_resume_continues_the_schedule_the_checkpoint_saved(
+        self, tmp_path: Path, saved_rollout: int, use_checkpoint_opt_param_scheduler: bool
+    ):
+        """Megatron's load replays the saved num_steps whatever the flag says, so stepping again would skip ahead."""
+        uninterrupted = _megatron_scheduler(use_checkpoint_opt_param_scheduler=use_checkpoint_opt_param_scheduler)
+        for _ in range((saved_rollout + 1) * _OPTIMIZER_STEPS_PER_ROLLOUT):
+            uninterrupted.step(increment=_GLOBAL_BATCH_SIZE)
+        saved_state = uninterrupted.state_dict()
+
+        resumed = _megatron_scheduler(use_checkpoint_opt_param_scheduler=use_checkpoint_opt_param_scheduler)
+        output = _load_model_state_into(
+            resumed,
+            tmp_path=tmp_path,
+            iteration=saved_rollout,
+            use_checkpoint_opt_param_scheduler=use_checkpoint_opt_param_scheduler,
+            load_checkpoint=_restoring_load_checkpoint(saved_state=saved_state, iteration=saved_rollout),
+        )
+
+        assert output.start_rollout_id == saved_rollout + 1
+        assert resumed.num_steps == uninterrupted.num_steps
+        assert resumed.optimizer.param_groups == uninterrupted.optimizer.param_groups
+
+    def test_a_resume_from_a_checkpoint_saved_before_any_optimizer_step_stays_at_step_zero(self, tmp_path: Path):
+        """fp16 loss scaling can skip every early optimizer step, so a later checkpoint may still hold num_steps 0."""
+        resumed = _megatron_scheduler(use_checkpoint_opt_param_scheduler=False)
+        saved_state = _megatron_scheduler(use_checkpoint_opt_param_scheduler=False).state_dict()
+
+        _load_model_state_into(
+            resumed,
+            tmp_path=tmp_path,
+            iteration=5,
+            use_checkpoint_opt_param_scheduler=False,
+            load_checkpoint=_restoring_load_checkpoint(saved_state=saved_state, iteration=5),
+        )
+
+        assert resumed.num_steps == 0
+
+    def test_a_load_that_did_not_restore_the_scheduler_is_refused(self, tmp_path: Path):
+        """Upstream #3964 rebuilt num_steps = iteration * GBS here. This branch keeps the strict contract
+        (FIX-B-2 D): with --no-load-optim Megatron leaves the scheduler alone, the real LR progress (dynamic
+        batches, skipped updates) is unknown, so the load is refused instead of guessed."""
+        resumed = _megatron_scheduler(use_checkpoint_opt_param_scheduler=False)
+
+        with pytest.raises(RuntimeError, match="no LR scheduler state"):
+            _load_model_state_into(
+                resumed,
+                tmp_path=tmp_path,
+                iteration=99,
+                use_checkpoint_opt_param_scheduler=False,
+                load_checkpoint=lambda *args, **kwargs: (99, True),
+            )
+
+        assert resumed.num_steps == 0
+
+    @pytest.mark.parametrize("load_fails", [False, True])
+    def test_the_scheduler_gets_its_own_load_state_dict_back_after_the_load(self, tmp_path: Path, load_fails: bool):
+        """Nothing of the restore record stays on the scheduler, also when the load raises."""
+        scheduler = _megatron_scheduler(use_checkpoint_opt_param_scheduler=False)
+        restoring_load_checkpoint = _restoring_load_checkpoint(saved_state=scheduler.state_dict(), iteration=0)
+
+        def load_checkpoint(*args, **kwargs):
+            result = restoring_load_checkpoint(*args, **kwargs)
+            if load_fails:
+                raise RuntimeError("the checkpoint read failed")
+            return result
+
+        with pytest.raises(RuntimeError, match="the checkpoint read failed") if load_fails else nullcontext():
+            _load_model_state_into(
+                scheduler,
+                tmp_path=tmp_path,
+                iteration=0,
+                use_checkpoint_opt_param_scheduler=False,
+                load_checkpoint=load_checkpoint,
+            )
+
+        assert "load_state_dict" not in vars(scheduler)
+        assert scheduler.load_state_dict.__func__ is _MegatronScheduler.load_state_dict

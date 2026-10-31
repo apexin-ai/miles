@@ -1086,7 +1086,7 @@ def load_model_state(
         or "local_checkpoint_manager" in (checkpointing_context or {})
     )
     explicit_selection = args.backend.ckpt_step is not None or args.backend.exit_on_missing_checkpoint
-    with _record_scheduler_restore(opt_param_scheduler) as scheduler_restored:
+    with _record_scheduler_restore(opt_param_scheduler) as restore_record:
         iteration, restored_trained_iteration, adapter_iteration, trained_checkpoint = _load_weights_and_training_state(
             args,
             model=model,
@@ -1113,7 +1113,8 @@ def load_model_state(
     # sizes and skipped steps included); stepping it again by iteration*GBS doubled the LR progress.
     # Without a restore there is no record of that progress, so continuing a trained run is refused,
     # rollout 0 included (iteration is the zero-based rollout id of a checkpoint written after training).
-    if opt_param_scheduler is not None and not scheduler_restored:
+    # The single decision point: restore_record says whether a load really called load_state_dict.
+    if opt_param_scheduler is not None and not restore_record.restored:
         if trained_checkpoint or iteration > 0:
             raise RuntimeError(
                 f"Loaded trained iteration {iteration} but no LR scheduler state (--no-load-optim, or the "
@@ -1134,31 +1135,49 @@ def load_model_state(
     return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)
 
 
+@dataclasses.dataclass
+class _SchedulerRestoreRecord:
+    restored: bool = False
+
+
 @contextmanager
 def _record_scheduler_restore(opt_param_scheduler: OptimizerParamScheduler | None):
-    """Yield a list that is non-empty once a checkpoint load restored the scheduler state.
+    """Record whether the checkpoint load inside this context calls opt_param_scheduler.load_state_dict.
 
+    The scope covers everything that can restore the scheduler: the Megatron load and restore_lora_adapter.
     The restore is made absolute: OptimizerParamScheduler.load_state_dict steps by the saved count on top
-    of the current one, so the count is reset first.
+    of the current one, so the count is reset first. A load that raises is not recorded. On exit the
+    scheduler gets back exactly the load_state_dict it had, an instance override included.
     """
-    restored: list[dict] = []
-    original = getattr(
+    record = _SchedulerRestoreRecord()
+    load_state_dict = getattr(
         opt_param_scheduler, "load_state_dict", None
     )  # config-access-exempt: schedulers without load_state_dict cannot be restored by a load
-    if original is None:
-        yield restored
+    if load_state_dict is None:
+        yield record
         return
 
-    def load_state_dict(state_dict: dict) -> None:
-        opt_param_scheduler.num_steps = 0
-        original(state_dict)
-        restored.append(state_dict)
+    own_attributes = vars(opt_param_scheduler)
+    had_own_attribute = "load_state_dict" in own_attributes
+    own_attribute = own_attributes.get("load_state_dict")
+    resolved_from_class = not had_own_attribute and hasattr(type(opt_param_scheduler), "load_state_dict")
 
-    opt_param_scheduler.load_state_dict = load_state_dict
+    def _recording_load_state_dict(state_dict):
+        opt_param_scheduler.num_steps = 0
+        result = load_state_dict(state_dict)
+        record.restored = True
+        return result
+
+    opt_param_scheduler.load_state_dict = _recording_load_state_dict
     try:
-        yield restored
+        yield record
     finally:
-        opt_param_scheduler.load_state_dict = original
+        if resolved_from_class:
+            # the class method shows through again, as before the load
+            del opt_param_scheduler.load_state_dict
+        else:
+            # an instance override (or a mock's attribute) is put back as it was, not deleted
+            opt_param_scheduler.load_state_dict = own_attribute if had_own_attribute else load_state_dict
 
 
 def _load_weights_and_training_state(
