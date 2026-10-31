@@ -4,17 +4,20 @@ The indexer is frozen during SFT while the backbone moves, so its picks can drif
 from where the attention actually looks. Every ``MILES_QWEN38_INDEXER_MONITOR_EVERY``
 calls of a QSA layer, a few query rows are scored densely over their whole document:
 
-- ``recall``: attention mass (mean over the local heads) on the keys the sparse kernel
-  attends, i.e. the indexer blocks plus the query's own partial block;
+- ``recall``: attention mass (mean over the heads) on the keys the sparse kernel attends,
+  i.e. the indexer's whole blocks plus the query's own partial block, which
+  ``build_qsa_block_index`` adds to every query;
 - ``overlap``: share of the indexer's complete blocks that are also among the dense
   teacher's top blocks, where a block's teacher score is the max over its tokens of
   the head-summed attention (the Qwen indexer-distillation target).
 
 Rows are drawn per position bucket, only where the indexer has to choose (more complete
 blocks than its budget), with a seed shared by every rank so TP ranks score the same
-rows. Query heads are split over TP, so each row's per-key attention mass is summed over
-the TP group before the teacher's top blocks are taken: a top-k of each rank's heads
-averaged afterwards is not the teacher over all heads. Each rank appends JSON lines to
+rows. A row's membership comes from its own ``[K]`` block ids, the packed kernel's input;
+no ``[T, blocks]`` bitmap is built for the monitor. Query heads are split over TP, so
+each row's per-key attention mass is summed over the TP group before the teacher's top
+blocks are taken: a top-k of each rank's heads averaged afterwards is not the teacher
+over all heads. Each rank appends JSON lines to
 ``$MILES_QWEN38_INDEXER_MONITOR_DIR/rank<global rank>.jsonl``; ``python -m
 miles_plugins.models.qwen3_8_next.ops.indexer_monitor <dir>`` summarizes them. The
 alarm threshold is a starting point to calibrate, not a proven trigger for training
@@ -52,18 +55,32 @@ class IndexerRecallMonitor:
     def enabled(self) -> bool:
         return self.every > 0 and bool(self.out_dir)
 
-    def maybe_record(self, layer_number: int, query: Tensor, key: Tensor, block_form, scale: float, block_topk: int):
-        """Count one call of ``layer_number``; on every ``every``-th call, measure and append a record."""
+    def maybe_record(
+        self,
+        layer_number: int,
+        query: Tensor,
+        key: Tensor,
+        blocks: Tensor,
+        cu_seqlens: Tensor,
+        ratio: int,
+        scale: float,
+        block_topk: int,
+    ):
+        """Count one call of ``layer_number``; on every ``every``-th call, measure and append a record.
+
+        ``blocks`` / ``cu_seqlens`` are what the packed kernel's index is built from
+        (``qsa_selected_blocks``): per query its selected whole-block ids, ``-1`` unused.
+        """
         call = self._calls[layer_number]
         self._calls[layer_number] = call + 1
         if call % self.every:
             return None
-        sel_bitmap, lo, hi, blk_base, _, _, _, ratio = block_form
+        lo, hi, blk_base = row_geometry(cu_seqlens, query.shape[0], ratio)
         rows = sample_rows(lo, hi, ratio, block_topk, self.rows, seed=layer_number * 1_000_003 + call)
         if rows.numel() == 0:
             return None
         stats = measure_rows(
-            query, key, sel_bitmap, lo, hi, blk_base, ratio, scale, block_topk, rows, tp_group=_tp_group()
+            query, key, blocks, lo, hi, blk_base, ratio, scale, block_topk, rows, tp_group=_tp_group()
         )
         record = {"layer": layer_number, "call": call, **_ranks(), **summarize_rows(stats)}
         path = Path(self.out_dir) / f"rank{record['rank']}.jsonl"
@@ -89,6 +106,26 @@ def _ranks() -> dict:
     return {"rank": torch.distributed.get_rank(), "tp_rank": get_tensor_model_parallel_rank()}
 
 
+def row_geometry(cu_seqlens: Tensor, n_rows: int, ratio: int) -> tuple[Tensor, Tensor, Tensor]:
+    """Per row ``(lo, hi, blk_base)``: its document's first token, itself, its document's first block id.
+
+    Blocks are numbered over the batch as ``PackedBlockLayout`` and ``build_qsa_block_index`` do,
+    each document cut from its own first token. A row at or past ``cu_seqlens[-1]`` gets
+    ``lo = hi`` (position 0), so it is never sampled. ``O(T)``; no ``[T, blocks]`` tensor.
+    """
+    cu = cu_seqlens.long()
+    device = cu.device
+    rows = torch.arange(n_rows, device=device)
+    n_seqs = cu.numel() - 1
+    seq = torch.searchsorted(cu[1:].contiguous(), rows, right=True)
+    inside = seq < n_seqs
+    seq = seq.clamp_max(max(n_seqs - 1, 0))
+    first_block = torch.cat([cu.new_zeros(1), (-(-(cu[1:] - cu[:-1]) // ratio)).cumsum(0)])
+    lo = torch.where(inside, cu[seq], rows)
+    blk_base = torch.where(inside, first_block[seq], 0)
+    return lo, rows, blk_base
+
+
 def sample_rows(lo: Tensor, hi: Tensor, ratio: int, block_topk: int, n: int, seed: int) -> Tensor:
     """Up to ``n`` query rows, split evenly over the position buckets that have candidates."""
     positions = (hi - lo).long()
@@ -109,7 +146,7 @@ def sample_rows(lo: Tensor, hi: Tensor, ratio: int, block_topk: int, n: int, see
 def measure_rows(
     query: Tensor,
     key: Tensor,
-    sel_bitmap: Tensor,
+    blocks: Tensor,
     lo: Tensor,
     hi: Tensor,
     blk_base: Tensor,
@@ -120,7 +157,11 @@ def measure_rows(
     tp_group=None,
 ) -> list[dict]:
     """Per row: position, recall and teacher overlap. ``query`` [T, Hq, D], ``key`` [T, Hkv, D],
-    ``sel_bitmap`` the packed block bits the kernel reads.
+    ``blocks`` [T, K] the selected block ids the kernel's index is built from.
+
+    The kernel attends a row's ids that are whole blocks of its own document before it, and
+    ignores any other id; it always attends the causal tail of the row's own block. Only the
+    sampled rows' ids are read.
 
     With ``tp_group``, ``query`` holds this rank's heads only; per-key mass is summed over the
     group (one all-reduce per row, same rows on every rank), so both metrics cover all heads.
@@ -135,17 +176,21 @@ def measure_rows(
         q = query[row].float().view(hkv, group, -1)
         k = key[start:end].float()
         probs = torch.softmax(torch.einsum("hgd,lhd->hgl", q, k) * scale, dim=-1).reshape(hq, n_keys)
-        key_block = int(blk_base[row]) + torch.arange(n_keys, device=query.device) // ratio
-        chosen = ((sel_bitmap[row, key_block >> 3] >> (key_block & 7).to(torch.uint8)) & 1) != 0
+        complete = n_keys // ratio
+        base = int(blk_base[row])
+        ids = blocks[row].to(device=query.device, dtype=torch.long)
+        ids = ids[(ids >= base) & (ids < base + complete)] - base
+        picked = torch.zeros(complete, dtype=torch.bool, device=query.device)
+        picked[ids] = True
+        tail = torch.ones(n_keys - complete * ratio, dtype=torch.bool, device=query.device)
+        chosen = torch.cat([picked.repeat_interleave(ratio), tail])
         head_mass = probs.sum(dim=0)
         if tp_group is not None:
             torch.distributed.all_reduce(head_mass, group=tp_group)
         recall = (head_mass * chosen).sum() / total_heads
 
-        complete = n_keys // ratio
         mass = head_mass[: complete * ratio].view(complete, ratio).amax(dim=-1)
         teacher = torch.topk(mass, min(block_topk, complete)).indices
-        picked = chosen[: complete * ratio].view(complete, ratio)[:, 0]
         overlap = picked[teacher].float().sum() / max(1, int(picked.sum()))
         out.append({"pos": n_keys - 1, "recall": float(recall), "overlap": float(overlap)})
     return out
