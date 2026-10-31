@@ -110,7 +110,7 @@ class TestQwenVisionProvider:
         assert args.model_dump() == original
         assert len(base_model) == 1 and len(seen) == 1
         assert isinstance(seen[0], ImmutableNamespace)
-        assert wired == [dict(scope="projector", recompute=True, freeze_language=False)]
+        assert wired == [dict(scope="projector", recompute=True, freeze_language=False, data="image")]
         assert len(model._forward_pre_hooks) == 0  # no PLE embedding in the stub model
 
     def test_provider_no_longer_reads_megatron_global_args(self, monkeypatch, tmp_path, base_model) -> None:

@@ -57,6 +57,17 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
     """Qwen3.8-Flash-Next's opt-in native image SFT controls."""
 
     qwen38_vision_trainable: A[str, Arg(choices=["none", "projector", "full"])] = "full"
+    qwen38_vision_data: A[
+        str,
+        Arg(
+            choices=["image", "text", "mixed"],
+            help=(
+                "What the training data holds. image: every sample has images. text: no sample has images; the "
+                "vision tower is held but frozen (--qwen38-vision-trainable none) and never run. mixed: each sample "
+                "may have images or not; text samples skip the vision tower."
+            ),
+        ),
+    ] = "image"
     qwen38_freeze_language: A[bool, Arg()] = False
     qwen38_vision_recompute: A[bool, Arg()] = False
     qwen38_sft_final_answer_format: A[str, Arg(choices=["dataset", "integer-only"])] = "dataset"

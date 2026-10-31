@@ -7,7 +7,15 @@ import torch
 from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel
 
-from miles_plugins.models.qwen3_8_next.vision_inputs import image_rope_positions, scatter_image_embeddings
+from miles_plugins.models.qwen3_8_next.vision_inputs import (
+    image_rope_positions,
+    scatter_image_embeddings,
+    text_rope_positions,
+)
+
+# What the training data holds: "image" = every microbatch has images; "text" = none does (the tower is held but
+# frozen and never run); "mixed" = each single-sample microbatch is either.
+VISION_DATA_MODES = ("image", "text", "mixed")
 
 
 def set_visual_scope(visual, scope, *, sequence_parallel=False):
@@ -18,7 +26,12 @@ def set_visual_scope(visual, scope, *, sequence_parallel=False):
         parameter.sequence_parallel = sequence_parallel
 
 
-def wire_visual(model, hf_config, *, scope, recompute, freeze_language):
+def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="image"):
+    if data not in VISION_DATA_MODES:
+        raise ValueError(f"Unknown Qwen vision data mode: {data}")
+    if data == "text" and scope != "none":
+        # A tower that is never run but still in the optimizer gets zero grads, and AdamW weight decay shrinks it.
+        raise ValueError("Text-only data needs a frozen vision tower: run with --qwen38-vision-trainable none")
     if freeze_language:
         if scope == "none":
             raise ValueError("Freezing language and vision would leave no trainable parameters")
@@ -46,10 +59,17 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language):
         ids = kwargs.get("input_ids", args[0] if args else None)
         if ids is None or ids.ndim != 2 or ids.shape[0] != 1:
             raise ValueError("Qwen image SFT requires a single packed input sequence per microbatch")
-        if pixel_values is None or image_grid_thw is None or qwen38_position_ids is None:
-            raise ValueError("Qwen image SFT requires genuine image patches, grids and mRoPE positions")
         if kwargs.get("decoder_input") is not None or kwargs.get("position_ids") is not None:
             raise ValueError("Qwen image SFT owns image injection and native mRoPE positions")
+        image_inputs = (pixel_values, image_grid_thw, qwen38_position_ids)
+        if all(value is None for value in image_inputs) and data != "image":
+            # A text microbatch: the vision tower does not run, and the language model sees text RoPE positions.
+            kwargs["position_ids"] = text_rope_positions(ids.shape[1], device=ids.device).T.unsqueeze(1).contiguous()
+            return original_forward(*args, **kwargs)
+        if any(value is None for value in image_inputs):
+            raise ValueError("Qwen image SFT requires genuine image patches, grids and mRoPE positions")
+        if data == "text":
+            raise ValueError("Image inputs reached a model configured with --qwen38-vision-data text")
         length = qwen38_position_ids.shape[0]
         if qwen38_position_ids.shape != (length, 3) or length > ids.shape[1]:
             raise ValueError("Qwen mRoPE positions do not match the input sequence")
@@ -114,6 +134,7 @@ def get_qwen38_vision_model_provider(pre_process=True, post_process=True, vp_sta
         scope=args.qwen38_vision_trainable,
         recompute=args.qwen38_vision_recompute,
         freeze_language=args.qwen38_freeze_language,
+        data=args.qwen38_vision_data,
     )
     _install_ple_context_hooks(model)
     return model

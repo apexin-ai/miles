@@ -98,6 +98,13 @@ def image_rope_positions(token_ids, grids, *, image_token_id, vision_start_token
     return positions
 
 
+def text_rope_positions(length, *, device=None):
+    """Positions of a sequence without images: every mRoPE axis carries the token index, as text RoPE does."""
+    if length < 1:
+        raise ValueError("A text sequence needs at least one token")
+    return torch.arange(length, device=device)[:, None].expand(-1, 3)
+
+
 def scatter_image_embeddings(decoder_input, token_positions, image_embeddings, *, tp_rank=0, sequence_parallel=False):
     """Replace only image tokens, retaining gradients on every visual TP replica."""
     if decoder_input.ndim != 3 or decoder_input.shape[1] != 1:
