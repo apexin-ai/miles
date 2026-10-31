@@ -82,12 +82,16 @@
 | `apex/pr/hf-export-complete` | M-006 | `6c4a6a49` | `2a7a041b` | 补全逻辑用 PR 的「模型注册键组」；`verify_export` 命令行移植到新模块，名字、报告字段、退出码不变；去掉 `MILES_HF_PASSTHROUGH=hardlink` |
 | `apex/pr/ple-provenance` | M-015 | `58fb417f` | `2ccd17e8` | 用 PR 的存档顺序（sidecar 早于 `save_checkpoint`，fsync，所有 rank 一起失败）；保留 `check_export` 和 `MILES_PLE_MANIFEST`；`check_tp_replicas` 仍在 `on_load` 之前 |
 
-另有 `d2a5f35c`：black `-l 119` 格式化 export adapter 新加的行（只有这些行）。
+另有 `afc60779`：black `-l 119` 格式化 export adapter 新加的行（只有这些行）。
+
+候选 2 的第一个提交是 TP8 修复 `0bd5c396`（M-030）：#4133 block index 的 `_fill_kernel` 在每 rank 3 / 1 头（query_tile 21）、K = 512 时报 `misaligned address`；dense query tile 分支改为逐行把 bit OR 进 `[KP]` 向量，不再建二维 tile 再归约。CPU 解释器上旧 / 新 kernel 的列表逐字段相同；GPU 确认见 INT 的 `req/INT-rebase-gpu.md`。
+
+**有效补丁清单** 在 [patches.md](patches.md)：下一次换上游基线时只按它重放。`apex/main` 的建法和以后的更新用 [promote-apex-main.sh](promote-apex-main.sh)（默认 dry run；断言新 head 的树等于候选的树、祖先关系、远端没有移动；不强推）；它的玩具测试是 [test-promote-apex-main.sh](test-promote-apex-main.sh)。
 
 注意：
 
 - 单独检出 pick 提交（不带它的 adapter）可能 import 失败。把每对「pick + adapter」当成一个单元。
-- **M-006 的未训练 MTP 规则待协调者决定。** 候选 2 保持候选 1 的严格规则（Qwen3.8 注册里 `mtp` 组 `only_if_absent=False`），FIX-B-3 的期望键数不变。文本 SFT 的导出里不应出现 `mtp.*` 键，否则会被拒绝。
+- **M-006 的未训练 MTP 规则：严格（协调者 2026-10-31 14:49 UTC 定）。** Qwen3.8 注册里 `mtp` 组 `only_if_absent=False`：本版不训 MTP，导出里出现 `mtp.*` 就拒绝，MTP 一律从 base 取。原因：未训练的 mtp 张量可能是没有加载的随机初始化，放行有风险。以后做 MTP 联训时再改成按配置放开。FIX-B-3 的期望键数不变。
 - M-015：每次存档多一条无害的 Megatron 告警 `Overwriting old incomplete / corrupted checkpoint...`（`iter_N/` 在 save 之前已有 sidecar）。
 - `test_ple_provenance.py` 的 fixture 比 PR 版本多 4 行（复位 `_run_manifest` 和 `MILES_PLE_MANIFEST`），应回补到 PR 分支。
 
