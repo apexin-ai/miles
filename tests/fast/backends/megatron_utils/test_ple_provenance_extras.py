@@ -58,7 +58,9 @@ class TestPinnedManifest:
         assert "verified" in caplog.text
 
         _replace_base(base)
-        with pytest.raises(ple_provenance.PleProvenanceError, match=r"does not match .*pinned\.json.*1 PLE tensors differ"):
+        with pytest.raises(
+            ple_provenance.PleProvenanceError, match=r"does not match .*pinned\.json.*1 PLE tensors differ"
+        ):
             _load(monkeypatch, _args(base, tmp_path / "empty", tmp_path / "ckpt"))
 
     def test_a_resume_checks_the_checkpoints_own_manifest_not_the_pinned_one(self, tmp_path, monkeypatch) -> None:
@@ -118,9 +120,13 @@ class TestManifestDirectory:
         monkeypatch.setattr(model_module, "restore_lora_adapter", lambda *a, **k: 4)
 
         def load():
-            return _load(monkeypatch, _args(base, tmp_path / "empty2", tmp_path / "ckpt2", lora_adapter_path=str(adapter)))
+            return _load(
+                monkeypatch, _args(base, tmp_path / "empty2", tmp_path / "ckpt2", lora_adapter_path=str(adapter))
+            )
 
         assert load().loaded_rollout_id == 4
         _replace_base(base)
-        with pytest.raises(ple_provenance.PleProvenanceError, match=r"iter_0000004/ple_provenance\.json.*1 PLE tensors differ"):
+        with pytest.raises(
+            ple_provenance.PleProvenanceError, match=r"iter_0000004/ple_provenance\.json.*1 PLE tensors differ"
+        ):
             load()

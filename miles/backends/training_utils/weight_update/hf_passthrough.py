@@ -369,10 +369,14 @@ def main(argv=None) -> int:
     import miles.backends.megatron_utils.megatron_to_hf  # noqa: F401  (registers each model's passthrough)
     from miles.backends.training_utils.weight_update import hf_passthrough
 
-    parser = argparse.ArgumentParser(description="Key-by-key check of a completed HF export against its base checkpoint")
+    parser = argparse.ArgumentParser(
+        description="Key-by-key check of a completed HF export against its base checkpoint"
+    )
     parser.add_argument("export")
     parser.add_argument("base")
-    parser.add_argument("--expect-unchanged", action="append", default=[], help="regex of keys that must equal the base")
+    parser.add_argument(
+        "--expect-unchanged", action="append", default=[], help="regex of keys that must equal the base"
+    )
     args = parser.parse_args(argv)
     try:
         report = hf_passthrough.verify_export(args.export, args.base, expect_unchanged=args.expect_unchanged)

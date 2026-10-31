@@ -62,7 +62,10 @@ def _megatron_experts() -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
     """linear_fc1 [2I, H] (gate rows, then up rows) and linear_fc2 [H, I] of each expert, distinct values."""
     gen = torch.Generator().manual_seed(0)
     return {
-        e: (torch.randn(2 * INTER, HIDDEN, generator=gen).bfloat16(), torch.randn(HIDDEN, INTER, generator=gen).bfloat16())
+        e: (
+            torch.randn(2 * INTER, HIDDEN, generator=gen).bfloat16(),
+            torch.randn(HIDDEN, INTER, generator=gen).bfloat16(),
+        )
         for e in range(NUM_EXPERTS)
     }
 
@@ -90,7 +93,9 @@ def _write_base(directory: Path, extra: dict[str, torch.Tensor] | None = None) -
     tensors = {A_LOG: torch.zeros(48, dtype=torch.bfloat16), EMBED: torch.zeros(2, dtype=torch.bfloat16)}
     tensors |= extra or {}
     save_file(tensors, str(directory / "model-00001.safetensors"))
-    (directory / INDEX).write_text(json.dumps({"metadata": {}, "weight_map": dict.fromkeys(tensors, "model-00001.safetensors")}))
+    (directory / INDEX).write_text(
+        json.dumps({"metadata": {}, "weight_map": dict.fromkeys(tensors, "model-00001.safetensors")})
+    )
     (directory / "config.json").write_text(json.dumps({"model_type": "qwen4_exp"}))
     return directory
 
@@ -185,11 +190,17 @@ class TestQwen38Passthrough:
         """FIX-B-3 counts: passthrough = PLE + MTP + vision, exported = the rest."""
         base = _qwen38_base(tmp_path / "base")
         args, target = _args(base), tmp_path / "export"
-        hf_export.save_hf_model(args, 0, [], publisher=_publisher(args, [_trained()]), path=target, raise_on_error=True)
+        hf_export.save_hf_model(
+            args, 0, [], publisher=_publisher(args, [_trained()]), path=target, raise_on_error=True
+        )
 
         receipt = json.loads((target / hf_passthrough.RECEIPT).read_text())
         assert receipt["passthrough_groups"] == ["mtp", "ple_table", "visual"]
-        assert (receipt["exported_keys"], receipt["passthrough_keys"], receipt["total_keys"]) == (2, 2 + len(MTP) + 1, 5 + len(MTP))
+        assert (receipt["exported_keys"], receipt["passthrough_keys"], receipt["total_keys"]) == (
+            2,
+            2 + len(MTP) + 1,
+            5 + len(MTP),
+        )
         exported = _read(target)
         for key in (PLE_SHARD, PLE_MULTIPLIERS, *MTP, VISUAL):
             assert torch.equal(exported[key], _base_tensor(key)), key
@@ -211,7 +222,10 @@ class TestQwen38Passthrough:
         hf_export.save_hf_model(
             args, 0, [], publisher=_publisher(args, [_trained(*MTP)]), path=target, raise_on_error=True
         )
-        assert json.loads((target / hf_passthrough.RECEIPT).read_text())["passthrough_groups"] == ["ple_table", "visual"]
+        assert json.loads((target / hf_passthrough.RECEIPT).read_text())["passthrough_groups"] == [
+            "ple_table",
+            "visual",
+        ]
         exported = _read(target)
         for key in MTP:
             assert torch.equal(exported[key], _base_tensor(key) + 1), key
@@ -227,7 +241,9 @@ class TestPleProvenanceOfTheExport:
         base = _qwen38_base(tmp_path / "base")
         self._bind(base)
         args, target = _args(base), tmp_path / "export"
-        hf_export.save_hf_model(args, 0, [], publisher=_publisher(args, [_trained()]), path=target, raise_on_error=True)
+        hf_export.save_hf_model(
+            args, 0, [], publisher=_publisher(args, [_trained()]), path=target, raise_on_error=True
+        )
         assert (target / HF_EXPORT_COMPLETE_MARKER).exists()
 
     def test_a_ple_table_replaced_after_the_run_started_fails_the_export(self, tmp_path) -> None:

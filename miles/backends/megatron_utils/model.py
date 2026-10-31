@@ -1218,7 +1218,11 @@ def _load_weights_and_training_state(
                 skip_load_to_model_and_opt=False,
             )
         trained_checkpoint = restored_trained_iteration and not is_release_checkpoint(load_dir, args.backend.ckpt_step)
-        if trained_checkpoint and load_dir is not None and "local_checkpoint_manager" not in (checkpointing_context or {}):
+        if (
+            trained_checkpoint
+            and load_dir is not None
+            and "local_checkpoint_manager" not in (checkpointing_context or {})
+        ):
             trained_checkpoint_dir = ple_provenance.manifest_path(load_dir, iteration).parent
     else:
         if is_first_replica_megatron_main_rank():

@@ -37,7 +37,10 @@ BASE_LAYOUT = {
         "model.visual.blocks.0.attn.qkv.weight",
         "model.visual.merger.linear.weight",
     ],
-    "model-00002-of-00004.safetensors": [f"{PLE}.ngram_embedding.shard_0.weight", f"{PLE}.ngram_embedding.shard_1.weight"],
+    "model-00002-of-00004.safetensors": [
+        f"{PLE}.ngram_embedding.shard_0.weight",
+        f"{PLE}.ngram_embedding.shard_1.weight",
+    ],
     "model-00003-of-00004.safetensors": [
         f"{LM}.layers.1.ple.key_proj.weight",
         f"{PLE}.layer_multipliers",
@@ -46,7 +49,11 @@ BASE_LAYOUT = {
         "mtp.fc_hidden.weight",
         "mtp.layers.0.mlp.experts.down_proj",
     ],
-    "model-00004-of-00004.safetensors": [f"{LM}.layers.0.linear_attn.out_proj.weight", f"{LM}.norm.weight", "lm_head.weight"],
+    "model-00004-of-00004.safetensors": [
+        f"{LM}.layers.0.linear_attn.out_proj.weight",
+        f"{LM}.norm.weight",
+        "lm_head.weight",
+    ],
 }
 ALL = [k for keys in BASE_LAYOUT.values() for k in keys]
 TRAINED = [k for k in ALL if not (k.startswith(("model.visual.", "mtp.")) or ".ple_embedding." in k)]
