@@ -401,3 +401,18 @@ def test_an_optimizer_without_new_parameters_keeps_megatrons_own_load():
     assert not sw.translate
     with pytest.raises(AssertionError, match="original request"):
         opt.sharded_param_state_dp_reshardable(None, True, None)
+
+
+def test_only_groups_whose_local_members_are_all_new_may_be_missing_from_the_checkpoint():
+    """CX1b P2: a missing group that also holds old (language / merger) parameters must be refused."""
+    old_a, old_b, vit_a, vit_b = (torch.nn.Parameter(torch.zeros(2)) for _ in range(4))
+    index_map = {old_a: (0, 0), vit_a: (0, 1), old_b: (1, 0), vit_b: (2, 0)}
+    new = {vit_a: "vision_model.blocks.0.a", vit_b: "vision_model.blocks.0.b"}
+    assert switch.groups_holding_only_new(index_map, new) == {2}
+    running = [_group(1.0, 1.0), _group(0.0, 1.0), _group(1.0, 0.2)]
+    # the mixed group 0 (old_a + vit_a) is missing: refused, although it holds a new parameter
+    with pytest.raises(ValueError, match="holds old parameters"):
+        switch.add_missing_param_groups([_group(0.0, 1.0, 7)], running, switch.groups_holding_only_new(index_map, new))
+    # only the all-new ViT group 2 is missing: added
+    saved = [_group(1.0, 1.0, 7), _group(0.0, 1.0, 7)]
+    assert switch.add_missing_param_groups(saved, running, switch.groups_holding_only_new(index_map, new)) == [2]
