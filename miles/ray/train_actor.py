@@ -285,6 +285,10 @@ class TrainRayActor(NodeProbeMixin):
         clear_memory()
         print_memory("after TrainRayActor.clear_memory")
 
+    def log_memory(self) -> None:
+        """clear_memory's step-end memory line, for a step that keeps its cache (--no-clear-memory-every-step)."""
+        print_memory("after train step, cache kept")
+
     @abc.abstractmethod
     def sleep(self) -> None:
         raise NotImplementedError
