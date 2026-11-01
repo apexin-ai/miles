@@ -61,6 +61,36 @@ def apply_indexer_rope(x: Tensor, rotary_pos_emb: Tensor, positions: Tensor) -> 
     return torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin, x[..., 2 * half :]], dim=-1)
 
 
+def indexer_rope_table(rotary_pos_emb: Tensor, config) -> Tensor:
+    """The ``[T, 1, 1, rotary_dim]`` table ``apply_indexer_rope`` reads, from what the attention layer received.
+
+    With rope fusion MCore hands mRoPE layers the raw per-axis frequencies ``[3, 1, T, rotary_dim / 2]`` for its
+    fused kernel; the indexer needs them materialized, with MCore's own conversion (same T / H / W layout). Raw
+    freqs are told apart by their last dim, sum(mrope_section) = rotary_dim / 2 (a table of 3 tokens is
+    ``[3, 1, 1, rotary_dim]``). Anything else must already be a table.
+    """
+    mrope_section = getattr(config, "mrope_section", None)  # config-access-exempt: only mRoPE configs set it
+    table = rotary_pos_emb
+    if (
+        mrope_section is not None
+        and rotary_pos_emb.dim() == 4
+        and rotary_pos_emb.shape[0] == 3
+        and rotary_pos_emb.shape[1] == 1
+        and rotary_pos_emb.shape[-1] == sum(mrope_section)
+    ):
+        from megatron.core.fusions.fused_mrope import mrope_freqs_to_rotary_emb
+
+        table = mrope_freqs_to_rotary_emb(
+            rotary_pos_emb,
+            list(mrope_section),
+            interleaved_mrope=bool(getattr(config, "mrope_interleaved", False)),  # config-access-exempt: mRoPE only
+            rotary_interleaved=bool(getattr(config, "rotary_interleaved", False)),  # config-access-exempt: optional
+        )
+    if table.dim() != 4 or tuple(table.shape[1:3]) != (1, 1):
+        raise ValueError(f"The QSA indexer needs a [T, 1, 1, rotary_dim] RoPE table, got {tuple(table.shape)}")
+    return table
+
+
 def block_causal_mask(query_positions: Tensor, num_blocks: int, compress_ratio: int) -> Tensor:
     """``[T, num_blocks]`` bool: which compressed blocks a query may attend to."""
     blocks = torch.arange(num_blocks, device=query_positions.device)

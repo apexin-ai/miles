@@ -159,8 +159,9 @@ def get_qwen38_vision_model_provider(pre_process=True, post_process=True, vp_sta
         raise ValueError("Qwen image SFT requires sequence parallelism at TP>1")
     if args.use_rollout_routing_replay or args.enable_mtp_training or args.virtual_pipeline_model_parallel_size:
         raise ValueError("Qwen image SFT does not support routing replay, MTP or interleaved pipelines")
-    if args.position_embedding_type != "mrope" or args.apply_rope_fusion:
-        raise ValueError("Qwen image SFT needs materialized mRoPE (not text RoPE or fused raw frequencies)")
+    if args.position_embedding_type != "mrope":
+        # rope fusion is fine: attention takes MCore's raw mRoPE freqs, the QSA indexer a materialized table
+        raise ValueError("Qwen image SFT needs mRoPE positions (--position-embedding-type mrope)")
     config = json.loads((Path(args.hf_checkpoint) / "config.json").read_text())
     if config.get("model_type") != "qwen4_exp" or config.get("language_model_only"):
         raise ValueError("Expected a complete native Qwen3.8-Flash-Next model")

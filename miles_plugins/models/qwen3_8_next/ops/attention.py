@@ -14,7 +14,7 @@ from torch import Tensor
 
 from miles.kernels.attention.qsa import build_qsa_block_index, qsa_block_attention, qsa_sparse_attention
 from miles_plugins.models.qwen3_8_next.ops.indexer_monitor import get_monitor
-from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import Qwen38NextQSAIndexer
+from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import Qwen38NextQSAIndexer, indexer_rope_table
 
 
 class Qwen38NextQSACoreAttention(MegatronModule):
@@ -143,6 +143,8 @@ class Qwen38NextAttention(SelfAttention):
         rotary_pos_emb = kwargs.get("rotary_pos_emb")
         if rotary_pos_emb is None:
             raise RuntimeError("the QSA indexer reuses the attention RoPE, but no rotary_pos_emb was passed")
+        # the attention layer keeps raw mRoPE freqs (fused kernel); the indexer reads the materialized table
+        rotary_pos_emb = indexer_rope_table(rotary_pos_emb, self.config)
         materialized_rope = getattr(
             self.config, "qwen3_8_next_materialized_rope", False
         )  # config-access-exempt: set only by the Qwen3.8 spec, absent on generic test configs

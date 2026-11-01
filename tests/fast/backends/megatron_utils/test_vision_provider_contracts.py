@@ -133,6 +133,25 @@ class TestQwenVisionProvider:
             model_provider.get_model_provider_func(args)(pre_process=True, post_process=True)
         assert base_model == []
 
+    def test_rope_fusion_is_allowed_with_mrope(self, monkeypatch, tmp_path, base_model) -> None:
+        """Packed rows and fused raw mRoPE freqs are supported (the QSA indexer converts them to its table)."""
+        from miles_plugins.models.qwen3_8_next import vision
+
+        monkeypatch.setattr(vision, "wire_visual", lambda *a, **k: None)
+        args = self._args(tmp_path, apply_rope_fusion=True, micro_batch_size=2, use_dynamic_batch_size=True)
+        model_provider.get_model_provider_func(args)(pre_process=True, post_process=True)
+        assert len(base_model) == 1
+
+    def test_text_rope_is_still_refused(self, monkeypatch, tmp_path, base_model) -> None:
+        from miles_plugins.models.qwen3_8_next import vision
+
+        monkeypatch.setattr(vision, "wire_visual", lambda *a, **k: None)
+        with pytest.raises(ValueError, match="needs mRoPE positions"):
+            model_provider.get_model_provider_func(self._args(tmp_path, position_embedding_type="rope"))(
+                pre_process=True, post_process=True
+            )
+        assert base_model == []
+
 
 class TestDeepSeekVisionProvider:
     PROVIDER = "miles_plugins.models.deepseek_v4_1.multimodal.deepseek_v41_vlm_model_provider"
