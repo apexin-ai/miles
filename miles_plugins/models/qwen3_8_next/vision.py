@@ -76,7 +76,11 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         model.add_module("vision_model", visual)
     original_forward = model.forward
 
-    def forward(*args, pixel_values=None, image_grid_thw=None, qwen38_position_ids=None, **kwargs):
+    def prepare(args, kwargs, pixel_values, image_grid_thw, qwen38_position_ids):
+        """Native mRoPE positions and, for an image microbatch, the decoder input with the image embeddings.
+
+        Returns ``(kwargs, has_images)``; ``kwargs`` gains ``position_ids`` and, with images, ``decoder_input``.
+        """
         ids = kwargs.get("input_ids", args[0] if args else None)
         if ids is None or ids.ndim != 2 or ids.shape[0] != 1:
             raise ValueError("Qwen image SFT requires a single packed input sequence per microbatch")
@@ -106,16 +110,7 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
             merge_size=hf_config["vision_config"]["spatial_merge_size"],
         )
         kwargs["position_ids"] = positions.T.unsqueeze(1).contiguous()
-        if not has_images:
-            # A text microbatch: the vision tower does not run.
-            output = original_forward(*args, **kwargs)
-            trainable = [p for p in model.vision_model.parameters() if p.requires_grad] if model.pre_process else []
-            if trainable and torch.is_grad_enabled():
-                if not isinstance(output, torch.Tensor):
-                    raise TypeError("A text microbatch with a trainable vision tower needs a tensor model output")
-                output = _ZeroGradsFor.apply(output, *trainable)
-            return output
-        if model.pre_process:
+        if has_images and model.pre_process:
             from megatron.core import parallel_state
 
             decoder = model.embedding(input_ids=ids, position_ids=None)
@@ -134,9 +129,47 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
                 tp_rank=parallel_state.get_tensor_model_parallel_rank(),
                 sequence_parallel=model.config.sequence_parallel,
             )
+        return kwargs, has_images
+
+    def trainable_tower():
+        return [p for p in model.vision_model.parameters() if p.requires_grad] if model.pre_process else []
+
+    def forward(*args, pixel_values=None, image_grid_thw=None, qwen38_position_ids=None, **kwargs):
+        kwargs, has_images = prepare(args, kwargs, pixel_values, image_grid_thw, qwen38_position_ids)
+        if not has_images:
+            # A text microbatch: the vision tower does not run.
+            output = original_forward(*args, **kwargs)
+            trainable = trainable_tower()
+            if trainable and torch.is_grad_enabled():
+                if not isinstance(output, torch.Tensor):
+                    raise TypeError("A text microbatch with a trainable vision tower needs a tensor model output")
+                output = _ZeroGradsFor.apply(output, *trainable)
+            return output
         return original_forward(*args, **kwargs)
 
+    def prepare_schedule_plan_inputs(kwargs, pixel_values=None, image_grid_thw=None, qwen38_position_ids=None):
+        """``forward``'s input handling for ``GPTModel.build_schedule_plan`` (the EP-overlap schedule).
+
+        That schedule runs the model's pieces itself, so ``forward`` never runs. The positions and the image
+        decoder input are computed here, when the plan is built; the plan's pre-process node takes the decoder
+        input as given and its backward reaches the tower through it. On a text microbatch with a trainable tower
+        ``_ZeroGradsFor`` cannot wrap the plan's output (the schedule computes it later), so it wraps the decoder
+        input instead: the word embedding computed here, exactly what the pre-process node would compute.
+        """
+        kwargs, has_images = prepare((), dict(kwargs), pixel_values, image_grid_thw, qwen38_position_ids)
+        trainable = trainable_tower()
+        if not has_images and trainable and torch.is_grad_enabled():
+            # = GPTModel._preprocess without a decoder input (the embedding ignores positions under mRoPE)
+            decoder = model.embedding(input_ids=kwargs["input_ids"], position_ids=None)
+            if model.config.sequence_parallel and not model.embedding.scatter_to_sequence_parallel:
+                from megatron.core import tensor_parallel
+
+                decoder = tensor_parallel.scatter_to_sequence_parallel_region(decoder, group=model.pg_collection.tp)
+            kwargs["decoder_input"] = _ZeroGradsFor.apply(decoder, *trainable)
+        return kwargs
+
     model.forward = forward
+    model.qwen38_prepare_schedule_plan_inputs = prepare_schedule_plan_inputs
 
 
 def _host_boundaries(packed_seq_params, total):

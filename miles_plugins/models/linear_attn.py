@@ -519,6 +519,15 @@ class LinearAttentionLayer(MegatronModule):
     def supports_allgather_cp(self) -> bool:
         return self.allgather_cp
 
+    def backward_dw(self) -> None:
+        """Delayed weight gradients (EP-overlap schedule): none here; nothing to run.
+
+        Megatron's EP-overlap schedule calls ``self_attention.backward_dw()`` on every layer (and reads the
+        attribute when it builds the plan, even without ``--delay-wgrad-compute``). This layer's projections are
+        plain ``nn.Linear`` / parameters, whose gradients autograd computes in the backward; TE never defers them.
+        ``assert_delayed_wgrad_drained`` (miles model.py) fails a step if a TE module here ever did defer one.
+        """
+
     def _global_cu_seqlens(self, hidden_states, packed_seq_params):
         if packed_seq_params is not None and packed_seq_params.cu_seqlens_q is not None:
             return packed_seq_params.cu_seqlens_q

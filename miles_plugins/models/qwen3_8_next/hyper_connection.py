@@ -18,7 +18,12 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
 from miles.kernels.hyper_connection.hc import hc_combine, hc_mix_inject
-from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE, current_ple_batch, window_cu_seqlens
+from miles_plugins.models.qwen3_8_next.ops.ple import (
+    Qwen38NextPLE,
+    current_ple_batch,
+    scoped_ple_batch,
+    window_cu_seqlens,
+)
 
 
 class Qwen38NextHyperConnection(MegatronModule):
@@ -179,7 +184,15 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         The recompute pass runs in backward, after the side channel was cleared or
         overwritten by a later microbatch, so the checkpointed pass enqueues its batch
         and the recompute pass pops it. FIFO matches non-interleaved 1F1B.
+
+        Under the EP-overlap schedule (combined 1F1B) the batch is bound per microbatch to this layer's attention
+        node (``ple_batch_scope``, installed by the schedule-plan builder in ``model_provider``): its first pass and
+        its backward-time replay both run inside that scope, so it is returned directly and the FIFO is not used.
         """
+        scoped = scoped_ple_batch()
+        if scoped is not None:
+            return scoped
+
         if not hasattr(self, "_ple_recompute_fifo"):  # config-access-exempt: the recompute FIFO is created lazily
             self._ple_recompute_fifo = []
 

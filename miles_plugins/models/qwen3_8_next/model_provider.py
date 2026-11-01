@@ -7,10 +7,12 @@ from typing import TYPE_CHECKING
 
 from megatron.core.models.gpt import GPTModel
 
+from miles_plugins.models.qwen3_8_next.hyper_connection import Qwen38NextPLEHyperConnection
 from miles_plugins.models.qwen3_8_next.ops.ple import (
     Qwen38NextFrozenNGramEmbedding,
     build_ngram_contexts_packed,
     clear_ple_batch,
+    ple_batch_scope,
     publish_ple_batch,
 )
 
@@ -27,7 +29,18 @@ def _find_ple_embedding(model):
     return None
 
 
+def _ple_batch(ple_embedding, input_ids, packed_seq_params):
+    """The PLE side channel for one microbatch: ``(ngram_ids [T, heads], cu_seqlens)``."""
+    cu_seqlens = (
+        getattr(packed_seq_params, "cu_seqlens_q", None) if packed_seq_params is not None else None
+    )  # config-access-exempt: packed-sequence implementations may omit cumulative lengths
+    flat = input_ids.reshape(-1)
+    contexts = build_ngram_contexts_packed(flat, cu_seqlens, ple_embedding.ngram_size, ple_embedding.eos_token_id)
+    return ple_embedding.compute_ngram_ids(contexts), cu_seqlens
+
+
 def _install_ple_context_hooks(model: GPTModel) -> None:
+    install_schedule_plan_builder(model)
     ple_embedding = _find_ple_embedding(model)
     if ple_embedding is None:
         return
@@ -38,14 +51,7 @@ def _install_ple_context_hooks(model: GPTModel) -> None:
             input_ids = args[0]
         if input_ids is None:
             return
-        packed = kwargs.get("packed_seq_params")
-        cu_seqlens = (
-            getattr(packed, "cu_seqlens_q", None) if packed is not None else None
-        )  # config-access-exempt: packed-sequence implementations may omit cumulative lengths
-        flat = input_ids.reshape(-1)
-        contexts = build_ngram_contexts_packed(flat, cu_seqlens, ple_embedding.ngram_size, ple_embedding.eos_token_id)
-        ngram_ids = ple_embedding.compute_ngram_ids(contexts)
-        publish_ple_batch(ngram_ids, cu_seqlens)
+        publish_ple_batch(*_ple_batch(ple_embedding, input_ids, kwargs.get("packed_seq_params")))
 
     def post_hook(_module, _args, _output):
         clear_ple_batch()
@@ -53,6 +59,78 @@ def _install_ple_context_hooks(model: GPTModel) -> None:
     model.register_forward_pre_hook(pre_hook, with_kwargs=True)
     model.register_forward_hook(post_hook)
     logger.info("PLE n-gram context hooks installed on the stage hosting the PLE layer")
+
+
+def bind_ple_batch_to_plan(plan, ngram_ids, cu_seqlens, expected_layers: int) -> int:
+    """Run every PLE layer's attention node of ``plan`` inside ``ple_batch_scope`` with this microbatch's batch.
+
+    The node's ``submodule`` is what both its first pass (``ScheduleNode.forward`` -> ``forward_impl``) and its
+    full-recompute replay (``RecomputeSegment.recompute`` -> ``recompute_forward`` -> ``node.forward``) call, so
+    wrapping it binds the batch to this microbatch for both, whatever the other microbatch in flight is doing.
+    Raises unless exactly ``expected_layers`` layers were bound: an unbound PLE layer would read whatever the side
+    channel holds.
+    """
+    bound = 0
+    for i in range(plan.num_layers()):
+        layer_plan = plan.get_layer(i)
+        hc = getattr(
+            layer_plan.layer, "self_attention_hyper_connection", None
+        )  # config-access-exempt: only hyper-connection layers carry it
+        if not isinstance(hc, Qwen38NextPLEHyperConnection):
+            continue
+        node = layer_plan.attn
+        inner = node.submodule
+
+        def submodule(node_, *inputs, _inner=inner):
+            with ple_batch_scope(ngram_ids, cu_seqlens):
+                return _inner(node_, *inputs)
+
+        node.submodule = submodule
+        bound += 1
+    if bound != expected_layers:
+        raise RuntimeError(
+            f"bound the PLE batch to {bound} attention nodes of the schedule plan, expected {expected_layers}: "
+            "a PLE layer outside the plan's decoder layers would read the wrong (or no) n-gram batch"
+        )
+    return bound
+
+
+def install_schedule_plan_builder(model) -> None:
+    """``model.miles_build_schedule_plan(plan_kwargs, multimodal)``: the EP-overlap (combined 1F1B) entry point.
+
+    That schedule calls ``GPTModel.build_schedule_plan`` instead of the model, so neither the PLE forward hooks
+    nor the vision provider's ``forward`` run. This builder does their work per microbatch: the vision inputs
+    (mRoPE positions, image embeddings) through ``model.qwen38_prepare_schedule_plan_inputs`` when the vision
+    provider set it, and the PLE batch bound to the plan's PLE layers (``bind_ple_batch_to_plan``).
+    """
+
+    ple = {}
+
+    def ple_layers():
+        if not ple:  # the model is complete once the provider returns; walk it once
+            ple["embedding"] = _find_ple_embedding(model)
+            ple["layers"] = sum(isinstance(m, Qwen38NextPLEHyperConnection) for m in model.modules())
+        return ple["embedding"], ple["layers"]
+
+    def build(plan_kwargs: dict, multimodal: dict | None = None):
+        kwargs = dict(plan_kwargs)
+        prepare = getattr(
+            model, "qwen38_prepare_schedule_plan_inputs", None
+        )  # config-access-exempt: set only by the Qwen3.8 vision provider
+        if prepare is not None:
+            kwargs = prepare(kwargs, **(multimodal or {}))
+        elif multimodal:
+            raise ValueError(
+                f"multimodal inputs {sorted(multimodal)} reached a Qwen3.8 model without the vision provider"
+            )
+        plan = model.build_schedule_plan(**kwargs)
+        ple_embedding, expected = ple_layers()
+        if ple_embedding is not None:
+            ngram_ids, cu_seqlens = _ple_batch(ple_embedding, kwargs["input_ids"], kwargs.get("packed_seq_params"))
+            bind_ple_batch_to_plan(plan, ngram_ids, cu_seqlens, expected)
+        return plan
+
+    model.miles_build_schedule_plan = build
 
 
 def assert_qsa_indexers_frozen(model) -> None:

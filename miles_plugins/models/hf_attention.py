@@ -73,6 +73,15 @@ class HuggingfaceAttention(MegatronModule, ABC):
         # hardcode to fa2 at the moment.
         self.hf_config._attn_implementation = "flash_attention_2"
 
+    def backward_dw(self) -> None:
+        """Delayed weight gradients (EP-overlap schedule): none here; nothing to run.
+
+        Megatron's EP-overlap schedule calls ``self_attention.backward_dw()`` on every layer (and reads the
+        attribute when it builds the plan, even without ``--delay-wgrad-compute``). This layer's projections are
+        plain ``nn.Linear`` / parameters, whose gradients autograd computes in the backward; TE never defers them.
+        ``assert_delayed_wgrad_drained`` (miles model.py) fails a step if a TE module here ever did defer one.
+        """
+
     def forward(
         self,
         hidden_states: torch.Tensor,

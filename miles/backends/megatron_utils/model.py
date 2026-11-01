@@ -523,6 +523,57 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
+def build_schedule_plan(model, plan_kwargs: dict, multimodal: dict | None, *, fp32_output: bool):
+    """``model.build_schedule_plan`` for the EP-overlap (combined 1F1B) schedule, which never calls the model.
+
+    A model whose provider prepares inputs in hooks or a patched ``forward`` (Qwen3.8: PLE n-grams, vision)
+    exposes ``miles_build_schedule_plan(plan_kwargs, multimodal)`` doing the same per microbatch; any other model
+    gets the plain call and must not receive multimodal inputs, which only a forward would consume.
+    ``fp32_output`` is the eager path's flag: the plan's post-process node reads it from the chunk state (Megatron
+    patch 0004; an unpatched node always upcasts, which keeps the values and costs memory).
+    """
+    builder = getattr(
+        model, "miles_build_schedule_plan", None
+    )  # config-access-exempt: only providers with forward-time input handling set it
+    if builder is not None:
+        plan = builder(plan_kwargs, multimodal)
+    elif multimodal is not None:
+        raise NotImplementedError(
+            f"multimodal inputs {sorted(multimodal)} with the EP-overlap schedule need a provider-side "
+            "miles_build_schedule_plan; build_schedule_plan does not pass them to the model"
+        )
+    else:
+        plan = model.build_schedule_plan(**plan_kwargs)
+    plan.state.fp32_output = fp32_output
+    return plan
+
+
+def assert_delayed_wgrad_drained(model) -> None:
+    """Fail if a TE module still holds a deferred weight gradient after the step's backward.
+
+    With ``--delay-wgrad-compute`` TE queues a linear's weight-gradient work until something calls its
+    ``backward_dw()``; a module that nothing reaches keeps its queue and its weight silently gets no gradient.
+    Runs every step: only TE modules whose store has delay on are looked at, and a walk of the modules is
+    milliseconds.
+    """
+    pending = []
+    for chunk in model:
+        if not isinstance(chunk, torch.nn.Module):
+            continue
+        for name, module in chunk.named_modules():
+            store = getattr(module, "wgrad_store", None)  # config-access-exempt: TE modules only
+            if store is None or not store.delay_wgrad_compute():
+                continue
+            if store.context is not None and store.context.qsize() > 0:
+                pending.append(f"{name} ({store.context.qsize()})")
+    if pending:
+        raise RuntimeError(
+            "delayed weight gradients were never computed (no backward_dw reached these modules): "
+            + ", ".join(pending[:8])
+            + ("..." if len(pending) > 8 else "")
+        )
+
+
 def run_forward_backward_pass(
     args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts, forward_only=False
 ):
@@ -598,13 +649,18 @@ def run_forward_backward_pass(
         if return_schedule_plan:
             assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
             assert not args.enable_witness, "Witness is not supported with combined 1f1b (build_schedule_plan)"
-            output_tensor = model.build_schedule_plan(
-                input_ids=batch["tokens"],
-                position_ids=None,
-                attention_mask=None,
-                labels=None,
-                packed_seq_params=get_packed_seq_params(batch, args),
-                loss_mask=batch["input_loss_masks"],
+            output_tensor = build_schedule_plan(
+                model,
+                dict(
+                    input_ids=batch["tokens"],
+                    position_ids=None,
+                    attention_mask=None,
+                    labels=None,
+                    packed_seq_params=get_packed_seq_params(batch, args),
+                    loss_mask=batch["input_loss_masks"],
+                ),
+                batch["multimodal_train_inputs"],
+                fp32_output=args.loss_type not in ("policy_loss", "sft_loss", "score_centering"),
             )
         else:
             forward_kwargs = {
@@ -687,6 +743,7 @@ def train_one_step(
     losses_reduced = run_forward_backward_pass(
         args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts
     )
+    assert_delayed_wgrad_drained(model)
     if args.enable_sample_ownership_checker:
         local_consumed_identities = SampleIdentityExtractor.get_consumed_sample_identities(
             start_offset=sample_consumption_start,

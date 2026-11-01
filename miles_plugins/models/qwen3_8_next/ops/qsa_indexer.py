@@ -14,6 +14,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
 from miles_plugins.models.indexer import freeze_indexer_parameters
+from miles_plugins.models.qwen3_8_next.ops.delayed_wgrad import without_delayed_wgrad
 
 
 def _indexer_acc_dtype(x):
@@ -253,10 +254,12 @@ class Qwen38NextQSAIndexer(MegatronModule):
             config, "qwen3_8_next_indexer_tile_bytes", DEFAULT_TILE_BYTES
         )  # config-access-exempt: optional knob, absent from older configs
 
+        # frozen and run under no_grad, so TE never defers a gradient here; kept off delayed wgrad all the same,
+        # since no backward_dw would ever reach it (see ple.without_delayed_wgrad)
         self.index_qk_proj = TELinear(
             config.hidden_size,
             (self.n_heads + self.kv_heads) * self.head_dim,
-            config=config,
+            config=without_delayed_wgrad(config),
             init_method=config.init_method,
             bias=False,
             skip_bias_add=False,

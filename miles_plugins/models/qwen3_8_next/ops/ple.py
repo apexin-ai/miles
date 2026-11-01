@@ -5,6 +5,7 @@ default: PLE with nothing published raises. The 102GB table is host-resident,
 TP-row-sharded, and deliberately NOT a checkpointed parameter.
 """
 
+import contextlib
 import json
 import logging
 import struct
@@ -18,6 +19,7 @@ from torch import Tensor
 
 from miles.kernels.embedding.ple_gate_conv import ple_gate_conv
 from miles.kernels.embedding.ple_gather import gather_ple_rows
+from miles_plugins.models.qwen3_8_next.ops.delayed_wgrad import without_delayed_wgrad
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,30 @@ def publish_ple_batch(ngram_ids: torch.Tensor, cu_seqlens: torch.Tensor | None =
 
 def clear_ple_batch() -> None:
     _state.batch = None
+
+
+@contextlib.contextmanager
+def ple_batch_scope(ngram_ids: Tensor, cu_seqlens: Tensor | None = None):
+    """Bind one microbatch's n-gram ids for the duration of a single node's run.
+
+    The EP A2A overlap schedule (combined 1F1B) interleaves microbatch i's backward, including the replay of its
+    fully recomputed layers, with microbatch i + 1's forward. A batch published once per microbatch, as the model
+    hooks do, would be read by the replay of the wrong microbatch; with equal lengths that silently trains PLE on
+    the next microbatch's n-grams. The schedule-plan path therefore wraps the PLE layer's attention node so that
+    each run of it (the first pass and the replay) enters this scope with the batch built for that microbatch's
+    plan. The scope wins over the published batch and over the recompute FIFO, and is restored on exit.
+    """
+    previous = getattr(_state, "scoped", None)  # config-access-exempt: thread-local scope exists only inside a node
+    _state.scoped = (ngram_ids, cu_seqlens)
+    try:
+        yield
+    finally:
+        _state.scoped = previous
+
+
+def scoped_ple_batch():
+    """The batch bound by the innermost ``ple_batch_scope``, or None outside any scope."""
+    return getattr(_state, "scoped", None)  # config-access-exempt: thread-local scope exists only inside a node
 
 
 _WEIGHT_MAP_CACHE: dict[str, dict] = {}
@@ -305,10 +331,11 @@ class Qwen38NextPLE(MegatronModule):
 
         self.ple_embedding = Qwen38NextFrozenNGramEmbedding(config, layer_number=layer_number, tp_group=tp_group)
 
+        linear_config = without_delayed_wgrad(config)
         self.key_proj = TELinear(
             self.embed_dim,
             wide,
-            config=config,
+            config=linear_config,
             init_method=config.init_method,
             bias=False,
             skip_bias_add=False,
@@ -318,7 +345,7 @@ class Qwen38NextPLE(MegatronModule):
         self.value_proj = TELinear(
             self.embed_dim,
             self.hidden_size,
-            config=config,
+            config=linear_config,
             init_method=config.init_method,
             bias=False,
             skip_bias_add=False,
