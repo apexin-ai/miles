@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.backends.megatron_utils.test_qwen38_vision_param_groups import _model, _Wrapped
 
 from miles_plugins.models.qwen3_8_next import vision_scope_switch as switch
-from tests.fast.backends.megatron_utils.test_qwen38_vision_param_groups import _Wrapped, _model
 
 _DDP = SimpleNamespace(pad_buckets_for_high_nccl_busbw=False)
 
@@ -67,10 +67,18 @@ def test_cross_check_the_vit_is_one_block_after_the_merger_and_the_language_shif
     assert set(kinds[last_vit + 1 :]) == {"lang"}
     new = switch.new_trainable_parameters([full], "projector")
     old = switch.old_layout_for(
-        _ddp_params(full), new, bucket_sizes=[None], data_parallel_world_size=1, ddp_config=_DDP,
+        _ddp_params(full),
+        new,
+        bucket_sizes=[None],
+        data_parallel_world_size=1,
+        ddp_config=_DDP,
         running=(layout.param_index_map, layout.per_bucket_numel_unpadded),
     )
-    shifts = {layout.param_index_map[p][0] - old.param_index_map[p][0] for p in order if names[p] not in new.values() and "vision_model." not in names[p]}
+    shifts = {
+        layout.param_index_map[p][0] - old.param_index_map[p][0]
+        for p in order
+        if names[p] not in new.values() and "vision_model." not in names[p]
+    }
     vit_start = layout.param_index_map[order[first_vit]][0]
     lang_start = layout.param_index_map[order[last_vit + 1]][0]
     assert shifts == {lang_start - vit_start}
@@ -82,8 +90,12 @@ def test_the_old_layout_is_refused_when_the_running_buffer_is_not_reproduced():
     running = _layout(params, 1, 3000)
     with pytest.raises(ValueError, match="does not reproduce the running DDP buffer layout"):
         switch.old_layout_for(
-            params, switch.new_trainable_parameters([full], "projector"), bucket_sizes=[None],
-            data_parallel_world_size=1, ddp_config=_DDP, running=(running.param_index_map, running.per_bucket_numel_unpadded),
+            params,
+            switch.new_trainable_parameters([full], "projector"),
+            bucket_sizes=[None],
+            data_parallel_world_size=1,
+            ddp_config=_DDP,
+            running=(running.param_index_map, running.per_bucket_numel_unpadded),
         )
 
 
@@ -93,10 +105,14 @@ def _rank_param_maps(layout, dp, rank):
 
     buffer = SimpleNamespace(
         data_parallel_group=SimpleNamespace(rank=lambda: rank, size=lambda: dp),
-        buckets=[SimpleNamespace(grad_data=torch.empty(end - start), offset=start) for start, end in layout.bucket_indices],
+        buckets=[
+            SimpleNamespace(grad_data=torch.empty(end - start), offset=start) for start, end in layout.bucket_indices
+        ],
         param_index_map=layout.param_index_map,
     )
-    return [DistributedOptimizer._build_model_gbuf_range(buffer, b)["param_map"] for b in range(len(layout.bucket_indices))]
+    return [
+        DistributedOptimizer._build_model_gbuf_range(buffer, b)["param_map"] for b in range(len(layout.bucket_indices))
+    ]
 
 
 def _saved_old_buckets(old, values):
@@ -116,7 +132,11 @@ def test_every_slice_a_rank_owns_after_the_switch_is_read_from_where_the_project
     new = switch.new_trainable_parameters([full], "projector")
     running = _layout(params, dp, bucket_size)
     old = switch.old_layout_for(
-        params, new, bucket_sizes=[None, bucket_size], data_parallel_world_size=dp, ddp_config=_DDP,
+        params,
+        new,
+        bucket_sizes=[None, bucket_size],
+        data_parallel_world_size=dp,
+        ddp_config=_DDP,
         running=(running.param_index_map, running.per_bucket_numel_unpadded),
     )
     values = {p: torch.arange(p.numel(), dtype=torch.float64) + 1e6 * i for i, p in enumerate(params) if p not in new}
@@ -153,7 +173,13 @@ def test_switching_down_or_sideways_is_refused():
     switch.check_switch("projector", "full")
     switch.check_switch("none", "full")
     switch.check_switch("none", "projector")
-    for a, b in [("full", "projector"), ("projector", "projector"), ("full", "full"), ("projector", "none"), ("x", "full")]:
+    for a, b in [
+        ("full", "projector"),
+        ("projector", "projector"),
+        ("full", "full"),
+        ("projector", "none"),
+        ("x", "full"),
+    ]:
         with pytest.raises(ValueError):
             switch.check_switch(a, b)
 
@@ -165,7 +191,14 @@ def test_none_to_projector_adds_only_the_merger():
 
 
 def _group(wd, lr_mult, step=None, params=("x",), **extra):
-    g = {"wd_mult": wd, "lr_mult": lr_mult, "is_expert_parallel": False, "is_decoupled_lr": False, "params": list(params), **extra}
+    g = {
+        "wd_mult": wd,
+        "lr_mult": lr_mult,
+        "is_expert_parallel": False,
+        "is_decoupled_lr": False,
+        "params": list(params),
+        **extra,
+    }
     if step is not None:
         g["step"] = step
     return g
@@ -173,18 +206,30 @@ def _group(wd, lr_mult, step=None, params=("x",), **extra):
 
 def test_param_groups_only_the_new_vit_needs_are_added_with_the_checkpoints_step():
     saved = [_group(1.0, 1.0, 7, max_lr=1e-5), _group(0.0, 1.0, 7, max_lr=1e-5)]
-    running = [_group(1.0, 1.0, max_lr=9.0), _group(0.0, 1.0), _group(1.0, 0.2, max_lr=2e-6), _group(0.0, 0.2, max_lr=2e-6)]
+    running = [
+        _group(1.0, 1.0, max_lr=9.0),
+        _group(0.0, 1.0),
+        _group(1.0, 0.2, max_lr=2e-6),
+        _group(0.0, 0.2, max_lr=2e-6),
+    ]
     added = switch.add_missing_param_groups(saved, running, allowed_indices={2, 3})
     assert added == [2, 3]
-    assert [(g["lr_mult"], g["wd_mult"], g["step"], g["max_lr"]) for g in saved[2:]] == [(0.2, 1.0, 7, 2e-6), (0.2, 0.0, 7, 2e-6)]
+    assert [(g["lr_mult"], g["wd_mult"], g["step"], g["max_lr"]) for g in saved[2:]] == [
+        (0.2, 1.0, 7, 2e-6),
+        (0.2, 0.0, 7, 2e-6),
+    ]
     assert saved[0]["max_lr"] == 1e-5  # existing groups keep the checkpointed values
     # an empty stub group (no new parameter on this rank) may be added too
-    assert switch.add_missing_param_groups([_group(1.0, 1.0, 7)], [_group(1.0, 1.0), _group(1.0, 0.2, params=())], set()) == [1]
+    assert switch.add_missing_param_groups(
+        [_group(1.0, 1.0, 7)], [_group(1.0, 1.0), _group(1.0, 0.2, params=())], set()
+    ) == [1]
 
 
 def test_a_missing_group_with_old_parameters_or_mixed_steps_is_refused():
     with pytest.raises(ValueError, match="holds old parameters"):
-        switch.add_missing_param_groups([_group(1.0, 1.0, 7)], [_group(1.0, 1.0), _group(0.5, 1.0)], allowed_indices=set())
+        switch.add_missing_param_groups(
+            [_group(1.0, 1.0, 7)], [_group(1.0, 1.0), _group(0.5, 1.0)], allowed_indices=set()
+        )
     with pytest.raises(ValueError, match="different steps"):
         switch.add_missing_param_groups([_group(1.0, 1.0, 7), _group(0.0, 1.0, 8)], [_group(1.0, 1.0)], set())
 
@@ -280,10 +325,16 @@ def test_the_switch_reads_old_buckets_and_hands_megatron_the_new_layout(dp):
     running = _layout(params, dp)
     old = _layout([p for p in params if p not in new], dp)
     values = {
-        k: {p: torch.arange(p.numel(), dtype=torch.float32) + 1000 * i + 1e5 * j for i, p in enumerate(params) if p not in new}
+        k: {
+            p: torch.arange(p.numel(), dtype=torch.float32) + 1000 * i + 1e5 * j
+            for i, p in enumerate(params)
+            if p not in new
+        }
         for j, k in enumerate(_STATES)
     }
-    saved = {k: [b.float() for b in _saved_old_buckets(old, {p: v.double() for p, v in values[k].items()})] for k in _STATES}
+    saved = {
+        k: [b.float() for b in _saved_old_buckets(old, {p: v.double() for p, v in values[k].items()})] for k in _STATES
+    }
     gap_cover = {}
     for rank in range(dp):
         opt = _FakeDistOpt(full, running, dp, rank, None)
@@ -307,7 +358,9 @@ def test_the_switch_reads_old_buckets_and_hands_megatron_the_new_layout(dp):
                 else:
                     for k in _STATES:
                         assert torch.equal(got[k], values[k][p][a:b]), (k, new.get(p))
-        assert sw.loaded and sw.summary["fresh_slices_here"] == sum(1 for m in opt.gbuf_ranges[0][_DTYPE] for p in m["param_map"] if p in new)
+        assert sw.loaded and sw.summary["fresh_slices_here"] == sum(
+            1 for m in opt.gbuf_ranges[0][_DTYPE] for p in m["param_map"] if p in new
+        )
         # once loaded, saves and later loads take Megatron's own path
         with pytest.raises(AssertionError, match="original request"):
             opt.sharded_param_state_dp_reshardable(None, True, None)
@@ -324,7 +377,15 @@ def test_a_checkpoint_whose_buckets_do_not_match_the_old_layout_is_refused():
     sw.bind()
     request = opt.sharded_param_state_dp_reshardable(None, True, None)
     old = _layout([p for p in params if p not in new], 1)
-    saved = {k: [b.float() for b in _saved_old_buckets(old, {p: torch.zeros(p.numel(), dtype=torch.float64) for p in params if p not in new})] for k in _STATES}
+    saved = {
+        k: [
+            b.float()
+            for b in _saved_old_buckets(
+                old, {p: torch.zeros(p.numel(), dtype=torch.float64) for p in params if p not in new}
+            )
+        ]
+        for k in _STATES
+    }
     loaded = _fake_load(request, old, saved)
     loaded["per_bucket_numel_unpadded"] = opt.per_bucket_numel_unpadded  # a checkpoint already in the new layout
     with pytest.raises(ValueError, match="do not match the layout without the new vision parameters"):

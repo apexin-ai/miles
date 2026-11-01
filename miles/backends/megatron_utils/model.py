@@ -23,10 +23,10 @@ from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.utils import get_model_config
 from megatron.training.training import get_model
 
+from miles.backends.megatron_utils import ple_provenance
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
-from miles.backends.megatron_utils import ple_provenance
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.backends.megatron_utils.tp_replica_check import check_tp_replicas
 from miles.backends.megatron_utils.unstepped_optimizer_state import materialize_unstepped_optimizer_states
@@ -171,15 +171,15 @@ def _qwen38_vision_config_overrides(args: TrainerConfig, config: OptimizerConfig
             raise ValueError("--qwen38-vit-lr-mult / --qwen38-vit-wd-mult need the Qwen3.8 vision provider")
         return None
     if not vision_optimizer.is_default(lr_mult, wd_mult) and args.qwen38_vision_trainable != "full":
-        raise ValueError("--qwen38-vit-lr-mult / --qwen38-vit-wd-mult need a trainable ViT (--qwen38-vision-trainable full)")
+        raise ValueError(
+            "--qwen38-vit-lr-mult / --qwen38-vit-wd-mult need a trainable ViT (--qwen38-vision-trainable full)"
+        )
     overrides = vision_optimizer.vision_config_overrides(config, lr_mult=lr_mult, wd_mult=wd_mult)
     summary = vision_optimizer.check_vision_param_groups(
         model, config, overrides, scope=args.qwen38_vision_trainable, lr_mult=lr_mult, wd_mult=wd_mult
     )
     if mpu.get_data_parallel_rank() == 0 and mpu.get_tensor_model_parallel_rank() == 0:
-        logger.info(
-            "qwen38 vision param groups (pp rank %d): %s", mpu.get_pipeline_model_parallel_rank(), summary
-        )
+        logger.info("qwen38 vision param groups (pp rank %d): %s", mpu.get_pipeline_model_parallel_rank(), summary)
     if vision_optimizer.is_default(lr_mult, wd_mult):
         return None  # get_megatron_optimizer applies the same standard overrides itself
     return overrides
@@ -255,8 +255,13 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
-        if not (args.qwen38_vit_lr_mult == 1.0 and args.qwen38_vit_wd_mult == 1.0) or args.qwen38_vision_load_from_scope:
-            raise ValueError("--qwen38-vit-*-mult / --qwen38-vision-load-from-scope are not wired into the Muon optimizer")
+        if (
+            not (args.qwen38_vit_lr_mult == 1.0 and args.qwen38_vit_wd_mult == 1.0)
+            or args.qwen38_vision_load_from_scope
+        ):
+            raise ValueError(
+                "--qwen38-vit-*-mult / --qwen38-vision-load-from-scope are not wired into the Muon optimizer"
+            )
         if args.stream_optimizer_state_to_disk:
             from miles_plugins.optimizers.nvme_stream import setup_muon_state_on_disk
 

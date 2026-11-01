@@ -216,7 +216,9 @@ def install(model_chunks, optimizer, *, from_scope: str, to_scope: str) -> dict:
     bucket_sizes = [None] + sorted({s for c in model_chunks if (s := getattr(c, "bucket_size", None)) is not None})
     for inner in getattr(optimizer, "chained_optimizers", None) or [optimizer]:
         if not isinstance(inner, DistributedOptimizer):
-            raise ValueError(f"the vision scope switch needs Megatron's DistributedOptimizer, got {type(inner).__name__}")
+            raise ValueError(
+                f"the vision scope switch needs Megatron's DistributedOptimizer, got {type(inner).__name__}"
+            )
         if getattr(inner, "_optimizer_state_offloader", None) is not None:
             raise ValueError("the vision scope switch does not support the optimizer state offloader")
         _Switch(inner, new_params, bucket_sizes).bind()
@@ -295,7 +297,9 @@ class _Switch:
             ("per_bucket_numel_unpadded", self.old_per_bucket_numel_unpadded),
         ):
             key = f"optimizer.distributed.dp_group_idx_{opt.data_parallel_group_idx}.{name}"
-            state[name] = ShardedObject(key, value, (1,), (0,), replica_id=(opt.distributed_optimizer_instance_id, 0, dp_rank))
+            state[name] = ShardedObject(
+                key, value, (1,), (0,), replica_id=(opt.distributed_optimizer_instance_id, 0, dp_rank)
+            )
         for gbuf_idx, plan in enumerate(self.plans):
             ((dtype, buckets),) = opt.gbuf_ranges[gbuf_idx].items()
             templates = {}
@@ -374,7 +378,11 @@ class _Switch:
                         fresh += 1
                     else:
                         built = {
-                            k: (state_dict["slices"][f"{gbuf_idx}|{bucket_idx}|{i}|{k}"] if isinstance(v, torch.Tensor) and v.dim() else v)
+                            k: (
+                                state_dict["slices"][f"{gbuf_idx}|{bucket_idx}|{i}|{k}"]
+                                if isinstance(v, torch.Tensor) and v.dim()
+                                else v
+                            )
                             for k, v in tensors.items()
                         }
                     built["padding"] = False
