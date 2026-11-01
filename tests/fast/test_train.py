@@ -431,7 +431,8 @@ _LOOP_EVENTS = ("actor_train:", "executor_save:", "actor_save:", "eval:", "updat
 def _loop_trace(events: list[str]) -> list[str]:
     """The training loop's events from the first trained rollout on, with the per-step memory work kept."""
     loop = events[events.index("actor_train:0") :] if "actor_train:0" in events else []
-    return [e for e in loop if e.startswith(_LOOP_EVENTS) or e in ("actor_clear_memory", "actor_offload")]
+    kept = ("actor_clear_memory", "actor_log_memory", "actor_offload")
+    return [e for e in loop if e.startswith(_LOOP_EVENTS) or e in kept]
 
 
 class TestClearMemoryEveryStep:
@@ -465,6 +466,8 @@ class TestClearMemoryEveryStep:
 
         assert components.actor_model.trained == [0, 1, 2, 3]
         assert "actor_clear_memory" not in events
+        # the step-end memory line the clear used to print stays, one per kept cache
+        assert events.count("actor_log_memory") == 3
         assert [e for e in events if e.startswith("update_weights:")] == [
             "update_weights:None",
             "update_weights:0",
@@ -483,6 +486,7 @@ class TestClearMemoryEveryStep:
         assert components.actor_model.saved == [1, 3, 4]
         assert _loop_trace(events) == [
             "actor_train:0",
+            "actor_log_memory",
             "update_weights:0",
             "actor_train:1",
             "actor_clear_memory",
@@ -491,6 +495,7 @@ class TestClearMemoryEveryStep:
             "actor_clear_memory",
             "update_weights:1",
             "actor_train:2",
+            "actor_log_memory",
             "update_weights:2",
             "actor_train:3",
             "actor_clear_memory",
@@ -535,12 +540,14 @@ class TestClearMemoryEveryStep:
 
         assert _loop_trace(events) == [
             "actor_train:0",
+            "actor_log_memory",
             "update_weights:0",
             "actor_train:1",
             "actor_clear_memory",
             "update_weights:1",
             "eval:1",
             "actor_train:2",
+            "actor_log_memory",
             "update_weights:2",
             "actor_train:3",
             "actor_clear_memory",
@@ -574,6 +581,7 @@ class TestClearMemoryEveryStep:
             "actor_clear_memory",
             "update_weights:0",
             "actor_train:1",
+            "actor_log_memory",
             "update_weights:1",
             "actor_train:2",
         ]
@@ -588,4 +596,4 @@ class TestClearMemoryEveryStep:
         await with_disposer(train_driver.train, _startup_info(args))
 
         assert events.count("actor_offload") == 2
-        assert "actor_clear_memory" not in events
+        assert "actor_clear_memory" not in events and "actor_log_memory" not in events
