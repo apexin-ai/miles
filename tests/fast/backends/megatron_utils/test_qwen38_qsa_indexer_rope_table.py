@@ -14,7 +14,7 @@ import torch
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import apply_indexer_rope, indexer_rope_table
 from miles_plugins.models.qwen3_8_next.vision_inputs import image_rope_positions, packed_rope_positions
 
-rope = pytest.importorskip("megatron.core.models.common.embeddings.rotary_pos_emb")
+rope = pytest.importorskip("megatron.core.models.common.embeddings.rotary_pos_embedding")
 pytest.importorskip("megatron.core.fusions.fused_mrope")
 
 CONFIG = SimpleNamespace(mrope_section=[11, 11, 10], mrope_interleaved=True, rotary_interleaved=False)
@@ -40,7 +40,7 @@ def _packed_positions():
             torch.arange(3)[:, None].expand(-1, 3),
         )
     )
-    return packed_rope_positions(ids, bounds, positions, grid, **IDS)
+    return packed_rope_positions(ids, bounds, positions, grid, rows=3, **IDS)
 
 
 @pytest.mark.parametrize("kind", ["text", "packed-with-image"])
