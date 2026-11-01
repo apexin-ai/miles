@@ -51,6 +51,9 @@ class FakeRolloutExecutor:
         self.report_eval_skip = FakeRemoteMethod(self._report_eval_skip)
         self.released: list[int] = []
         self.release = FakeRemoteMethod(self._release)
+        # Not an event: the driver tests compare event lists. Holds the number of events before the call.
+        self.snapshot_copies_skipped_at: int | None = None
+        self.skip_output_snapshot_copies = FakeRemoteMethod(self._skip_output_snapshot_copies)
 
     async def _get(self, rollout_id: int) -> RolloutDataPack:
         self.events.append(f"generate_start:{rollout_id}")
@@ -68,6 +71,9 @@ class FakeRolloutExecutor:
 
     async def _save(self, rollout_id: int) -> None:
         self.events.append(f"executor_save:{rollout_id}")
+
+    async def _skip_output_snapshot_copies(self) -> None:
+        self.snapshot_copies_skipped_at = len(self.events)
 
     async def _release(self, rollout_id: int) -> None:
         self.released.append(rollout_id)
