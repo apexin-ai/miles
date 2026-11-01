@@ -3,7 +3,8 @@
 A pre-tokenized image row already holds every token: each image is ``<|vision_start|>``, N x ``<|image_pad|>``,
 ``<|vision_end|>`` in ``input_ids``, with labels -100 on the pads. Training does not render or tokenize; it only
 loads the images and builds the three tensors the vision provider takes (``pixel_values``, ``image_grid_thw``,
-``qwen38_position_ids``). A row without images gets None and runs the provider's text fallback.
+``qwen38_position_ids``). A row without images gets only its text positions: with THD packing every row of a
+microbatch must carry positions, so the model can check each row against its own tokens.
 
 The offline converter and the training-time loader both use ``load_images`` / ``image_pad_counts``, so N is the
 same in both: images are resized by the same function as the dataset path of image SFT (miles'
@@ -18,7 +19,7 @@ from pathlib import Path
 import torch
 
 from miles.utils.processing_utils import load_processor, process_vision_info
-from miles_plugins.models.qwen3_8_next.vision_inputs import image_rope_positions
+from miles_plugins.models.qwen3_8_next.vision_inputs import image_rope_positions, text_rope_positions
 
 
 @lru_cache(maxsize=1)
@@ -99,24 +100,30 @@ def image_spans(input_ids, config) -> list[tuple[int, int]]:
 
 
 def train_inputs_for_row(input_ids, labels, entries, hf_checkpoint: str):
-    """The vision provider's inputs for one pre-tokenized row; None for a row without images.
+    """The vision provider's inputs for one pre-tokenized row of a vision-on run.
 
-    ``input_ids`` is not changed. Checks: one pad run per image, the run length equals the image's
+    A text row gets ``{"qwen38_position_ids"}`` only; an image row also ``pixel_values`` and ``image_grid_thw``.
+    ``input_ids`` is not changed. Checks: labels are given and as long as the row; every image entry is a
+    ``{"path", "sha256"}`` whose file has that sha256; one pad run per image, the run length equals the image's
     grid product / merge², and the pads carry no SFT label.
     """
     processor, config = processor_and_config(hf_checkpoint)
+    if labels is None or len(labels) != len(input_ids):
+        raise ValueError("A pre-tokenized row needs labels as long as its input_ids")
+    if entries is None:
+        entries = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("path") or not entry.get("sha256"):
+            raise ValueError(f"Image entries must be {{'path', 'sha256'}}, got {entry!r}")
     spans = image_spans(input_ids, config)
     if not entries:
         if spans:
             raise ValueError(f"A row without meta images holds {len(spans)} image pad runs")
-        return None
+        return {"qwen38_position_ids": text_rope_positions(len(input_ids)).clone()}
     if len(spans) != len(entries):
         raise ValueError(f"The row has {len(spans)} image pad runs for {len(entries)} images")
-    if labels is not None:
-        if len(labels) != len(input_ids):
-            raise ValueError("labels and input_ids differ in length")
-        if any(labels[i] != -100 for start, end in spans for i in range(start, end)):
-            raise ValueError("Image pads must not receive SFT labels")
+    if any(labels[i] != -100 for start, end in spans for i in range(start, end)):
+        raise ValueError("Image pads must not receive SFT labels")
     pixel_values, grids = image_tensors(load_images(entries, processor), processor)
     expected = pad_counts(grids, config["vision_config"]["spatial_merge_size"])
     actual = [end - start for start, end in spans]

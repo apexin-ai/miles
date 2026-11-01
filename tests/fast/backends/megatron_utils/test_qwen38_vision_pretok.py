@@ -52,11 +52,34 @@ def _row(*runs, text=(1, 2, 3)):
     return ids, labels
 
 
-def test_a_text_row_has_no_image_inputs_and_keeps_its_ids(fake):
+def _img(name):
+    return {"path": name, "sha256": "0" * 64}
+
+
+def test_a_text_row_gets_only_text_positions_and_keeps_its_ids(fake):
     ids, labels = [1, 2, 3, 7], [-100, -100, -100, 7]
     before = list(ids)
-    assert vision_pretok.train_inputs_for_row(ids, labels, [], "hf") is None
+    inputs = vision_pretok.train_inputs_for_row(ids, labels, [], "hf")
+    assert set(inputs) == {"qwen38_position_ids"}
+    assert torch.equal(inputs["qwen38_position_ids"], text_rope_positions(4))
     assert ids == before
+
+
+@pytest.mark.parametrize(
+    ("labels", "entries", "message"),
+    [
+        (None, [], "needs labels"),
+        ([-100, 7], [], "needs labels"),  # shorter than the row
+        ("row", ["a.png"], "must be"),  # a bare path
+        ("row", [{"path": "a.png"}], "must be"),  # no sha256
+    ],
+    ids=["no-labels", "short-labels", "bare-path", "no-sha"],
+)
+def test_a_row_must_give_labels_and_pinned_images(fake, labels, entries, message):
+    fake["a.png"] = (1, 4, 4)
+    ids, row_labels = _row(4)
+    with pytest.raises(ValueError, match=message):
+        vision_pretok.train_inputs_for_row(ids, row_labels if labels == "row" else labels, entries, "hf")
 
 
 def test_an_image_row_gets_patches_grids_and_mrope_positions(fake):
@@ -64,7 +87,7 @@ def test_an_image_row_gets_patches_grids_and_mrope_positions(fake):
     fake["b.png"] = (1, 2, 4)  # 2 pads
     ids, labels = _row(4, 2)
     before = list(ids)
-    inputs = vision_pretok.train_inputs_for_row(ids, labels, ["a.png", "b.png"], "hf")
+    inputs = vision_pretok.train_inputs_for_row(ids, labels, [_img("a.png"), _img("b.png")], "hf")
     assert ids == before
     assert inputs["image_grid_thw"].tolist() == [[1, 4, 4], [1, 2, 4]]
     assert inputs["pixel_values"].shape[0] == 16 + 8
@@ -89,21 +112,21 @@ def test_pad_runs_must_match_the_images(fake, runs, images, message):
     fake["a.png"] = (1, 4, 4)
     ids, labels = _row(*runs)
     with pytest.raises(ValueError, match=message):
-        vision_pretok.train_inputs_for_row(ids, labels, images, "hf")
+        vision_pretok.train_inputs_for_row(ids, labels, [_img(i) for i in images], "hf")
 
 
 def test_two_images_without_a_boundary_between_their_pads_fail(fake):
     fake["a.png"] = (1, 4, 4)
     ids = [1, 8] + [9] * 8 + [10, 7]
     with pytest.raises(ValueError, match="1 image pad runs for 2 images"):
-        vision_pretok.train_inputs_for_row(ids, [-100] * (len(ids) - 1) + [7], ["a.png", "a.png"], "hf")
+        vision_pretok.train_inputs_for_row(ids, [-100] * (len(ids) - 1) + [7], [_img("a.png"), _img("a.png")], "hf")
 
 
 def test_pads_outside_vision_markers_fail(fake):
     fake["a.png"] = (1, 4, 4)
     ids = [1, 2] + [9] * 4 + [10, 7]
     with pytest.raises(ValueError, match="not enclosed"):
-        vision_pretok.train_inputs_for_row(ids, [-100] * (len(ids) - 1) + [7], ["a.png"], "hf")
+        vision_pretok.train_inputs_for_row(ids, [-100] * (len(ids) - 1) + [7], [_img("a.png")], "hf")
 
 
 def test_a_label_on_an_image_pad_fails(fake):
@@ -111,7 +134,7 @@ def test_a_label_on_an_image_pad_fails(fake):
     ids, labels = _row(4)
     labels[5] = 9
     with pytest.raises(ValueError, match="must not receive SFT labels"):
-        vision_pretok.train_inputs_for_row(ids, labels, ["a.png"], "hf")
+        vision_pretok.train_inputs_for_row(ids, labels, [_img("a.png")], "hf")
 
 
 def test_an_image_whose_bytes_changed_fails_before_it_is_used(tmp_path, monkeypatch):

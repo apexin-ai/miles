@@ -105,6 +105,81 @@ def text_rope_positions(length, *, device=None):
     return torch.arange(length, device=device)[:, None].expand(-1, 3)
 
 
+def image_span_starts(token_ids, image_token_id):
+    """Start index of every run of image pad tokens."""
+    ids = torch.as_tensor(token_ids)
+    image_mask = ids == image_token_id
+    previous = torch.cat((image_mask.new_zeros(1), image_mask[:-1]))
+    return (image_mask & ~previous).nonzero().flatten().tolist()
+
+
+def packed_rope_positions(
+    token_ids,
+    boundaries,
+    positions,
+    grids,
+    *,
+    image_token_id,
+    vision_start_token_id,
+    vision_end_token_id,
+    merge_size,
+    pad_token_id=0,
+):
+    """[tokens, 3] mRoPE positions of a packed microbatch (THD rows back to back, then miles' trailing pad).
+
+    ``boundaries`` are the cu_seqlens of the pack (rows, then the pad segment if any). ``positions`` are the rows'
+    ``qwen38_position_ids`` concatenated in row order (miles concatenates them per microbatch), or None when no row
+    of the microbatch has any (then no row may hold an image). Every row restarts at 0. Each row's positions must
+    be exactly what its own tokens and images give (text: the token index on every axis; image: native image
+    mRoPE), so a row that came without positions cannot be mistaken for another row. Only miles' trailing pad
+    segment (all ``pad_token_id``) may be left uncovered; it gets 0.
+    """
+    ids = torch.as_tensor(token_ids)
+    total = ids.shape[0]
+    bounds = [int(b) for b in boundaries]
+    if ids.ndim != 1 or not bounds or bounds[0] != 0 or bounds[-1] != total:
+        raise ValueError(f"cu_seqlens {bounds[:4]}... do not describe a packed sequence of {total} tokens")
+    if any(b <= a for a, b in zip(bounds, bounds[1:], strict=False)):
+        raise ValueError("cu_seqlens must be strictly increasing")
+    out = torch.zeros((total, 3), dtype=torch.long, device=ids.device)
+    if positions is None:
+        if image_span_starts(ids, image_token_id):
+            raise ValueError("Image tokens reached the model without mRoPE positions")
+        for start, end in zip(bounds, bounds[1:], strict=False):
+            out[start:end] = text_rope_positions(end - start, device=ids.device)
+        return out
+    positions = torch.as_tensor(positions).to(device=ids.device, dtype=torch.long)
+    covered = positions.shape[0]
+    if positions.ndim != 2 or positions.shape[1] != 3 or covered not in bounds or covered == 0:
+        raise ValueError(f"mRoPE positions of {covered} tokens do not end at a row boundary of {bounds[:4]}...")
+    rows = bounds.index(covered)
+    if rows != len(bounds) - 1 and (rows != len(bounds) - 2 or not bool((ids[covered:] == pad_token_id).all())):
+        raise ValueError("Rows without mRoPE positions in a microbatch that has them (every row must carry them)")
+    grids = torch.zeros((0, 3), dtype=torch.long) if grids is None else torch.as_tensor(grids)
+    used = 0
+    for start, end in zip(bounds[:rows], bounds[1 : rows + 1], strict=True):
+        row = ids[start:end]
+        count = len(image_span_starts(row, image_token_id))
+        if count:
+            expected = image_rope_positions(
+                row,
+                grids[used : used + count],
+                image_token_id=image_token_id,
+                vision_start_token_id=vision_start_token_id,
+                vision_end_token_id=vision_end_token_id,
+                merge_size=merge_size,
+            )
+        else:
+            expected = text_rope_positions(end - start, device=ids.device)
+        used += count
+        if not torch.equal(positions[start:end], expected.to(ids.device)):
+            raise ValueError(f"mRoPE positions of the row at [{start}, {end}) differ from its tokens and images")
+        out[start:end] = positions[start:end]
+    if used != grids.shape[0]:
+        raise ValueError(f"{grids.shape[0]} image grids for {used} image spans in the microbatch")
+    return out
+
+
 def scatter_image_embeddings(decoder_input, token_positions, image_embeddings, *, tp_rank=0, sequence_parallel=False):
     """Replace only image tokens, retaining gradients on every visual TP replica."""
     if decoder_input.ndim != 3 or decoder_input.shape[1] != 1:
