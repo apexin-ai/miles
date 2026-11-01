@@ -341,7 +341,9 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler):
         lazy_moved = None
         if lazy is not None:
             if lazy.last_skipped != (images == 0):
-                raise ValueError(f"The lazy text-step decision {lazy.last_skipped} disagrees with {images} audited images")
+                raise ValueError(
+                    f"The lazy text-step decision {lazy.last_skipped} disagrees with {images} audited images"
+                )
             if lazy.last_skipped and lazy_before:
                 lazy_moved = sum(not torch.equal(p, before) for p, before in lazy_before)
                 if lazy_moved:

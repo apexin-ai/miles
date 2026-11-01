@@ -192,7 +192,12 @@ def _inner_state(opt, model, names):
     return out
 
 
-MERGER = ["vision_model.merger.norm.weight", "vision_model.merger.norm.bias", "vision_model.merger.fc.weight", "vision_model.merger.fc.bias"]
+MERGER = [
+    "vision_model.merger.norm.weight",
+    "vision_model.merger.norm.bias",
+    "vision_model.merger.fc.weight",
+    "vision_model.merger.fc.bias",
+]
 
 
 # --- the problem: without lazy, text-only steps move the merger ---
@@ -238,8 +243,14 @@ def test_lazy_matches_an_fp64_lazy_adam_reference():
     images = [True, False, False, True, False, True]
     model, opt, _ = _setup(seed=2)
     named = dict(model.named_parameters())
-    ref = {n: {"p": named[n].detach().double(), "m": torch.zeros_like(named[n], dtype=torch.float64),
-               "v": torch.zeros_like(named[n], dtype=torch.float64)} for n in MERGER}
+    ref = {
+        n: {
+            "p": named[n].detach().double(),
+            "m": torch.zeros_like(named[n], dtype=torch.float64),
+            "v": torch.zeros_like(named[n], dtype=torch.float64),
+        }
+        for n in MERGER
+    }
     for t, image in enumerate(images, start=1):
         opt.zero_grad()
         model(_X, image=image).backward()
@@ -400,11 +411,19 @@ def _audit_args(tmp_path, steps):
     hf.mkdir(parents=True, exist_ok=True)
     (hf / "config.json").write_text("{}")
     names = ["blocks.weight", "merger.norm.weight", "merger.norm.bias", "merger.fc.weight", "merger.fc.bias"]
-    (hf / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {f"model.visual.{n}": "v" for n in names}}))
+    (hf / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {f"model.visual.{n}": "v" for n in names}})
+    )
     return SimpleNamespace(
-        qwen38_audit_dir=str(tmp_path / "audit"), qwen38_freeze_language=False, qwen38_visual_snapshot_interval=0,
-        qwen38_audit_interval=1, hf_checkpoint=str(hf), num_rollout=steps, rollout_batch_size=1,
-        n_samples_per_prompt=1, global_batch_size=1,
+        qwen38_audit_dir=str(tmp_path / "audit"),
+        qwen38_freeze_language=False,
+        qwen38_visual_snapshot_interval=0,
+        qwen38_audit_interval=1,
+        hf_checkpoint=str(hf),
+        num_rollout=steps,
+        rollout_batch_size=1,
+        n_samples_per_prompt=1,
+        global_batch_size=1,
     )
 
 
