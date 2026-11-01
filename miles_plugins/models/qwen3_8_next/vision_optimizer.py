@@ -6,9 +6,10 @@
   full       the whole tower.
 
 --qwen38-vit-lr-mult / --qwen38-vit-wd-mult scale the language schedule for the ViT (every vision parameter except the
-merger), and are accepted only with full: the ViT's lr is the language lr times lr_mult at every step (max_lr and min_lr
-are both scaled; the warmup starts from the shared --lr-warmup-init), and its weight decay is the language weight decay
-schedule times wd_mult. The merger always trains with the language lr / wd, in projector and in full, so a projector run
+merger), and are accepted only with full: the ViT's max_lr and min_lr are the language ones times lr_mult, so after warmup its lr
+is the language lr times lr_mult at every step; during warmup both ramp from the shared --lr-warmup-init, so the ratio
+is exactly lr_mult only when that is 0 (the default). Its weight decay is the language weight decay schedule times
+wd_mult. The merger always trains with the language lr / wd, in projector and in full, so a projector run
 and a full run (or a projector -> full switch) keep the merger in the same param groups. With both 1.0 (the default) the
 param groups are exactly Megatron's standard ones (get_standard_config_overrides).
 

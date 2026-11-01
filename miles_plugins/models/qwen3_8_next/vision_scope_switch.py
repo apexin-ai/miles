@@ -18,12 +18,14 @@ This module loads the optimizer state across the layout change. It does not loos
      load_parameter_state_from_dp_reshardable, which handles the HDO / precision-aware storage as on any resume.
   3. The new parameters start fresh: fp32 main param = the loaded model weight (the bf16 tensor is exact in fp32),
      exp_avg = exp_avg_sq = 0. Their step is the global step every other parameter has (HybridDeviceOptimizer
-     restores one step for all groups and asserts it is unique), so Adam's bias correction is the steady-state one:
-     with zero moments the first updates are about sqrt(1 - beta2) / (1 - beta1) of a fresh Adam's (0.71 at
-     beta1 0.9 / beta2 0.98) and reach full size within ~1 / (1 - beta1) steps.
+     restores one step for all groups and asserts it is unique), not 0: this is not a freshly created Adam. With a
+     large step the bias corrections are ~1, so with zero moments the first update is about
+     (1 - beta1) / sqrt(1 - beta2) of a fresh Adam's (0.71 at beta1 0.9 / beta2 0.98; at a small step the remaining
+     bias corrections (1 - beta^t) still apply) and it grows to full size within ~1 / (1 - beta1) steps.
   4. Param groups that exist only because of the new parameters (e.g. the ViT's own group with --qwen38-vit-lr-mult)
-     are not in the checkpoint; they are added from the running config, with the checkpoint's step. Any other missing
-     group is an error.
+     are not in the checkpoint; they are added from the running config, with the checkpoint's step. A missing group is
+     accepted only if every one of its members on this rank is a new parameter (or it is empty here); any other
+     missing group is an error.
 Everything else (language / merger parameters and Adam state, scheduler, RNG, data cursor) loads exactly as on a plain
 resume. The next save is in the new layout; later resumes are plain.
 """
@@ -167,6 +169,14 @@ def _group_key(group):
     return tuple(group[k] if k in group else group[f"pre_{k}"] for k in param_group_identifier_keys)
 
 
+def groups_holding_only_new(model_param_group_index_map, new_params) -> set:
+    """Running group indices whose members on this rank are all new parameters (groups with an old member excluded)."""
+    with_new, with_old = set(), set()
+    for param, (group_index, _) in model_param_group_index_map.items():
+        (with_new if param in new_params else with_old).add(group_index)
+    return with_new - with_old
+
+
 def add_missing_param_groups(saved_groups, running_groups, allowed_indices):
     """Appends a saved group for each running group the checkpoint does not have; returns their indices.
 
@@ -239,7 +249,7 @@ class _Switch:
             {dtype: list(plan.old_layout.per_bucket_numel_unpadded) for dtype in opt.gbuf_ranges[i]}
             for i, plan in enumerate(self.plans)
         ]
-        self.allowed_groups = {opt.model_param_group_index_map[p][0] for p in self.new_params}
+        self.allowed_groups = groups_holding_only_new(opt.model_param_group_index_map, new_params)
         self.summary = {
             "translate": self.translate,
             "new_tensors_here": len(self.new_params),
