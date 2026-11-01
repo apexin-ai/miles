@@ -26,6 +26,17 @@ import typer
 
 import miles.utils.external_utils.command_utils as U
 
+VOCAB_SIZE = 248320
+
+
+def vocab_divisor(tp_size: int) -> int:
+    """Largest --make-vocab-size-divisible-by <= 128 (Megatron's default) whose product with TP divides the vocab.
+
+    A padded vocabulary breaks the HF weight load at TP8: 128 x 8 pads 248320 to 248832 and mbridge's scatter
+    of the 31040-row embedding shard into a 31104-row parameter fails.
+    """
+    return next(d for d in (128, 64, 32, 16, 8, 4, 2, 1) if VOCAB_SIZE % (d * tp_size) == 0)
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -103,6 +114,8 @@ def execute(args: ScriptArgs):
         f"--seq-length {args.seq_length} --recompute-granularity full --recompute-method uniform "
         "--recompute-num-layers 1 --linear-attention-backend fla "
     )
+    if (divisor := vocab_divisor(args.tp_size)) != 128:
+        perf_args += f"--make-vocab-size-divisible-by {divisor} "
     algorithm_args = (
         "--debug-train-only --loss-type sft_loss --calculate-per-token-loss "
         "--disable-compute-advantages-and-returns --bf16 --model-name qwen4_exp "
