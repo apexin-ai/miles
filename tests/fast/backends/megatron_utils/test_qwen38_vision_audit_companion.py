@@ -112,7 +112,7 @@ class Optimizer:
 
 def _args(tmp_path, *, freeze_language, steps, interval=1):
     hf = tmp_path / "hf"
-    hf.mkdir(exist_ok=True)
+    hf.mkdir(parents=True, exist_ok=True)
     (hf / "config.json").write_text("{}")
     weight_map = {"model.visual.blocks.weight": "v.safetensors", "model.visual.merger.weight": "v.safetensors"}
     (hf / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
@@ -181,7 +181,8 @@ def test_frozen_language_still_rejects_a_real_decoder_write(tmp_path):
 
 def test_joint_run_without_a_decoder_update_is_rejected_despite_the_counter(tmp_path):
     # Nonzero language gradients, lr 0: the decoder never moves, only the companion counter does.
-    model = Toy(freeze_language=False)
+    # A frozen tower keeps the visual checks out of the way.
+    model = Toy(freeze_language=False, scope="none")
     decoder = model.decoder.weight.detach().clone()
     args = _args(tmp_path, freeze_language=False, steps=2)
     with pytest.raises(ValueError, match="trainable decoder did not change"):
