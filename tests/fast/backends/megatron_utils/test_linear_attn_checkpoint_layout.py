@@ -9,6 +9,8 @@ from torch.distributed.checkpoint import FileSystemWriter
 from miles.backends.megatron_utils.checkpoint import (
     LINEAR_ATTN_LAYOUT_KEY,
     _has_linear_attention,
+    _has_replicated_gdn,
+    assert_checkpoint_has_replicated_gdn_layout,
     assert_linear_attn_checkpoint_is_current,
     publish_as_release,
 )
@@ -43,6 +45,41 @@ def test_only_models_with_linear_attention_are_checked():
     with_layer = torch.nn.Sequential(torch.nn.Linear(2, 2), Core())
     assert _has_linear_attention([with_layer])
     assert not _has_linear_attention([torch.nn.Sequential(torch.nn.Linear(2, 2))])
+
+
+def test_a_head_sharded_qwen38_checkpoint_is_rejected_by_the_replicated_gdn(tmp_path):
+    """Same names and global shapes, group-major rows: the replicated GDN would load it scrambled."""
+    _write(tmp_path / "iter_0000003", [f"{LAYER}.in_proj_qkv.weight", f"{LAYER}.{LINEAR_ATTN_LAYOUT_KEY}"])
+    (tmp_path / "latest_checkpointed_iteration.txt").write_text("3")
+    with pytest.raises(ValueError, match="--qwen38-gdn-head-sharded"):
+        assert_checkpoint_has_replicated_gdn_layout(str(tmp_path))
+
+
+def test_a_replicated_qwen38_checkpoint_passes_the_replicated_gdn(tmp_path):
+    _write(tmp_path / "release", [f"{LAYER}.in_proj_qkv.weight", f"{LAYER}.conv1d.weight"])
+    (tmp_path / "latest_checkpointed_iteration.txt").write_text("release")
+    assert_checkpoint_has_replicated_gdn_layout(str(tmp_path))
+
+
+def test_replicated_gdn_detection_needs_no_import(monkeypatch):
+    """Models without Qwen3.8-Next's GDN module loaded are not scanned and import nothing."""
+    import sys
+    from types import ModuleType
+
+    monkeypatch.delitem(sys.modules, "miles_plugins.models.qwen3_8_next.gdn", raising=False)
+    model = [torch.nn.Sequential(torch.nn.Linear(2, 2))]
+    assert not _has_replicated_gdn(model)
+    assert "miles_plugins.models.qwen3_8_next.gdn" not in sys.modules
+
+    fake = ModuleType("miles_plugins.models.qwen3_8_next.gdn")
+
+    class ReplicatedGDNAttention(torch.nn.Module):
+        pass
+
+    fake.ReplicatedGDNAttention = ReplicatedGDNAttention
+    monkeypatch.setitem(sys.modules, "miles_plugins.models.qwen3_8_next.gdn", fake)
+    assert not _has_replicated_gdn(model)
+    assert _has_replicated_gdn([torch.nn.Sequential(ReplicatedGDNAttention())])
 
 
 def _converted(save_dir, marker):

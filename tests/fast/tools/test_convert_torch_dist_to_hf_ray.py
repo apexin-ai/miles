@@ -75,6 +75,8 @@ def test_ray_conversion_uses_saved_hf_config_and_copies_explicit_assets(
     ("model_name", "hf_name"),
     [
         ("qwen3_5", "model.language_model.layers.0.linear_attn.A_log"),
+        # Qwen3.8-Next reads the head-sharded flag the tool takes from the marker
+        ("qwen4_exp", "model.language_model.layers.0.linear_attn.A_log"),
         ("kimi_k3", "language_model.model.layers.0.self_attn.A_log"),
     ],
 )
