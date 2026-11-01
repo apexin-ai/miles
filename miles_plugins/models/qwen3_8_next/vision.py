@@ -92,13 +92,14 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         if has_images != (pixel_values is not None):
             raise ValueError("Image tokens and image patches must come together in a microbatch")
         packed = kwargs.get("packed_seq_params")
-        boundaries = (0, ids.shape[1]) if packed is None else _host_boundaries(packed, ids.shape[1])
+        boundaries, rows = ((0, ids.shape[1]), 1) if packed is None else _host_boundaries(packed, ids.shape[1])
         # One row, or THD rows back to back: each row restarts at 0 (text) or has its native image mRoPE.
         positions = packed_rope_positions(
             ids[0],
             boundaries,
             qwen38_position_ids,
             image_grid_thw,
+            rows=rows,
             image_token_id=hf_config["image_token_id"],
             vision_start_token_id=hf_config["vision_start_token_id"],
             vision_end_token_id=hf_config["vision_end_token_id"],
@@ -139,14 +140,18 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
 
 
 def _host_boundaries(packed_seq_params, total):
-    """The pack's cu_seqlens from the host copy miles keeps (no device sync), else from the device tensor."""
+    """The pack's cu_seqlens (host copy miles keeps, no device sync) and how many of its segments are rows."""
     host = getattr(packed_seq_params, "cu_seqlens_host", None)
     if host is None:
         host = packed_seq_params.cu_seqlens_q.tolist()
     bounds = tuple(int(b) for b in host)
     if bounds[-1] != total:
         raise ValueError(f"cu_seqlens end at {bounds[-1]}, the microbatch has {total} tokens (CP must be 1)")
-    return bounds
+    # rows and get_batch's trailing pad cannot be told apart from token values (a real row may be all token 0)
+    rows = getattr(packed_seq_params, "sample_count", None)
+    if rows is None:
+        raise ValueError("Packed Qwen image SFT needs packed_seq_params.sample_count (miles get_batch sets it)")
+    return bounds, int(rows)
 
 
 def get_qwen38_vision_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args):
