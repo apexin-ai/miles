@@ -37,7 +37,12 @@ def test_full_visual_recipe_never_kills_existing_processes(monkeypatch, tmp_path
 
 def test_four_layer_cut_keeps_the_vision_model_args(monkeypatch, tmp_path):
     command = _record(monkeypatch, tmp_path, {"num_layers": 4, "tp_size": 8, "pp_size": 1, "ep_size": 8})
-    for setting in ("--num-layers 4", "--position-embedding-type mrope", "--mrope-section 11 11 10", "--no-rope-fusion"):
+    for setting in (
+        "--num-layers 4",
+        "--position-embedding-type mrope",
+        "--mrope-section 11 11 10",
+        "--no-rope-fusion",
+    ):
         assert setting in command
     assert "--num-layers 48" not in command and "--moe-layer-freq '[1,1,1,1]'" in command
 

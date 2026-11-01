@@ -96,7 +96,9 @@ class Optimizer:
             mapping[p] = (start, start + p.numel(), 0)
             start += p.numel()
         bucket = SimpleNamespace(grad_data=self.grad_data, offset=0)
-        self.buffers = [SimpleNamespace(param_index_map=mapping, buckets=[bucket], data_parallel_group=dist.group.WORLD)]
+        self.buffers = [
+            SimpleNamespace(param_index_map=mapping, buckets=[bucket], data_parallel_group=dist.group.WORLD)
+        ]
 
     def load_grads(self):
         start = 0
@@ -169,7 +171,9 @@ def test_frozen_language_with_the_real_companion_passes_three_updates(tmp_path):
     assert ModelCompanionWeightVersionUtils.weight_version([model]) == 3
     final = _record(args, 3)
     assert final["final_language_sha256"] == final["initial_language_sha256"]
-    assert final["visual_sha256"] != json.loads((tmp_path / "audit/rank-000-initial.json").read_text())["visual_sha256"]
+    assert (
+        final["visual_sha256"] != json.loads((tmp_path / "audit/rank-000-initial.json").read_text())["visual_sha256"]
+    )
 
 
 def test_frozen_language_still_rejects_a_real_decoder_write(tmp_path):
@@ -284,7 +288,9 @@ def _reload_model():
     )
     model.register_parameter("final_norm", torch.nn.Parameter(torch.linspace(0, 1, 64), requires_grad=False))
     model.model_companion.weight_version.add_(3)
-    model.model_companion.record_sample_consumptions([SampleLineage(source_sample_index=5, output_index=0, output_count=1)])
+    model.model_companion.record_sample_consumptions(
+        [SampleLineage(source_sample_index=5, output_index=0, output_count=1)]
+    )
     return model
 
 
@@ -296,9 +302,15 @@ def _loader(model, path, calls, *, after_load=None):
     """A Megatron-free stand-in with the real load_checkpoint signature: a real state_dict round trip."""
     from miles.backends.megatron_utils.checkpoint import _CheckpointLoadResult
 
-    def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt, *, args):
-        calls.append({name: getattr(args.backend, name) for name in ("load", "ckpt_step", "finetune", "no_load_optim")})
-        assert torch.isnan(model.decoder.weight.flatten()[0]) and torch.isnan(model.vision_model.blocks.weight.flatten()[0])
+    def load_checkpoint(
+        ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt, *, args
+    ):
+        calls.append(
+            {name: getattr(args.backend, name) for name in ("load", "ckpt_step", "finetune", "no_load_optim")}
+        )
+        assert torch.isnan(model.decoder.weight.flatten()[0]) and torch.isnan(
+            model.vision_model.blocks.weight.flatten()[0]
+        )
         assert not torch.equal(model.ple_offsets[:32], torch.arange(32) * 7)
         assert model.model_companion.weight_version.item() == 3
         ddp_model[0].load_state_dict(torch.load(path, weights_only=True))
