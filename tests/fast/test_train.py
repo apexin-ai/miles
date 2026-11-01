@@ -29,6 +29,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         check_weight_update_equal=False,
         check_weight_update_selector=None,
         check_weight_update_skip_list=None,
+        clear_memory_every_step=True,
         colocate_memory_peak_device="cpu",
         debug_exit_after_rollout=None,
         eval_interval=None,
@@ -421,3 +422,169 @@ class TestOutputStoreRelease:
         await with_disposer(train_driver.train, _startup_info(args))
 
         assert trained_at_release == [(0, [0]), (1, [0, 1]), (2, [0, 1, 2])]
+
+
+_LOOP_EVENTS = ("actor_train:", "executor_save:", "actor_save:", "eval:", "update_weights:")
+
+
+def _loop_trace(events: list[str]) -> list[str]:
+    """The training loop's events from the first trained rollout on, with the per-step memory work kept."""
+    loop = events[events.index("actor_train:0") :] if "actor_train:0" in events else []
+    return [e for e in loop if e.startswith(_LOOP_EVENTS) or e in ("actor_clear_memory", "actor_offload")]
+
+
+class TestClearMemoryEveryStep:
+    async def test_default_clears_after_every_rollout_but_the_last(self, monkeypatch: pytest.MonkeyPatch):
+        """Today's behaviour stays the default: a clear between every two rollouts, none after the final one."""
+        events: list[str] = []
+        args = _make_args(num_rollout=4)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert _loop_trace(events) == [
+            "actor_train:0",
+            "actor_clear_memory",
+            "update_weights:0",
+            "actor_train:1",
+            "actor_clear_memory",
+            "update_weights:1",
+            "actor_train:2",
+            "actor_clear_memory",
+            "update_weights:2",
+            "actor_train:3",
+        ]
+
+    async def test_off_keeps_the_cache_between_plain_steps(self, monkeypatch: pytest.MonkeyPatch):
+        events: list[str] = []
+        args = _make_args(num_rollout=4, clear_memory_every_step=False)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert components.actor_model.trained == [0, 1, 2, 3]
+        assert "actor_clear_memory" not in events
+        assert [e for e in events if e.startswith("update_weights:")] == [
+            "update_weights:None",
+            "update_weights:0",
+            "update_weights:1",
+            "update_weights:2",
+        ]
+
+    async def test_off_clears_before_and_after_each_save(self, monkeypatch: pytest.MonkeyPatch):
+        """A save (and its HF export) starts from a clear cache and leaves one; the final save has no step after it."""
+        events: list[str] = []
+        args = _make_args(num_rollout=5, save_interval=2, clear_memory_every_step=False)
+        components = _install_driver_fakes(monkeypatch, args, events, num_rollout_per_epoch=100)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert components.actor_model.saved == [1, 3, 4]
+        assert _loop_trace(events) == [
+            "actor_train:0",
+            "update_weights:0",
+            "actor_train:1",
+            "actor_clear_memory",
+            "executor_save:1",
+            "actor_save:1",
+            "actor_clear_memory",
+            "update_weights:1",
+            "actor_train:2",
+            "update_weights:2",
+            "actor_train:3",
+            "actor_clear_memory",
+            "executor_save:3",
+            "actor_save:3",
+            "actor_clear_memory",
+            "update_weights:3",
+            "actor_train:4",
+            "actor_clear_memory",
+            "executor_save:4",
+            "actor_save:4",
+        ]
+
+    async def test_on_does_not_add_a_clear_before_the_save(self, monkeypatch: pytest.MonkeyPatch):
+        """The pre-save clear belongs to the off mode only: the default keeps miles' exact call sequence."""
+        events: list[str] = []
+        args = _make_args(num_rollout=3, save_interval=2)
+        _install_driver_fakes(monkeypatch, args, events, num_rollout_per_epoch=100)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert _loop_trace(events) == [
+            "actor_train:0",
+            "actor_clear_memory",
+            "update_weights:0",
+            "actor_train:1",
+            "executor_save:1",
+            "actor_save:1",
+            "actor_clear_memory",
+            "update_weights:1",
+            "actor_train:2",
+            "executor_save:2",
+            "actor_save:2",
+        ]
+
+    async def test_off_clears_before_every_eval_including_the_final_one(self, monkeypatch: pytest.MonkeyPatch):
+        events: list[str] = []
+        args = _make_args(num_rollout=4, eval_interval=2, skip_eval_before_train=True, clear_memory_every_step=False)
+        _install_driver_fakes(monkeypatch, args, events, num_rollout_per_epoch=100)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert _loop_trace(events) == [
+            "actor_train:0",
+            "update_weights:0",
+            "actor_train:1",
+            "actor_clear_memory",
+            "update_weights:1",
+            "eval:1",
+            "actor_train:2",
+            "update_weights:2",
+            "actor_train:3",
+            "actor_clear_memory",
+            "update_weights:3",
+            "eval:3",
+        ]
+
+    async def test_off_clears_around_a_sentinel_save(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
+        """An operator-triggered save gets the same clears as a scheduled one."""
+        sentinel = tmp_path / "save-now"
+        events: list[str] = []
+        args = _make_args(num_rollout=3, save_trigger_sentinel=str(sentinel), clear_memory_every_step=False)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        async def train_and_request_save(rollout_id, rollout_data, external_data=None):
+            events.append(f"actor_train:{rollout_id}")
+            components.actor_model.trained.append(rollout_id)
+            if rollout_id == 0:
+                sentinel.write_text("")
+
+        components.actor_model.train = train_and_request_save
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert not sentinel.exists()
+        assert _loop_trace(events) == [
+            "actor_train:0",
+            "actor_clear_memory",
+            "executor_save:0",
+            "actor_save:0",
+            "actor_clear_memory",
+            "update_weights:0",
+            "actor_train:1",
+            "update_weights:1",
+            "actor_train:2",
+        ]
+
+    async def test_offload_train_still_offloads_every_step(self, monkeypatch: pytest.MonkeyPatch):
+        """The flag only drops the cache clear: an offloading run hands its GPU over after each step either way
+        (argument validation refuses this combination; the driver must still not skip the offload)."""
+        events: list[str] = []
+        args = _make_args(num_rollout=3, offload_train=True, clear_memory_every_step=False)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert events.count("actor_offload") == 2
+        assert "actor_clear_memory" not in events

@@ -820,6 +820,21 @@ def train_one_step(
 _step_num_tokens: torch.Tensor | None = None
 
 
+_low_memory_clears = 0
+
+
+def _log_low_memory_clear(free: int, total: int) -> None:
+    """Log this rank's in-step low-memory clears (1st, 2nd, 4th, 8th, ...): with --no-clear-memory-every-step a
+    clear here on most steps would spend the time the flag saves."""
+    global _low_memory_clears
+    _low_memory_clears += 1
+    if _low_memory_clears & (_low_memory_clears - 1) == 0:
+        logger.info(
+            f"finalize_model_grads: free {free / 2**30:.1f} of {total / 2**30:.1f} GiB is under 10%, cleared the "
+            f"CUDA cache (low-memory clear #{_low_memory_clears} on this rank)"
+        )
+
+
 def finalize_model_grads_with_empty_cache(model, num_tokens=None, *args, finalize=finalize_model_grads, **kwargs):
     global _step_num_tokens
     # TODO: this is an ad-hoc method and we should figure out why the oom happens in the first place.
@@ -827,6 +842,7 @@ def finalize_model_grads_with_empty_cache(model, num_tokens=None, *args, finaliz
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
+        _log_low_memory_clear(free, total)
     from .lora.utils import reduce_marked_lora_grads
 
     reduce_marked_lora_grads(model)
