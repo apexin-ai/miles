@@ -193,3 +193,150 @@ def test_install_needs_megatrons_distributed_optimizer():
     model = _model("full")
     with pytest.raises(ValueError, match="DistributedOptimizer"):
         switch.install([model], torch.optim.SGD(model.parameters(), lr=0.1), from_scope="projector", to_scope="full")
+
+
+# --- the DistributedOptimizer glue, on a stand-in with exactly the attributes the switch reads ------------------------
+
+_DTYPE = (torch.float32, torch.float32)
+_STATES = ("param", "exp_avg", "exp_avg_sq")
+
+
+class _FakeDistOpt:
+    """Holds per-rank main param / Adam shards like Megatron's DistributedOptimizer (dense buffer, one dtype)."""
+
+    def __init__(self, model, layout, dp, rank, bucket_size):
+        self.params = _ddp_params(model)
+        self.buffers = [
+            SimpleNamespace(
+                params=self.params,
+                param_index_map=layout.param_index_map,
+                buckets=[SimpleNamespace(numel_unpadded=n) for n in layout.per_bucket_numel_unpadded],
+                data_parallel_world_size=dp,
+                ddp_config=_DDP,
+            )
+        ]
+        self.gbuf_ranges = [{_DTYPE: [{"param_map": m} for m in _rank_param_maps(layout, dp, rank)]}]
+        self.per_bucket_numel_unpadded = [{_DTYPE: list(layout.per_bucket_numel_unpadded)}]
+        self.data_parallel_group = SimpleNamespace(rank=lambda: rank)
+        self.data_parallel_group_idx = 0
+        self.distributed_optimizer_instance_id = 0
+        owned = [p for bucket in self.gbuf_ranges[0][_DTYPE] for p in bucket["param_map"]]
+        self.model_param_group_index_map = {p: (0, i) for i, p in enumerate(owned)}
+        self.optimizer = SimpleNamespace(param_groups=[{"params": owned}])
+        self.shards = {}
+        for bucket in self.gbuf_ranges[0][_DTYPE]:
+            for p, ranges in bucket["param_map"].items():
+                n = ranges["param"].size
+                self.shards[p] = {k: torch.full((n,), -7.0) for k in _STATES} | {"step": torch.tensor(5.0)}
+        self.loaded_with = None
+
+    def _get_main_param_and_optimizer_states(self, model_param):
+        return dict(self.shards[model_param])
+
+    def sharded_param_state_dp_reshardable(self, *args):
+        raise AssertionError("the original request must not be built during a switch load")
+
+    def load_parameter_state_from_dp_reshardable(self, state_dict):
+        self.loaded_with = state_dict
+
+    def load_state_dict(self, state_dict):
+        self.load_parameter_state_from_dp_reshardable(state_dict["param_state"])
+
+
+def _fake_load(request, old, saved_by_state):
+    """What dist_checkpointing.load does with the request: fill each ShardedTensor from the checkpoint's tensor."""
+    from megatron.core.dist_checkpointing.mapping import LocalNonpersistentObject, ShardedObject, ShardedTensor
+
+    out = {}
+    for name, value in request.items():
+        if isinstance(value, LocalNonpersistentObject):
+            out[name] = value.unwrap()
+        elif isinstance(value, ShardedObject):
+            assert value.key == f"optimizer.distributed.dp_group_idx_0.{name}"
+            out[name] = (
+                [{_DTYPE: list(old.per_bucket_numel_unpadded)}]
+                if name.endswith("unpadded")
+                else [{_DTYPE: [e - s for s, e in old.bucket_indices]}]
+            )
+        else:
+            loaded = {}
+            for key, tensor in value.items():
+                assert isinstance(tensor, ShardedTensor)
+                prefix, state = tensor.key.rsplit(".", 1)
+                bucket = int(prefix.rsplit("bucket_idx_", 1)[1])
+                assert prefix == f"optimizer.distributed.dp_group_idx_0.gbuf_idx_0.dtype_{_DTYPE}.bucket_idx_{bucket}"
+                assert tensor.global_shape == (old.per_bucket_numel_unpadded[bucket],)
+                (offset,) = tensor.global_offset
+                loaded[key] = saved_by_state[state][bucket][offset : offset + tensor.local_shape[0]].clone()
+            out[name] = loaded
+    return out
+
+
+@pytest.mark.parametrize("dp", [1, 2])
+def test_the_switch_reads_old_buckets_and_hands_megatron_the_new_layout(dp):
+    full = _model("full")
+    params = _ddp_params(full)
+    new = switch.new_trainable_parameters([full], "projector")
+    running = _layout(params, dp)
+    old = _layout([p for p in params if p not in new], dp)
+    values = {
+        k: {p: torch.arange(p.numel(), dtype=torch.float32) + 1000 * i + 1e5 * j for i, p in enumerate(params) if p not in new}
+        for j, k in enumerate(_STATES)
+    }
+    saved = {k: [b.float() for b in _saved_old_buckets(old, {p: v.double() for p, v in values[k].items()})] for k in _STATES}
+    gap_cover = {}
+    for rank in range(dp):
+        opt = _FakeDistOpt(full, running, dp, rank, None)
+        sw = switch._Switch(opt, new, [None])
+        sw.bind()
+        request = opt.sharded_param_state_dp_reshardable(None, True, None)
+        assert bool(request["gaps"]) == (rank == 0 and any(sw.plans[0].gaps.values()))
+        for key, tensor in request["gaps"].items():
+            gap_cover.setdefault(key, tensor.global_offset)
+        opt.load_parameter_state_from_dp_reshardable(_fake_load(request, old, saved))
+        handed = opt.loaded_with
+        assert handed["per_bucket_numel_unpadded"] == opt.per_bucket_numel_unpadded
+        for bucket, rows in zip(opt.gbuf_ranges[0][_DTYPE], handed[0][_DTYPE]):
+            assert len(rows) == len(bucket["param_map"])
+            for (p, ranges), got in zip(bucket["param_map"].items(), rows):
+                a, b = ranges["param"].start, ranges["param"].end
+                assert got["padding"] is False and torch.equal(got["step"], torch.tensor(5.0))
+                if p in new:
+                    assert torch.equal(got["param"], p.detach().view(-1)[a:b])
+                    assert not got["exp_avg"].any() and not got["exp_avg_sq"].any()
+                else:
+                    for k in _STATES:
+                        assert torch.equal(got[k], values[k][p][a:b]), (k, new.get(p))
+        assert sw.loaded and sw.summary["fresh_slices_here"] == sum(1 for m in opt.gbuf_ranges[0][_DTYPE] for p in m["param_map"] if p in new)
+        # once loaded, saves and later loads take Megatron's own path
+        with pytest.raises(AssertionError, match="original request"):
+            opt.sharded_param_state_dp_reshardable(None, True, None)
+    assert gap_cover  # the tiny model's 64-alignment leaves old padding, read on DP rank 0
+
+
+def test_a_checkpoint_whose_buckets_do_not_match_the_old_layout_is_refused():
+    full = _model("full")
+    params = _ddp_params(full)
+    new = switch.new_trainable_parameters([full], "projector")
+    running = _layout(params, 1)
+    opt = _FakeDistOpt(full, running, 1, 0, None)
+    sw = switch._Switch(opt, new, [None])
+    sw.bind()
+    request = opt.sharded_param_state_dp_reshardable(None, True, None)
+    old = _layout([p for p in params if p not in new], 1)
+    saved = {k: [b.float() for b in _saved_old_buckets(old, {p: torch.zeros(p.numel(), dtype=torch.float64) for p in params if p not in new})] for k in _STATES}
+    loaded = _fake_load(request, old, saved)
+    loaded["per_bucket_numel_unpadded"] = opt.per_bucket_numel_unpadded  # a checkpoint already in the new layout
+    with pytest.raises(ValueError, match="do not match the layout without the new vision parameters"):
+        opt.load_parameter_state_from_dp_reshardable(loaded)
+
+
+def test_an_optimizer_without_new_parameters_keeps_megatrons_own_load():
+    projector = _model("projector")
+    params = _ddp_params(projector)
+    opt = _FakeDistOpt(projector, _layout(params, 1), 1, 0, None)
+    sw = switch._Switch(opt, switch.new_trainable_parameters([_model("full")], "projector"), [None])
+    sw.bind()
+    assert not sw.translate
+    with pytest.raises(AssertionError, match="original request"):
+        opt.sharded_param_state_dp_reshardable(None, True, None)
