@@ -23,12 +23,15 @@ class _ZeroGradsFor(torch.autograd.Function):
 
     With --overlap-grad-reduce, Megatron DDP reduces a bucket only after every parameter in it reported a gradient in
     the last microbatch of the step. A trainable tower skipped on a text microbatch would never report.
+
+    The result is not a view: on a non-last pipeline stage Megatron frees the sent output tensor
+    (deallocate_output_tensor), which refuses a view of another tensor.
     """
 
     @staticmethod
     def forward(ctx, output, *parameters):
         ctx.shapes = [(p.shape, p.dtype, p.device) for p in parameters]
-        return output.view_as(output)
+        return output.detach()
 
     @staticmethod
     def backward(ctx, grad_output):

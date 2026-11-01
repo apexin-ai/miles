@@ -5,6 +5,7 @@ text-only data the tower must be frozen before the optimizer is built: a tower t
 otherwise get zero gradients and AdamW weight decay would shrink it.
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -282,9 +283,14 @@ def test_positive_control_a_trainable_tower_on_text_steps_is_shrunk_by_weight_de
     assert any(not torch.equal(p, tower[name]) for name, p in model.vision_model.named_parameters())
 
 
+def _text_of(content):
+    """A message's text: a string, or the text parts of a content list (the dataset's conversation format)."""
+    return content if isinstance(content, str) else "".join(part.get("text", "") for part in content)
+
+
 class _Tokenizer:
     def apply_chat_template(self, messages, *, add_generation_prompt, **kwargs):
-        text = "".join(f"[{m['role']}]{m['content']}[end]" for m in messages)
+        text = "".join(f"[{m['role']}]{_text_of(m['content'])}[end]" for m in messages)
         return text + ("[assistant]" if add_generation_prompt else "")
 
     def __call__(self, text, **kwargs):
@@ -295,7 +301,10 @@ class _Tokenizer:
 
 
 class _Processor:
+    """Has no extract_media, so the dataset takes the qwen_vl_utils media path, as with the real Qwen processor."""
+
     tokenizer = _Tokenizer()
+    image_processor = SimpleNamespace(patch_size=16)
 
     def __call__(self, *args, **kwargs):
         raise AssertionError("a text sample must not go through the image processor")
@@ -313,6 +322,18 @@ def test_a_text_sample_encodes_without_image_inputs_when_text_is_allowed():
         vision_sft.encode_sft_sample(_Processor(), _CONFIG, _TEXT_MESSAGES, [])
 
 
+def _rollout_args(data):
+    return SimpleNamespace(
+        rollout_global_dataset=True,
+        hf_checkpoint="/ckpt",
+        qwen38_vision_data=data,
+        rollout_batch_size=1,
+        apply_chat_template_kwargs=None,
+        seq_length=4096,
+        qwen38_sft_final_answer_format="dataset",
+    )
+
+
 @pytest.mark.parametrize(
     "data, images, expect",
     [
@@ -326,15 +347,7 @@ def test_generate_rollout_follows_the_data_mode(data, images, expect, monkeypatc
     monkeypatch.setattr(vision_sft, "_processor", lambda checkpoint: (_Processor(), _CONFIG))
     sample = SimpleNamespace(index=0, prompt=_TEXT_MESSAGES, multimodal_inputs={"images": images}, metadata={})
     buffer = SimpleNamespace(get_samples=lambda n: [(sample,)])
-    args = SimpleNamespace(
-        rollout_global_dataset=True,
-        hf_checkpoint="/ckpt",
-        qwen38_vision_data=data,
-        rollout_batch_size=1,
-        apply_chat_template_kwargs=None,
-        seq_length=4096,
-        qwen38_sft_final_answer_format="dataset",
-    )
+    args = _rollout_args(data)
     if expect == "reject":
         with pytest.raises(ValueError, match="images but --qwen38-vision-data is text|needs real images"):
             vision_sft.generate_rollout(args, 0, buffer)
@@ -342,3 +355,110 @@ def test_generate_rollout_follows_the_data_mode(data, images, expect, monkeypatc
         [[out]] = vision_sft.generate_rollout(args, 0, buffer)
         assert out.multimodal_train_inputs is None
         assert out.response_length == sum(out.loss_mask) == len("A[end]")
+
+
+def _dataset_text_sample(tmp_path):
+    """A text row read like the training data: the real Dataset and media extraction (qwen_vl_utils)."""
+    from miles.utils.data import Dataset
+
+    path = tmp_path / "text.jsonl"
+    path.write_text(json.dumps({"messages": _TEXT_MESSAGES, "images": []}) + "\n")
+    dataset = Dataset(
+        str(path), _Tokenizer(), _Processor(), None, prompt_key="messages", multimodal_keys={"image": "images"}
+    )
+    [sample] = dataset.origin_samples
+    assert sample.multimodal_inputs == {"images": None, "videos": None}
+    sample.index = 0
+    return sample
+
+
+@pytest.mark.parametrize("data", ["text", "mixed", "image"])
+def test_a_text_row_from_the_dataset_follows_the_data_mode(data, tmp_path, monkeypatch):
+    monkeypatch.setattr(vision_sft, "_processor", lambda checkpoint: (_Processor(), _CONFIG))
+    sample = _dataset_text_sample(tmp_path)
+    buffer = SimpleNamespace(get_samples=lambda n: [(sample,)])
+    if data == "image":
+        with pytest.raises(ValueError, match="needs real images"):
+            vision_sft.generate_rollout(_rollout_args(data), 0, buffer)
+        return
+    [[out]] = vision_sft.generate_rollout(_rollout_args(data), 0, buffer)
+    assert out.multimodal_train_inputs is None
+    assert out.response_length == sum(out.loss_mask) == len("A[end]")
+
+
+@pytest.mark.parametrize("data", ["text", "mixed", "image"])
+def test_a_sample_with_videos_is_rejected(data, monkeypatch):
+    monkeypatch.setattr(vision_sft, "_processor", lambda checkpoint: (_Processor(), _CONFIG))
+    sample = SimpleNamespace(
+        index=0, prompt=_TEXT_MESSAGES, multimodal_inputs={"images": None, "videos": ["clip"]}, metadata={}
+    )
+    with pytest.raises(ValueError, match="has videos"):
+        vision_sft.generate_rollout(_rollout_args(data), 0, SimpleNamespace(get_samples=lambda n: [(sample,)]))
+
+
+class _FirstPipelineStage(_Language):
+    """A non-last pipeline stage: returns a viewless [s, b, h] activation for the next stage, not a loss."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.post_process = False
+        self.config = SimpleNamespace(
+            params_dtype=torch.float32,
+            sequence_parallel=False,
+            timers=None,
+            deallocate_pipeline_outputs=True,
+            num_moe_experts=None,
+            mtp_num_layers=None,
+        )
+
+    def forward(self, input_ids=None, position_ids=None, decoder_input=None, **kwargs):
+        hidden = (decoder_input if decoder_input is not None else self.embedding(input_ids)).contiguous()
+        hidden = (hidden @ self.head.weight.T + self.head.bias).clone()
+        assert hidden._base is None
+        return hidden
+
+
+@pytest.mark.parametrize("scope", ["full", "projector", "none"])
+def test_a_text_activation_is_released_and_backpropagated_by_the_pipeline_schedule(scope, monkeypatch):
+    """Megatron frees a non-last stage's sent output (deallocate_output_tensor refuses a view), then runs backward
+    from it with custom_backward. The tower still reports zero grads; the language gradients are unchanged."""
+    from megatron.core.pipeline_parallel import schedules
+
+    def stage(scope):
+        torch.manual_seed(0)
+        model = _FirstPipelineStage()
+        vision.wire_visual(model, _CONFIG, scope=scope, recompute=False, freeze_language=False, data="mixed")
+        _forbid_vision_forward(model, monkeypatch)
+        return model
+
+    model = stage(scope)
+    reports = _grad_reports(model)
+    output = model(input_ids=_text_ids())
+    sent, _ = schedules.forward_step_calc_loss(
+        model=model,
+        output_tensor=output,
+        loss_func=None,
+        config=model.config,
+        vp_stage=None,
+        collect_non_loss_data=False,
+        num_microbatches=1,
+        forward_data_store=[],
+        cp_group_size=1,
+        is_last_stage=False,
+    )
+    assert sent is output and sent._base is None
+    grad_from_next_stage = torch.linspace(-1, 1, output.numel()).view_as(output)
+    schedules.deallocate_output_tensor([sent], model.config.deallocate_pipeline_outputs)
+    assert sent.numel() == 1
+    schedules.custom_backward(sent, grad_from_next_stage)
+
+    trainable = {name for name, p in model.vision_model.named_parameters() if p.requires_grad}
+    assert set(reports) == trainable and (scope == "none") == (not trainable)
+    for name, p in model.vision_model.named_parameters():
+        assert (p.grad is None) if name not in trainable else torch.equal(p.grad, torch.zeros_like(p)), name
+    reference = stage("none")
+    reference(input_ids=_text_ids()).backward(grad_from_next_stage)
+    language = {n: p.grad for n, p in model.named_parameters() if not n.startswith("vision_model.")}
+    for name, p in reference.named_parameters():
+        if not name.startswith("vision_model."):
+            assert torch.equal(language[name], p.grad), name
