@@ -73,6 +73,17 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
     qwen38_sft_final_answer_format: A[str, Arg(choices=["dataset", "integer-only"])] = "dataset"
     qwen38_audit_dir: A[str | None, Arg()] = None
     qwen38_visual_snapshot_interval: A[int, Arg()] = 0
+    qwen38_gdn_head_sharded: A[
+        bool,
+        Arg(
+            help=(
+                "Run Qwen3.8-Next's GDN layers head-sharded across TP (Qwen3.5's layer: each TP rank computes 1 / TP "
+                "of the heads) instead of replicated on every TP rank. Same parameter names, but q/k/v and conv rows "
+                "are group-major and TP-sharded, so torch_dist checkpoints of the two layouts are not interchangeable; "
+                "HF load and export convert either way."
+            )
+        ),
+    ] = False
 
 
 class DsaMegatronPluginsConfig(BaseConfig):

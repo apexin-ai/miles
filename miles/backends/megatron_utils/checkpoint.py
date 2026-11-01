@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -158,6 +159,8 @@ def load_checkpoint(
             assert_checkpoint_is_current(checkpoint_path)
         if not has_local_checkpoint_manager and _has_linear_attention(ddp_model):
             assert_linear_attn_checkpoint_is_current(checkpoint_path)
+        elif not has_local_checkpoint_manager and _has_replicated_gdn(ddp_model):
+            assert_checkpoint_has_replicated_gdn_layout(checkpoint_path)
         with safe_globals([MegatronArgsNamespace]), args.backend.mutable():
             result_iteration, _ = _load_checkpoint_megatron(
                 ddp_model=ddp_model,
@@ -231,17 +234,46 @@ def _has_linear_attention(ddp_model) -> bool:
     return any(LINEAR_ATTN_LAYOUT_KEY in name for chunk in ddp_model for name, _ in chunk.named_buffers())
 
 
+def _has_replicated_gdn(ddp_model) -> bool:
+    # a model holding the replicated GDN has imported its module; other models skip the plugin's heavy imports
+    gdn = sys.modules.get("miles_plugins.models.qwen3_8_next.gdn")
+    if gdn is None:
+        return False
+    return any(isinstance(module, gdn.ReplicatedGDNAttention) for chunk in ddp_model for module in chunk.modules())
+
+
+def _checkpoint_iteration_dir(load_dir: str) -> Path:
+    path = Path(load_dir)
+    step_file = path / "latest_checkpointed_iteration.txt"
+    if step_file.is_file():
+        step = step_file.read_text().strip()
+        path = path / (step if step == "release" else f"iter_{int(step):07d}")
+    return path
+
+
+def assert_checkpoint_has_replicated_gdn_layout(load_dir: str) -> None:
+    """Reject a torch_dist checkpoint written by the head-sharded GDN (Qwen3.8-Next with
+    --qwen38-gdn-head-sharded: group-major q/k/v and conv rows) when this model runs the replicated GDN, which
+    holds HF's flat rows under the same names and global shapes, so the load would succeed scrambled."""
+    from torch.distributed.checkpoint import FileSystemReader
+
+    path = _checkpoint_iteration_dir(load_dir)
+    if not path.is_dir():
+        return
+    if any(key.endswith(LINEAR_ATTN_LAYOUT_KEY) for key in FileSystemReader(path).read_metadata().state_dict_metadata):
+        raise ValueError(
+            f"{load_dir} was written by the head-sharded GDN (--qwen38-gdn-head-sharded) and would load scrambled "
+            "into the replicated GDN. Load it with --qwen38-gdn-head-sharded, or go through an HF export."
+        )
+
+
 def assert_linear_attn_checkpoint_is_current(load_dir: str) -> None:
     """Reject torch_dist checkpoints written before the shared linear-attention layer (group-major GDN
     q/k/v and conv rows, Kimi-K3 KDA under linear_attn.*). Megatron skips tensors a checkpoint lacks, so
     such a checkpoint would load scrambled or half-initialized instead of failing."""
     from torch.distributed.checkpoint import FileSystemReader
 
-    path = Path(load_dir)
-    step_file = path / "latest_checkpointed_iteration.txt"
-    if step_file.is_file():
-        step = step_file.read_text().strip()
-        path = path / (step if step == "release" else f"iter_{int(step):07d}")
+    path = _checkpoint_iteration_dir(load_dir)
     if not path.is_dir():
         return
     if not any(

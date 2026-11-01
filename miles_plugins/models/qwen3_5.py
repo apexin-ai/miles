@@ -68,12 +68,21 @@ class Attention(LinearAttentionLayer):
             norm_eps=text_config.rms_norm_eps,
             tp_group=pg_collection.tp,
             backend=args.linear_attention_backend,
-            norm_activation=text_config.hidden_act,
+            norm_activation=self.norm_activation(text_config),
         )
-        input_layernorm = gdn_input_layernorm(
+        input_layernorm = self.build_input_layernorm(args, config, text_config)
+        super().__init__(config, linear_attn, input_layernorm, pg_collection, allgather_cp=args.allgather_cp)
+
+    @staticmethod
+    def norm_activation(text_config) -> str:
+        """Activation of the output gate in the gated RMSNorm."""
+        return text_config.hidden_act
+
+    @staticmethod
+    def build_input_layernorm(args, config, text_config) -> nn.Module:
+        return gdn_input_layernorm(
             args.linear_attention_input_norm, text_config.hidden_size, text_config.rms_norm_eps, config.params_dtype
         )
-        super().__init__(config, linear_attn, input_layernorm, pg_collection, allgather_cp=args.allgather_cp)
 
 
 def get_qwen3_5_spec(args, config, vp_stage):
