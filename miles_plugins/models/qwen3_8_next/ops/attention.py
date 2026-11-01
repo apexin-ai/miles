@@ -137,9 +137,14 @@ class Qwen38NextAttention(SelfAttention):
                 )
             self._qsa_cu_seqlens = cu
             positions = self._packed_positions(cu, seq)
+            # miles' get_batch keeps the same boundaries on the host: the indexer plans its tiles from them
+            cu_host = getattr(
+                packed, "cu_seqlens_host", None
+            )  # config-access-exempt: only miles' PackedSeqParamsWithHostCuSeqlens carries the host copy
         else:
             self._qsa_cu_seqlens = None
             positions = torch.arange(seq, device=hidden_states.device)
+            cu_host = None
         rotary_pos_emb = kwargs.get("rotary_pos_emb")
         if rotary_pos_emb is None:
             raise RuntimeError("the QSA indexer reuses the attention RoPE, but no rotary_pos_emb was passed")
@@ -160,6 +165,7 @@ class Qwen38NextAttention(SelfAttention):
                     self._qsa_cu_seqlens,
                     materialized_rope=materialized_rope,
                     tp_group=self._indexer_tp_group(),
+                    cu_seqlens_host=cu_host,
                 )
             else:
                 self._qsa_selection = self._token_selection(
@@ -226,6 +232,7 @@ def qsa_selected_blocks(
     cu_seqlens: Tensor | None,
     materialized_rope: bool = False,
     tp_group=None,
+    cu_seqlens_host: tuple[int, ...] | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Indexer selection -> ``(blocks, cu_seqlens)``, the input of ``build_qsa_block_index``.
 
@@ -235,7 +242,8 @@ def qsa_selected_blocks(
     The query's own partial block is not listed: ``build_qsa_block_index`` adds every query's causal
     tail itself, and a tail id here would be a block the kernel ignores. The ids are written tile by
     tile into one buffer, so neither a ``[T, token_budget]`` token selection nor a ``[T, blocks]``
-    bitmap is built.
+    bitmap is built. ``cu_seqlens_host`` (the same boundaries on the host) spares the indexer's tile
+    plan its device reads, see ``iter_selected_blocks``.
 
     With ``tp_group`` each of its ``n`` ranks scores the rows ``rank, rank + n, ...`` and the shards are
     all-gathered and interleaved back; a row's selection does not depend on the other rows, so the result is the
@@ -252,7 +260,7 @@ def qsa_selected_blocks(
         n_shards = torch.distributed.get_world_size(tp_group)
         row_shard = (torch.distributed.get_rank(tp_group), n_shards)
         rows = -(-seq // n_shards)  # every shard padded to the longest (rank 0's)
-    width = indexer_block_width(indexer, positions, cu_seqlens)
+    width = indexer_block_width(indexer, positions, cu_seqlens, cu_seqlens_host)
     blocks = torch.full((rows, width), -1, dtype=torch.int32, device=device)
     for start, end, block_idx in indexer.iter_selected_blocks(
         indexer_states,
@@ -261,6 +269,7 @@ def qsa_selected_blocks(
         cu_seqlens,
         materialized_rope=materialized_rope,
         row_shard=row_shard,
+        cu_seqlens_host=cu_seqlens_host,
     ):
         blocks[start:end] = block_idx
     if row_shard is not None:
@@ -272,7 +281,12 @@ def qsa_selected_blocks(
     return blocks, cu
 
 
-def indexer_block_width(indexer: Qwen38NextQSAIndexer, positions: Tensor, cu_seqlens: Tensor | None) -> int:
+def indexer_block_width(
+    indexer: Qwen38NextQSAIndexer,
+    positions: Tensor,
+    cu_seqlens: Tensor | None,
+    cu_seqlens_host: tuple[int, ...] | None = None,
+) -> int:
     """``K`` of ``qsa_selected_blocks``: ``min(block_topk, blocks in the batch)``."""
-    layout_blocks = indexer.num_blocks(positions, cu_seqlens)
+    layout_blocks = indexer.num_blocks(positions, cu_seqlens, cu_seqlens_host)
     return min(indexer.block_topk, layout_blocks)
