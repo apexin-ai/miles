@@ -406,7 +406,16 @@ without changing optimizer state. No stable throughput improvement is claimed.
 160 training updates completed, but the subsequent exact native reload check
 failed on nonzero TP ranks; only four TP0 ranks returned successful reload
 receipts. The original job's failure and strict checks are retained. Its cause
-has not been localized. These scores evaluate an explicitly separate
+was localized later (2026-11-01): the replicated GDN layers had no TP gradient
+average on that branch, so their TP copies occasionally drifted apart (seen on a
+four-layer TP8 run after step 17, on TP ranks 1 and 4 only), and a checkpoint
+stores TP rank 0's copy, so reloading changes the other ranks' values. The GDN
+parameters are now TP-averaged (`average_gradients_across_tp_domain`), every save
+runs a bitwise TP-replica check, and the reload check perturbs model tensors only
+(the integer `model_companion` counter made it fail before loading), names each
+differing tensor with its TP rank, and stops every rank when one fails. A
+four-layer TP8 / TP2 rerun reloads on every rank; a one-ulp drift injected on
+TP ranks above 0 fails exactly those ranks on the drifted tensor. These scores evaluate an explicitly separate
 `--saved-checkpoint-only` full-model export. The
 [export validation receipt](../../assets/images/qwen3-8-flash-next-joint-sft/joint160-export-validation.json)
 records all 32 final training audits, all 1496 converted tensors passing finite

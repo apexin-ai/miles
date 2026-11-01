@@ -200,6 +200,7 @@ def test_final_audit_distinguishes_joint_updates_from_frozen_language(tmp_path, 
         n_samples_per_prompt=1,
         global_batch_size=2,
         qwen38_visual_snapshot_interval=0,
+        qwen38_audit_interval=1,
     )
     monkeypatch.setattr(vision_audit, "_runtime_identity", lambda: {})
     monkeypatch.setattr(vision_audit.dist, "get_rank", lambda: 0)
@@ -217,6 +218,7 @@ def test_final_audit_distinguishes_joint_updates_from_frozen_language(tmp_path, 
 
     optimizer = Optimizer()
     vision_audit.before_step(args, 0, 0, [model], optimizer, None)
+    model.vision_model(torch.ones(1, 2))  # the step ran an image: the stubbed visual gradients are legitimate
     if frozen == update_language:
         message = "Frozen decoder weights changed" if frozen else "trainable decoder did not change"
         with pytest.raises(ValueError, match=message):

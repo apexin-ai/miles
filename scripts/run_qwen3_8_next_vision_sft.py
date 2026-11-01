@@ -9,6 +9,7 @@ Args:
     vision_trainable: none, projector or full (the entire native ViT and merger).
     freeze_language: Freeze the complete decoder before constructing its optimizer.
     tp_size: Tensor parallelism; TP2/PP4/EP2 is the single-node bring-up topology.
+    num_layers: 48 (the native model) or 4 (a four-layer cut with the complete vision tower, for tests).
 
 Example:
     MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_qwen3_8_next_vision_sft.py \
@@ -25,6 +26,17 @@ import typer
 
 import miles.utils.external_utils.command_utils as U
 
+VOCAB_SIZE = 248320
+
+
+def vocab_divisor(tp_size: int) -> int:
+    """Largest --make-vocab-size-divisible-by <= 128 (Megatron's default) whose product with TP divides the vocab.
+
+    A padded vocabulary breaks the HF weight load at TP8: 128 x 8 pads 248320 to 248832 and mbridge's scatter
+    of the 31040-row embedding shard into a 31104-row parameter fails.
+    """
+    return next(d for d in (128, 64, 32, 16, 8, 4, 2, 1) if VOCAB_SIZE % (d * tp_size) == 0)
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -33,6 +45,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     prompt_data: str = "/root/datasets/image-sft/train.jsonl"
     num_nodes: int = 1
     num_gpus_per_node: int = 8
+    num_layers: int = 48
     tp_size: int = 2
     pp_size: int = 4
     ep_size: int = 2
@@ -60,10 +73,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def __post_init__(self):
         world = self.num_nodes * self.num_gpus_per_node
+        if self.num_layers not in (48, 4):
+            raise ValueError("Only the native 48-layer model and its four-layer test cut have model arguments")
         if min(self.tp_size, self.pp_size, self.ep_size) < 1 or world % (self.tp_size * self.pp_size):
             raise ValueError("GPU count must be divisible by TP times PP")
-        if world % (self.pp_size * self.ep_size) or 512 % self.ep_size or 48 % self.pp_size:
-            raise ValueError("Expert and pipeline layouts must divide the full 48-layer, 512-expert model")
+        if world % (self.pp_size * self.ep_size) or 512 % self.ep_size or self.num_layers % self.pp_size:
+            raise ValueError("Expert and pipeline layouts must divide the model's layers and its 512 experts")
         if self.freeze_language and self.vision_trainable == "none":
             raise ValueError("Vision-only SFT requires trainable visual parameters")
         if self.global_batch_size != self.rollout_batch_size:
@@ -99,6 +114,8 @@ def execute(args: ScriptArgs):
         f"--seq-length {args.seq_length} --recompute-granularity full --recompute-method uniform "
         "--recompute-num-layers 1 --linear-attention-backend fla "
     )
+    if (divisor := vocab_divisor(args.tp_size)) != 128:
+        perf_args += f"--make-vocab-size-divisible-by {divisor} "
     algorithm_args = (
         "--debug-train-only --loss-type sft_loss --calculate-per-token-loss "
         "--disable-compute-advantages-and-returns --bf16 --model-name qwen4_exp "
@@ -126,7 +143,9 @@ def execute(args: ScriptArgs):
     if args.optimizer_offload:
         optimizer_args += "--optimizer-cpu-offload --optimizer-offload-fraction 1.0 --use-precision-aware-optimizer "
     args.create_backend().execute_train(
-        megatron_model_type="qwen3.8-flash-next-vision",
+        megatron_model_type=(
+            "qwen3.8-flash-next-vision" if args.num_layers == 48 else "qwen3.8-flash-next-4layer-vision"
+        ),
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_path=args.megatron_path,
         extra_env_vars={"CUDA_DEVICE_MAX_CONNECTIONS": "1", "TORCHINDUCTOR_COMPILE_THREADS": "1"},

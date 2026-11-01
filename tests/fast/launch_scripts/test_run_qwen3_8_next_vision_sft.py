@@ -35,6 +35,24 @@ def test_full_visual_recipe_never_kills_existing_processes(monkeypatch, tmp_path
         assert setting in command
 
 
+def test_four_layer_cut_keeps_the_vision_model_args(monkeypatch, tmp_path):
+    command = _record(monkeypatch, tmp_path, {"num_layers": 4, "tp_size": 8, "pp_size": 1, "ep_size": 8})
+    for setting in (
+        "--num-layers 4",
+        "--position-embedding-type mrope",
+        "--mrope-section 11 11 10",
+        "--no-rope-fusion",
+    ):
+        assert setting in command
+    assert "--num-layers 48" not in command and "--moe-layer-freq '[1,1,1,1]'" in command
+    # TP8 keeps the 248320-row vocabulary unpadded (Megatron's default 128 x 8 would pad it to 248832)
+    assert "--make-vocab-size-divisible-by 64" in command
+
+
+def test_the_default_tp2_layout_keeps_megatron_s_vocab_divisor(monkeypatch, tmp_path):
+    assert "--make-vocab-size-divisible-by" not in _record(monkeypatch, tmp_path, {})
+
+
 def test_existing_process_cleanup_is_explicitly_opt_in_for_this_recipe(monkeypatch, tmp_path):
     assert "pkill" in _record(monkeypatch, tmp_path, {"skip_process_cleanup": False})
 
@@ -43,6 +61,8 @@ def test_existing_process_cleanup_is_explicitly_opt_in_for_this_recipe(monkeypat
     "overrides",
     [
         {"tp_size": 3},
+        {"num_layers": 4, "pp_size": 8, "ep_size": 1},
+        {"num_layers": 12},
         {"pp_size": 3},
         {"ep_size": 3},
         {"freeze_language": True, "vision_trainable": "none"},

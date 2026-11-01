@@ -177,7 +177,10 @@ class TestQwenFinalSaveCheck:
             _final_save(harness, args, model)
         assert all(torch.equal(p, saved[n]) for chunk in model for n, p in chunk.named_parameters())
         assert CHECKPOINT_LOAD_FIELDS.isdisjoint(vars(args.backend))
-        assert not (tmp_path / "audit/checkpoint-reload").exists()
+        assert not (tmp_path / "audit/checkpoint-reload/rank-000.json").exists()
+        failure = json.loads((tmp_path / "audit/checkpoint-reload/rank-000.failed.json").read_text())
+        assert failure["stage"] == "compare" and failure["loader_entered"] and failure["loader_returned"]
+        assert {row["name"] for row in failure["mismatches"]} == {"decoder.w", "vision_model.blocks.0.w"}
 
     def test_hook_rejects_async_save(self, tmp_path, harness) -> None:
         # Megatron's parser drops --async-save for this toy setup, so set the parsed value directly.
