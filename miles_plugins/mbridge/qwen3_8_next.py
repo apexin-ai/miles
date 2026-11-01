@@ -10,6 +10,7 @@ from functools import lru_cache
 import torch
 from mbridge.core import register_model
 
+from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LINEAR_ATTN_LAYOUT_KEY
 from miles_plugins.mbridge.qwen3_5 import Qwen3_5Bridge
 
 
@@ -17,8 +18,9 @@ from miles_plugins.mbridge.qwen3_5 import Qwen3_5Bridge
 class Qwen38NextBridge(Qwen3_5Bridge):
     """Weight mapping + Megatron config for Qwen3.8-Next."""
 
-    # Qwen3.8-Next still runs the replicated GDN, which holds q/k/v and the conv in HF's own
-    # layout rather than the head-sharded layer's group-major rows
+    # The replicated GDN (the default) holds q/k/v and the conv in HF's own layout rather than the
+    # head-sharded layer's group-major rows. load / save / export pick the layout of the model they
+    # are given (_select_gdn_layout): a --qwen38-gdn-head-sharded model carries the layout marker.
     _GDN_GROUP_MAJOR = ()
 
     _DIRECT_MAPPING = Qwen3_5Bridge._DIRECT_MAPPING.copy()
@@ -238,6 +240,25 @@ class Qwen38NextBridge(Qwen3_5Bridge):
             moved.append(hit[1])
         return super()._weight_to_mcore_format(mcore_weights_name, moved)
 
+    def _select_gdn_layout(self, model) -> None:
+        """Group-major q/k/v and conv rows for the head-sharded GDN, HF's flat rows for the replicated one. Only the
+        head-sharded layer registers the ``weight_layout_version`` buffer."""
+        chunks = model if isinstance(model, (list, tuple)) else [model]
+        sharded = any(
+            name.endswith(f"linear_attn.{LINEAR_ATTN_LAYOUT_KEY}")
+            for chunk in chunks
+            for name, _ in chunk.named_buffers()
+        )
+        self._GDN_GROUP_MAJOR = Qwen3_5Bridge._GDN_GROUP_MAJOR if sharded else ()
+
+    def save_weights(self, models, *args, **kwargs):
+        self._select_gdn_layout(models)
+        return super().save_weights(models, *args, **kwargs)
+
+    def export_weights(self, models, *args, **kwargs):
+        self._select_gdn_layout(models)
+        return super().export_weights(models, *args, **kwargs)
+
     def load_weights(self, model, *args, **kwargs):
         """Memoise ``state_dict()`` for the load, then drop the device cache.
 
@@ -245,6 +266,7 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         per-expert params. Caching is safe because the load only writes into existing
         tensors in place.
         """
+        self._select_gdn_layout(model)
         chunks = model if isinstance(model, (list, tuple)) else [model]
         originals = []
         self._cached_cpu_reader = None

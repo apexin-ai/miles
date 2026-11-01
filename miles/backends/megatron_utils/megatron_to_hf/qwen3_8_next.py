@@ -41,8 +41,9 @@ _HEAD_CONTRACTION_MAPPING = {
     "module.module.decoder.hc_head_contraction.input_mix_weight_up": "model.language_model.hyper_connection_mixer.input_mix_weight_up.weight",
 }
 
-# Qwen3.8-Next runs the replicated GDN, which holds these in HF's own layout rather than the
-# head-sharded layer's group-major rows, so they skip the Qwen3.5 permutation
+# The replicated GDN (the default) holds these in HF's own layout rather than the head-sharded layer's group-major
+# rows, so they skip the Qwen3.5 permutation; with --qwen38-gdn-head-sharded they take it. The offline torch_dist
+# converters set args.qwen38_gdn_head_sharded from the checkpoint's linear-attention layout marker.
 _HF_LAYOUT_GDN = ("self_attention.linear_attn.in_proj_qkv.weight", "self_attention.linear_attn.conv1d.weight")
 
 _LAYER_PATTERN = re.compile(r"module\.module\.decoder\.layers\.(\d+)\.(.+)")
@@ -60,7 +61,7 @@ def convert_qwen3_8_next_to_hf(args: TrainerConfig, name: str, param: torch.Tens
         hf_suffix = _HC_SUFFIX_MAPPING.get(rest)
         if hf_suffix is not None:
             return [(f"model.language_model.layers.{layer_idx}.{hf_suffix}", param)]
-        if rest in _HF_LAYOUT_GDN:
+        if rest in _HF_LAYOUT_GDN and not args.qwen38_gdn_head_sharded:
             hf_rest = rest[len("self_attention.") :]
             return [(f"model.language_model.layers.{layer_idx}.{hf_rest}", param)]
 

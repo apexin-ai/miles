@@ -1298,6 +1298,10 @@ def convert_torch_dist_to_hf_ray(args: Args) -> str:
     initialize_ray()
     metadata_ref = ray.put(metadata)
     conversion_args = _make_conversion_args(args=args, megatron_args=megatron_args)
+    # Qwen3.8-Next's GDN rows are group-major exactly when the head-sharded layer wrote the checkpoint
+    conversion_args.qwen38_gdn_head_sharded = any(
+        key.endswith(LINEAR_ATTN_LAYOUT_KEY) for key in metadata.state_dict_metadata
+    )
     task_results = collect_ray_results(
         tasks,
         args.input_dir,
