@@ -8,13 +8,13 @@ from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionCon
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel
 
 from miles_plugins.models.qwen3_8_next.vision_inputs import (
-    image_rope_positions,
+    image_span_starts,
+    packed_rope_positions,
     scatter_image_embeddings,
-    text_rope_positions,
 )
 
 # What the training data holds: "image" = every microbatch has images; "text" = none does (the tower is held but
-# frozen and never run); "mixed" = each single-sample microbatch is either.
+# frozen and never run); "mixed" = a microbatch (one row, or several rows packed by THD) may have either.
 VISION_DATA_MODES = ("image", "text", "mixed")
 
 
@@ -82,10 +82,31 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
             raise ValueError("Qwen image SFT requires a single packed input sequence per microbatch")
         if kwargs.get("decoder_input") is not None or kwargs.get("position_ids") is not None:
             raise ValueError("Qwen image SFT owns image injection and native mRoPE positions")
-        image_inputs = (pixel_values, image_grid_thw, qwen38_position_ids)
-        if all(value is None for value in image_inputs) and data != "image":
-            # A text microbatch: the vision tower does not run, and the language model sees text RoPE positions.
-            kwargs["position_ids"] = text_rope_positions(ids.shape[1], device=ids.device).T.unsqueeze(1).contiguous()
+        if (pixel_values is None) != (image_grid_thw is None):
+            raise ValueError("Qwen image SFT requires genuine image patches and grids together")
+        has_images = bool(image_span_starts(ids[0], hf_config["image_token_id"]))
+        if data == "image" and not has_images:
+            raise ValueError("Qwen image SFT requires genuine image patches, grids and mRoPE positions")
+        if has_images and data == "text":
+            raise ValueError("Image inputs reached a model configured with --qwen38-vision-data text")
+        if has_images != (pixel_values is not None):
+            raise ValueError("Image tokens and image patches must come together in a microbatch")
+        packed = kwargs.get("packed_seq_params")
+        boundaries = (0, ids.shape[1]) if packed is None else _host_boundaries(packed, ids.shape[1])
+        # One row, or THD rows back to back: each row restarts at 0 (text) or has its native image mRoPE.
+        positions = packed_rope_positions(
+            ids[0],
+            boundaries,
+            qwen38_position_ids,
+            image_grid_thw,
+            image_token_id=hf_config["image_token_id"],
+            vision_start_token_id=hf_config["vision_start_token_id"],
+            vision_end_token_id=hf_config["vision_end_token_id"],
+            merge_size=hf_config["vision_config"]["spatial_merge_size"],
+        )
+        kwargs["position_ids"] = positions.T.unsqueeze(1).contiguous()
+        if not has_images:
+            # A text microbatch: the vision tower does not run.
             output = original_forward(*args, **kwargs)
             trainable = [p for p in model.vision_model.parameters() if p.requires_grad] if model.pre_process else []
             if trainable and torch.is_grad_enabled():
@@ -93,26 +114,6 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
                     raise TypeError("A text microbatch with a trainable vision tower needs a tensor model output")
                 output = _ZeroGradsFor.apply(output, *trainable)
             return output
-        if any(value is None for value in image_inputs):
-            raise ValueError("Qwen image SFT requires genuine image patches, grids and mRoPE positions")
-        if data == "text":
-            raise ValueError("Image inputs reached a model configured with --qwen38-vision-data text")
-        length = qwen38_position_ids.shape[0]
-        if qwen38_position_ids.shape != (length, 3) or length > ids.shape[1]:
-            raise ValueError("Qwen mRoPE positions do not match the input sequence")
-        expected = image_rope_positions(
-            ids[0, :length],
-            image_grid_thw,
-            image_token_id=hf_config["image_token_id"],
-            vision_start_token_id=hf_config["vision_start_token_id"],
-            vision_end_token_id=hf_config["vision_end_token_id"],
-            merge_size=hf_config["vision_config"]["spatial_merge_size"],
-        )
-        if not torch.equal(qwen38_position_ids.to(expected.device), expected):
-            raise ValueError("Provided mRoPE positions differ from the native image/grid contract")
-        positions = torch.zeros((ids.shape[1], 3), dtype=torch.long, device=ids.device)
-        positions[:length] = expected
-        kwargs["position_ids"] = positions.T.unsqueeze(1).contiguous()
         if model.pre_process:
             from megatron.core import parallel_state
 
@@ -123,6 +124,7 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
                     grid_thw=image_grid_thw,
                     return_dict=True,
                 )
+            # images in row order, rows in pack order: the tower's outputs line up with the pad tokens
             image_positions = (ids[0] == hf_config["image_token_id"]).nonzero().flatten()
             kwargs["decoder_input"] = scatter_image_embeddings(
                 decoder,
@@ -136,14 +138,25 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
     model.forward = forward
 
 
+def _host_boundaries(packed_seq_params, total):
+    """The pack's cu_seqlens from the host copy miles keeps (no device sync), else from the device tensor."""
+    host = getattr(packed_seq_params, "cu_seqlens_host", None)
+    if host is None:
+        host = packed_seq_params.cu_seqlens_q.tolist()
+    bounds = tuple(int(b) for b in host)
+    if bounds[-1] != total:
+        raise ValueError(f"cu_seqlens end at {bounds[-1]}, the microbatch has {total} tokens (CP must be 1)")
+    return bounds
+
+
 def get_qwen38_vision_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args):
     from miles.backends.megatron_utils.model_provider import get_model_provider_func
     from miles_plugins.models.qwen3_8_next.model_provider import _install_ple_context_hooks
 
-    if args.context_parallel_size != 1 or args.qkv_format != "thd" or args.micro_batch_size != 1:
-        raise ValueError("Qwen image SFT currently requires CP1, THD and micro-batch-size 1")
-    if args.use_dynamic_batch_size or (args.tensor_model_parallel_size > 1 and not args.sequence_parallel):
-        raise ValueError("Qwen image SFT requires static microbatches and sequence parallelism at TP>1")
+    if args.context_parallel_size != 1 or args.qkv_format != "thd":
+        raise ValueError("Qwen image SFT currently requires CP1, THD (rows are packed by cu_seqlens)")
+    if args.tensor_model_parallel_size > 1 and not args.sequence_parallel:
+        raise ValueError("Qwen image SFT requires sequence parallelism at TP>1")
     if args.use_rollout_routing_replay or args.enable_mtp_training or args.virtual_pipeline_model_parallel_size:
         raise ValueError("Qwen image SFT does not support routing replay, MTP or interleaved pipelines")
     if args.position_embedding_type != "mrope" or args.apply_rope_fusion:
