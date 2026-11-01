@@ -77,7 +77,12 @@ def _image_batch():
     positions = image_rope_positions(
         ids[0], grid, image_token_id=9001, vision_start_token_id=9002, vision_end_token_id=9003, merge_size=2
     )
-    return {"input_ids": ids, "pixel_values": torch.randn(16, 24), "image_grid_thw": grid, "qwen38_position_ids": positions}
+    return {
+        "input_ids": ids,
+        "pixel_values": torch.randn(16, 24),
+        "image_grid_thw": grid,
+        "qwen38_position_ids": positions,
+    }
 
 
 @pytest.fixture
@@ -149,11 +154,15 @@ def test_the_check_refuses_a_tower_whose_requires_grad_does_not_follow_the_scope
     model.vision_model.blocks[0].attn.qkv.weight.requires_grad_(True)  # a ViT tensor left trainable
     config = _optimizer_config()
     with pytest.raises(ValueError, match="blocks.0.attn.qkv.weight: requires_grad True, scope projector wants False"):
-        vision_optimizer.check_vision_param_groups([model], config, vision_optimizer.vision_config_overrides(config), scope="projector")
+        vision_optimizer.check_vision_param_groups(
+            [model], config, vision_optimizer.vision_config_overrides(config), scope="projector"
+        )
     model = _model("full")
     model.vision_model.merger.linear_fc1.weight.requires_grad_(False)
     with pytest.raises(ValueError, match="merger.linear_fc1.weight: requires_grad False, scope full wants True"):
-        vision_optimizer.check_vision_param_groups([model], config, vision_optimizer.vision_config_overrides(config), scope="full")
+        vision_optimizer.check_vision_param_groups(
+            [model], config, vision_optimizer.vision_config_overrides(config), scope="full"
+        )
 
 
 # --- projector: the frozen ViT runs forward only ------------------------------------------------------------------------
@@ -252,7 +261,11 @@ def test_vit_lr_mult_scales_only_the_vit_and_the_merger_keeps_the_language_lr(gl
         else:  # language and merger
             assert (group["max_lr"], group["min_lr"], group["lr_mult"]) == (_LR, _MIN_LR, 1.0), name
     summary = vision_optimizer.check_vision_param_groups(chunks, config, overrides, scope=scope, lr_mult=0.25)
-    assert {(g["part"], g["lr_mult"]) for g in summary["groups"]} == {("vit", 0.25), ("merger", 1.0), ("language", 1.0)}
+    assert {(g["part"], g["lr_mult"]) for g in summary["groups"]} == {
+        ("vit", 0.25),
+        ("merger", 1.0),
+        ("language", 1.0),
+    }
 
 
 @pytest.mark.parametrize("scope", ["none", "projector"])
@@ -308,12 +321,17 @@ def test_the_check_refuses_a_rule_that_reaches_language_parameters(gloo_world_of
     with pytest.raises(ValueError, match="head.weight: override"):
         vision_optimizer.check_vision_param_groups([model], config, overrides, scope="full", lr_mult=0.5)
     # and one that silently dropped Megatron's no-decay default
-    bare = {k: v for k, v in vision_optimizer.vision_config_overrides(config, lr_mult=0.5).items() if "wd_mult" not in v}
+    bare = {
+        k: v for k, v in vision_optimizer.vision_config_overrides(config, lr_mult=0.5).items() if "wd_mult" not in v
+    }
     with pytest.raises(ValueError, match="head.bias: override"):
         vision_optimizer.check_vision_param_groups([model], config, bare, scope="full", lr_mult=0.5)
 
 
-@pytest.mark.parametrize("lr_mult,wd_mult", [(0.0, 1.0), (-1.0, 1.0), (float("nan"), 1.0), (float("inf"), 1.0), (1.0, -0.1), (1.0, float("nan"))])
+@pytest.mark.parametrize(
+    "lr_mult,wd_mult",
+    [(0.0, 1.0), (-1.0, 1.0), (float("nan"), 1.0), (float("inf"), 1.0), (1.0, -0.1), (1.0, float("nan"))],
+)
 def test_bad_multipliers_are_refused(lr_mult, wd_mult):
     with pytest.raises(ValueError, match="qwen38-vit"):
         vision_optimizer.check_multipliers(lr_mult, wd_mult)
@@ -336,8 +354,17 @@ def _scheduler(optimizer):
     from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 
     return OptimizerParamScheduler(
-        optimizer, init_lr=0.0, max_lr=_LR, min_lr=_MIN_LR, lr_warmup_steps=2, lr_decay_steps=10,
-        lr_decay_style="cosine", start_wd=_WD, end_wd=_WD, wd_incr_steps=10, wd_incr_style="constant",
+        optimizer,
+        init_lr=0.0,
+        max_lr=_LR,
+        min_lr=_MIN_LR,
+        lr_warmup_steps=2,
+        lr_decay_steps=10,
+        lr_decay_style="cosine",
+        start_wd=_WD,
+        end_wd=_WD,
+        wd_incr_steps=10,
+        wd_incr_style="constant",
     )
 
 
@@ -440,7 +467,9 @@ def test_positive_control_a_vision_lr_given_by_max_lr_alone_is_lost_on_reload(gl
 
 
 @pytest.mark.parametrize("wd", [0.0, 0.1])
-def test_text_only_steps_still_move_a_trainable_projector_but_never_the_frozen_vit(wd, tp_rank_zero, gloo_world_of_one):
+def test_text_only_steps_still_move_a_trainable_projector_but_never_the_frozen_vit(
+    wd, tp_rank_zero, gloo_world_of_one
+):
     """Documents the semantics: zero grads on a text-only step do not freeze AdamW (momentum, decoupled decay)."""
     model = _model("projector")
     config = _optimizer_config()
@@ -461,7 +490,11 @@ def test_text_only_steps_still_move_a_trainable_projector_but_never_the_frozen_v
         if n.startswith("merger."):
             assert p.grad is not None and torch.count_nonzero(p.grad) == 0, n
     optimizer.step()
-    changed = [n for n, p in model.vision_model.named_parameters() if n.startswith("merger.") and not torch.equal(p, merger[n])]
+    changed = [
+        n
+        for n, p in model.vision_model.named_parameters()
+        if n.startswith("merger.") and not torch.equal(p, merger[n])
+    ]
     assert changed  # momentum from the image step (and, with wd > 0, decay) still updates the merger
     for n, p in model.vision_model.named_parameters():
         if not n.startswith("merger."):
@@ -473,7 +506,9 @@ def test_text_only_steps_still_move_a_trainable_projector_but_never_the_frozen_v
 
 def _args(provider="miles_plugins.models.qwen3_8_next.vision.get_qwen38_vision_model_provider", **kwargs):
     fields = {"qwen38_vit_lr_mult": 1.0, "qwen38_vit_wd_mult": 1.0, "qwen38_vision_trainable": "projector"}
-    return SimpleNamespace(custom_model_provider_path=SimpleNamespace(path=provider) if provider else None, **(fields | kwargs))
+    return SimpleNamespace(
+        custom_model_provider_path=SimpleNamespace(path=provider) if provider else None, **(fields | kwargs)
+    )
 
 
 @pytest.fixture
@@ -485,7 +520,9 @@ def megatron_model_module(monkeypatch):
     return module
 
 
-def test_setup_passes_the_merged_overrides_only_when_a_multiplier_is_set(megatron_model_module, gloo_world_of_one, caplog):
+def test_setup_passes_the_merged_overrides_only_when_a_multiplier_is_set(
+    megatron_model_module, gloo_world_of_one, caplog
+):
     config = _optimizer_config()
     model = [_model("projector")]
     with caplog.at_level("INFO", logger=megatron_model_module.logger.name):
@@ -504,15 +541,22 @@ def test_setup_passes_the_merged_overrides_only_when_a_multiplier_is_set(megatro
     "args,match",
     [
         (dict(provider=None, qwen38_vit_lr_mult=0.5), "need the Qwen3.8 vision provider"),
-        (dict(provider="miles_plugins.models.qwen3_8_next.model_provider.x", qwen38_vit_wd_mult=0.0), "need the Qwen3.8 vision provider"),
+        (
+            dict(provider="miles_plugins.models.qwen3_8_next.model_provider.x", qwen38_vit_wd_mult=0.0),
+            "need the Qwen3.8 vision provider",
+        ),
         (dict(qwen38_vision_trainable="none", qwen38_vit_lr_mult=2.0), "need a trainable ViT"),
         (dict(qwen38_vision_trainable="projector", qwen38_vit_lr_mult=0.2), "need a trainable ViT"),
         (dict(qwen38_vit_lr_mult=0.0), "must be a finite number > 0"),
     ],
 )
-def test_setup_refuses_multipliers_that_would_do_nothing_or_are_invalid(args, match, megatron_model_module, gloo_world_of_one):
+def test_setup_refuses_multipliers_that_would_do_nothing_or_are_invalid(
+    args, match, megatron_model_module, gloo_world_of_one
+):
     with pytest.raises(ValueError, match=match):
-        megatron_model_module._qwen38_vision_config_overrides(_args(**args), _optimizer_config(), [_model("projector")])
+        megatron_model_module._qwen38_vision_config_overrides(
+            _args(**args), _optimizer_config(), [_model("projector")]
+        )
 
 
 def test_describe_optimizer_names_the_vision_parameters_a_built_optimizer_updates(gloo_world_of_one):
@@ -523,5 +567,7 @@ def test_describe_optimizer_names_the_vision_parameters_a_built_optimizer_update
     wrapper = SimpleNamespace(optimizer=inner, param_groups=inner.param_groups)
     described = vision_optimizer.describe_optimizer([model], SimpleNamespace(chained_optimizers=[wrapper]))
     assert described["vision_in_optimizer_prefixes"] == ["merger"]
-    assert described["vision_in_optimizer"] == sum(1 for n, _ in model.vision_model.named_parameters() if n.startswith("merger."))
+    assert described["vision_in_optimizer"] == sum(
+        1 for n, _ in model.vision_model.named_parameters() if n.startswith("merger.")
+    )
     assert {g["wd_mult"] for g in described["param_groups"]} == {0.0, 1.0}

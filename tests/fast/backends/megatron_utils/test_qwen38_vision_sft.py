@@ -11,10 +11,10 @@ from types import MethodType, SimpleNamespace
 
 import pytest
 import torch
+from examples.qwen3_8_next_vision_sft import evaluate, export_full
 from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModel, Qwen3VLVisionModel
 
-from examples.qwen3_8_next_vision_sft import evaluate, export_full
 from miles_plugins.models.qwen3_8_next import vision_audit
 from miles_plugins.models.qwen3_8_next.vision import set_visual_scope
 from miles_plugins.models.qwen3_8_next.vision_inputs import (
