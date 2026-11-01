@@ -92,6 +92,8 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
             await actor_model.offload()
         elif clear_memory:
             await actor_model.clear_memory()
+        else:
+            await actor_model.log_memory()
 
     async def save(rollout_id, force_sync=False):
         force_sync = force_sync or rollout_id == args.num_rollout - 1
