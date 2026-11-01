@@ -451,10 +451,16 @@ def _weight_version(companion):
     return versions[0] if len(set(versions)) == 1 else versions or None
 
 
-def _verify_saved_model(args, iteration, model):
+def _reload_receipt_dir(args, iteration, *, final):
+    """``checkpoint-reload/`` for the final save (as before); ``checkpoint-reload/iter_NNNNNNN/`` for a listed one."""
+    root = Path(args.qwen38_audit_dir) / "checkpoint-reload"
+    return root if final else root / f"iter_{iteration:07d}"
+
+
+def _verify_saved_model(args, iteration, model, *, receipt_dir=None):
     """Run the reload check on this rank, then agree on the outcome over all ranks so none waits on a failed one."""
     try:
-        receipt = _reload_and_compare(args, iteration, model)
+        receipt = _reload_and_compare(args, iteration, model, receipt_dir=receipt_dir)
         local_error = None
     except Exception as error:
         receipt, local_error = None, error
@@ -472,7 +478,7 @@ def _verify_saved_model(args, iteration, model):
     print(json.dumps({"event": "qwen38-native-checkpoint-reload", **receipt}), flush=True)
 
 
-def _reload_and_compare(args, iteration, model):
+def _reload_and_compare(args, iteration, model, *, receipt_dir=None):
     """Perturb the live model, reload the just-saved checkpoint and require every model tensor back bit for bit.
 
     ``args`` is the TrainerConfig that ``save`` received. Checkpoint load fields are
@@ -485,7 +491,11 @@ def _reload_and_compare(args, iteration, model):
 
     On any failure every perturbed head is put back, ``checkpoint-reload/rank-NNN.failed.json`` records how far the
     check got (``loader_entered`` / ``loader_returned``), the exception and each differing tensor, and the error is
-    re-raised.
+    re-raised. ``receipt_dir`` replaces ``checkpoint-reload/`` (a check before the final save writes its own folder).
+
+    On success the live model is bit for bit what it was (every model tensor compared, the companion put back), and
+    the finetune load skips the optimizer, the scheduler, RNG, rerun state and consumed samples (Megatron
+    ``load_checkpoint``), so training can go on after a check before the final save.
     """
     from miles.backends.megatron_utils.checkpoint import load_checkpoint
     from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
@@ -495,7 +505,7 @@ def _reload_and_compare(args, iteration, model):
     weights = [(name, p) for name, p in parameters if not _is_companion(name)]
     companion = [(name, p) for name, p in parameters if _is_companion(name)]
     visual = _visual_parameters(weights)
-    root = Path(args.qwen38_audit_dir) / "checkpoint-reload"
+    root = Path(receipt_dir) if receipt_dir is not None else Path(args.qwen38_audit_dir) / "checkpoint-reload"
     progress = {"stage": "prepare", "loader_entered": False, "loader_returned": False, "mismatches": []}
     started = time.monotonic()
     originals, companion_live = {}, []
@@ -602,8 +612,27 @@ def _reload_and_compare(args, iteration, model):
     return receipt
 
 
+def _listed_iterations(args):
+    listed = args.qwen38_reload_check_iterations
+    if listed is None:
+        return frozenset()
+    if (
+        not listed
+        or any(isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in listed)
+        or len(set(listed)) != len(listed)
+    ):
+        raise ValueError(f"--qwen38-reload-check-iterations must list distinct iterations >= 0, got {listed!r}")
+    return frozenset(listed)
+
+
 def install_final_save_check(args):
-    """Use the native final-save lifecycle for a synchronous model-only roundtrip.
+    """Use the native save lifecycle for a synchronous model-only roundtrip.
+
+    The final save (``iteration == num_rollout - 1``) is always checked. ``--qwen38-reload-check-iterations`` adds
+    saves before it (e.g. an early save made through ``--save-trigger-sentinel``); each of those writes its receipts
+    to ``checkpoint-reload/iter_NNNNNNN/``, and a failure stops the run on every rank like a final-save failure. A
+    listed iteration past the final one is refused at the first save; a listed iteration that is never saved is
+    never checked.
 
     ``args`` is the frozen flat view passed to ``--custom-megatron-init-path`` hooks.
     The wrapped ``save`` receives the live TrainerConfig as its first argument.
@@ -617,15 +646,24 @@ def install_final_save_check(args):
         backend.save, "_qwen38_final_save_check", False
     ):  # config-access-exempt: marker attribute on a function, not a config field
         return
+    listed = _listed_iterations(args)
     original = backend.save
     if next(iter(inspect.signature(original).parameters)) != "args":
         raise TypeError("Qwen checkpoint qualification expects save(args, iteration, model, ...)")
 
     @wraps(original)
     def save(trainer_args, iteration, model, optimizer, scheduler, *positional, **keywords):
+        final = iteration == trainer_args.num_rollout - 1
+        if listed and max(listed) > trainer_args.num_rollout - 1:
+            raise ValueError(
+                f"--qwen38-reload-check-iterations {sorted(listed)}: the final save is iteration "
+                f"{trainer_args.num_rollout - 1}"
+            )
         result = original(trainer_args, iteration, model, optimizer, scheduler, *positional, **keywords)
-        if iteration == trainer_args.num_rollout - 1:
-            _verify_saved_model(trainer_args, iteration, model)
+        if final or iteration in listed:
+            _verify_saved_model(
+                trainer_args, iteration, model, receipt_dir=_reload_receipt_dir(trainer_args, iteration, final=final)
+            )
         return result
 
     save._qwen38_final_save_check = True
