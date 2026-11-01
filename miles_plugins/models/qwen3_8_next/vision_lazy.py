@@ -242,7 +242,9 @@ def _holds(optimizer, param) -> bool:
 
 
 def _owners(hdo) -> dict:
-    return {p: optimizer for optimizer in hdo.cpu_optimizers for group in optimizer.param_groups for p in group["params"]}
+    return {
+        p: optimizer for optimizer in hdo.cpu_optimizers for group in optimizer.param_groups for p in group["params"]
+    }
 
 
 def _step_value(state):
