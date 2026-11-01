@@ -45,6 +45,14 @@
 
 合并顺序要求：M-016、M-005 在 M-006 之前（否则 Qwen3.8 raw 导出会失败）。
 
+## L2b：我们的功能分支（`apex/feat/<topic>`，候选 3 起）
+
+| 分支（head） | 候选 3 提交 | 说明 |
+|---|---|---|
+| `apex/feat/qwen38-flops`（`25160fd1`，FIX-A） | `22916f9c`（`cherry-pick -x`） | MFU 把 Qwen3.8 的 `indexed_attention` 层按 QSA 计 |
+| `apex/feat/qwen38-vision-text-fallback`（`e78215b0`，FEAT-vision） | `5ac62d95`、`512fda15`、`f2916b4e`（`cherry-pick -x`） | 文本 microbatch 跳过视觉塔；text / image / mixed 数据模式；`images=None` 文本行。helm 快照随它更新 |
+| `apex/feat/hf-export-shard-names`（`5a5611df`，POD） | `c947280b`（**移植**，`Ported-from` 3 个提交） | raw 导出所有分片命名 `model-i-of-N`。分支写在候选 1 的 `hf_passthrough` 上；候选 2 已是 M-006 PR 的实现，所以移植：调用放在 `publisher.complete_model` 之后（writer、所有 collective 之后，避开 CRV-FIX-026 的错序）；测试移到 `test_hf_export_complete.py`；去掉 hardlink 用例（候选 2 没有 `MILES_HF_PASSTHROUGH=hardlink`）。重建时按 `c947280b` 重放，不 pick 分支 |
+
 ## L3：只留在我们这边的提交
 
 | 项 | 候选 2 提交 | 为什么不能上游 / 为什么保留 |

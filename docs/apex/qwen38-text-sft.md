@@ -124,6 +124,12 @@
 - 门禁：第 1–4 组在 `a6ac20ee` 上通过并沿用（CX1 确认 `a6ac20ee..bd622ca7` 只改转换器工具、读档模块和测试）；M-020 转换器在 `bd622ca7` 上通过。验收记录 `r3/req/INT-cand2-gate.accept.md`（工作区，不在本仓库）。
 - 本门禁不覆盖的开放项：M-015 真正的 `--async-save`；release 格式首次加载和 `kill -9` 资格项（P2，正式训练前做）；CRV-FIX-025、CRV-FIX-026（P1）；M-032、M-033。
 
+## 候选 3：apex/main + 3 个功能分支（2026-11-01）
+
+- 在 `61744769`（= `apex/main` `bd622ca7` + docs）上按 BRANCH-PR 方案第 5.3.2 节加 3 个 `apex/feat/*`，每个只留一份实现（`patches.md`「L2b」）：`qwen38-flops`、`qwen38-vision-text-fallback` 直接 `cherry-pick -x`；`hf-export-shard-names` 移植到候选 2 的导出实现上。
+- 训练仓库同时要补丁 0002（`fix/megatron-6191` rebase 到 main，带上 `f2d6826`），由 REPO 做；两机回归（4k 存档 / 续训 / HF 导出 + 16k）由 SMOKE 做。通过后 `apex/main` 快进到候选 3。
+- HF 导出的分片现在都叫 `model-i-of-N`：先导出的训练分片，再整块拷贝的基座分片，再 passthrough 分片；`passthrough.json` 的 `shard_renames` 记录原名。
+
 ## 发布 / 评测用的 HF 导出（协调者 2026-10-31 23:46 UTC）
 
 - **发布和评测一律用训练里的在线 HF 导出，再跑 `verify_export`。不用离线转换器**（`tools/convert_torch_dist_to_hf.py`、`tools/convert_torch_dist_to_hf_ray.py`）。
