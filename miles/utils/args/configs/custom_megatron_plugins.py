@@ -72,6 +72,15 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
     qwen38_vision_recompute: A[bool, Arg()] = False
     qwen38_sft_final_answer_format: A[str, Arg(choices=["dataset", "integer-only"])] = "dataset"
     qwen38_audit_dir: A[str | None, Arg()] = None
+    qwen38_audit_interval: A[
+        int,
+        Arg(
+            help=(
+                "With --qwen38-audit-dir: probe gradients, hash the vision tower and write a record every N "
+                "updates; the final update is always audited and images are counted on every update."
+            )
+        ),
+    ] = 1
     qwen38_visual_snapshot_interval: A[int, Arg()] = 0
 
 
