@@ -249,3 +249,34 @@ def test_cli_defaults():
     fields = Qwen38VisionMegatronPluginsConfig.model_fields
     assert fields["qwen38_indexer_score_dtype"].default == "fp32"
     assert fields["qwen38_indexer_tp_shard"].default is False
+
+
+@pytest.mark.parametrize("n", [4, 8])
+@pytest.mark.parametrize("score_dtype", ["fp32", "bf16"])
+@pytest.mark.parametrize("cu_host", [(0, 300), (0, 97, 97, 257, 298, 300)])
+def test_tp_shard_with_host_bounds_is_identical_and_reads_no_device(monkeypatch, n, score_dtype, cu_host):
+    """TP shard + host cu_seqlens (H1's HostRowBounds) + either score dtype == the replicated device-bounds path;
+    the sharded path reads nothing back but the per-tile tie check."""
+    indexer = _indexer(monkeypatch, score_dtype=score_dtype, tile_bytes=4096)
+    total = cu_host[-1]
+    cu = torch.tensor(cu_host, dtype=torch.int32)
+    positions = attention.Qwen38NextAttention._packed_positions(cu, total)
+    hidden, _, rope, _ = _inputs([total])
+    with torch.no_grad():
+        want, _ = attention.qsa_selected_blocks(indexer, hidden, positions, rope, cu)
+        group = _FakeTPGroup(n)
+        _fake_dist(monkeypatch, group)
+        real_tolist = torch.Tensor.tolist
+        with monkeypatch.context() as m:
+
+            def tolist(t):
+                raise AssertionError(f"device read: tolist of {tuple(t.shape)}")
+
+            m.setattr(torch.Tensor, "tolist", tolist)
+            for rank in range(n):
+                group.rank = rank
+                got, _ = attention.qsa_selected_blocks(
+                    indexer, hidden, positions, rope, cu, tp_group=group, cu_seqlens_host=cu_host
+                )
+        assert torch.Tensor.tolist is real_tolist
+    assert torch.equal(got, want)

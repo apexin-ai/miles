@@ -4,6 +4,7 @@ Runs on the full-attention layers and picks, per query token, which
 ``indexer_budget`` key tokens the sparse attention will look at.
 """
 
+import bisect
 import math
 import os
 
@@ -104,14 +105,26 @@ class PackedBlockLayout:
 
     The rollout engine scores one request at a time, so each sequence's block grid
     must start at its own first token.
+
+    ``cu_seqlens_host``, the same boundaries as host ints (``HostRowBounds.usable``), gives the
+    block count without reading the device: no host sync.
     """
 
-    def __init__(self, cu_seqlens: Tensor, positions: Tensor, compress_ratio: int):
+    def __init__(
+        self,
+        cu_seqlens: Tensor,
+        positions: Tensor,
+        compress_ratio: int,
+        cu_seqlens_host: tuple[int, ...] | None = None,
+    ):
         device = positions.device
         cu = cu_seqlens.to(device=device, dtype=torch.long)
         lengths = cu[1:] - cu[:-1]
         blocks_per_seq = -(-lengths // compress_ratio)
-        self.num_blocks = int(blocks_per_seq.sum())
+        if cu_seqlens_host is None:
+            self.num_blocks = int(blocks_per_seq.sum())
+        else:
+            self.num_blocks = sum(HostRowBounds.blocks_per_seq(cu_seqlens_host, compress_ratio))
 
         seq_block_start = torch.cat([blocks_per_seq.new_zeros(1), blocks_per_seq.cumsum(0)[:-1]])
         seq_token_start = cu[:-1]
@@ -127,10 +140,100 @@ class PackedBlockLayout:
         self.token_block_start = seq_block_start[seg]
         self.token_start = seq_token_start[seg]
         # per block
-        self.block_seq = torch.repeat_interleave(torch.arange(blocks_per_seq.numel(), device=device), blocks_per_seq)
+        # output_size: the count is known, so repeat_interleave need not read the repeats back
+        self.block_seq = torch.repeat_interleave(
+            torch.arange(blocks_per_seq.numel(), device=device), blocks_per_seq, output_size=self.num_blocks
+        )
         self.block_local = torch.arange(self.num_blocks, device=device) - seq_block_start[self.block_seq]
         self.block_first_token = seq_token_start[self.block_seq] + self.block_local * compress_ratio
         self.block_last_token = torch.minimum(self.block_first_token + compress_ratio, cu[1:][self.block_seq]) - 1
+
+
+class HostRowBounds:
+    """``row_lo`` / ``row_hi`` of ``iter_selected_blocks`` as host sequences, from host ``cu_seqlens``.
+
+    Row ``i`` scores blocks ``[lo[i], hi[i])`` of the packed grid. The device path reads both
+    ``[T]`` tensors back (``.tolist()``: two host syncs and two ``T``-int lists per layer and
+    pass); these give the same ints from the host boundaries, computed per index on demand
+    (``plan_query_tiles`` reads a few per tile).
+
+    ``positions`` must be ``Qwen38NextAttention._packed_positions`` of the same boundaries,
+    which this mirrors: the segment of row ``i`` is the number of distinct starts after the
+    first that are ``<= i`` (``seg[starts[1:]] = 1; seg.cumsum(0)``), its position
+    ``i - starts[seg]``. With more than one segment the grid is ``PackedBlockLayout``'s.
+    """
+
+    def __init__(self, cu_seqlens_host: tuple[int, ...], total: int, compress_ratio: int):
+        if not self.usable(cu_seqlens_host, total):
+            raise ValueError(f"host cu_seqlens {tuple(cu_seqlens_host)[:8]}... cannot bound {total} rows")
+        cu = tuple(int(b) for b in cu_seqlens_host)
+        self.total = total
+        self.ratio = compress_ratio
+        self._starts = cu[:-1]
+        self._marks = sorted(set(cu[1:-1]))
+        if len(cu) > 2:
+            block_start = [0]
+            for blocks in self.blocks_per_seq(cu, compress_ratio)[:-1]:
+                block_start.append(block_start[-1] + blocks)
+            self._block_start = block_start
+        else:
+            # one segment: no PackedBlockLayout, every row's grid starts at block 0
+            self._block_start = None
+        self.lo = _RowView(self._lo, total)
+        self.hi = _RowView(self._hi, total)
+
+    @staticmethod
+    def usable(cu_seqlens_host, total: int) -> bool:
+        """Boundaries the device path accepts without error: >= 2 ints, nondecreasing, inner starts inside the rows.
+
+        Anything else keeps the device path, so its errors stay as they are.
+        """
+        if cu_seqlens_host is None or len(cu_seqlens_host) < 2:
+            return False
+        cu = tuple(cu_seqlens_host)
+        if any(b < a for a, b in zip(cu[:-1], cu[1:])):
+            return False
+        return all(0 <= b < total for b in cu[1:-1])
+
+    @staticmethod
+    def blocks_per_seq(cu_seqlens_host, compress_ratio: int) -> list[int]:
+        cu = tuple(int(b) for b in cu_seqlens_host)
+        return [-(-(b - a) // compress_ratio) for a, b in zip(cu[:-1], cu[1:])]
+
+    def _segment(self, i: int) -> int:
+        return bisect.bisect_right(self._marks, i)
+
+    def _lo(self, i: int) -> int:
+        if self._block_start is None:
+            return 0
+        return self._block_start[self._segment(i)]
+
+    def _hi(self, i: int) -> int:
+        seg = self._segment(i)
+        position = i - self._starts[seg]
+        lo = 0 if self._block_start is None else self._block_start[seg]
+        return lo + (position + 1) // self.ratio
+
+
+class _RowView:
+    """A read-only ``[n]`` int sequence computed per index."""
+
+    def __init__(self, fn, n: int):
+        self._fn = fn
+        self._n = n
+
+    def __len__(self) -> int:
+        return self._n
+
+    def __getitem__(self, i: int) -> int:
+        if not 0 <= i < self._n:
+            raise IndexError(i)
+        return self._fn(i)
+
+    def strided(self, start: int, step: int) -> "_RowView":
+        """Rows ``start, start + step, ...`` (the ``row_shard`` of ``iter_selected_blocks``)."""
+        fn = self._fn
+        return _RowView(lambda i: fn(start + i * step), len(range(start, self._n, step)))
 
 
 def compress_keys_by_mean_packed(token_k: Tensor, layout: PackedBlockLayout) -> Tensor:
@@ -332,6 +435,7 @@ class Qwen38NextQSAIndexer(MegatronModule):
         row_bytes: int = 0,
         materialized_rope: bool = False,
         row_shard: tuple[int, int] | None = None,
+        cu_seqlens_host: tuple[int, ...] | None = None,
     ):
         """Yield ``(start, end, block_idx)`` per query tile; ``block_idx`` is ``[end - start, k]``.
 
@@ -343,8 +447,19 @@ class Qwen38NextQSAIndexer(MegatronModule):
         and is reduced to its top-k before the next one starts, so the full ``[T, blocks]``
         score never exists: a tile holds at most ``tile_bytes``, counting ``row_bytes`` per
         row that the caller spends on each yielded tile.
+
+        ``cu_seqlens_host``: ``cu_seqlens`` as host ints, with ``positions`` the packed positions of
+        them (``Qwen38NextAttention``). The tile plan then comes from the host (``HostRowBounds``)
+        instead of reading two ``[T]`` tensors back; the selection is the same.
         """
-        layout = self.layout_for(positions, cu_seqlens)
+        host = None
+        if cu_seqlens is not None and HostRowBounds.usable(cu_seqlens_host, positions.shape[0]):
+            if len(cu_seqlens_host) != cu_seqlens.numel():
+                raise ValueError(
+                    f"host cu_seqlens has {len(cu_seqlens_host)} bounds, the device one {cu_seqlens.numel()}"
+                )
+            host = HostRowBounds(cu_seqlens_host, positions.shape[0], self.compress_ratio)
+        layout = self.layout_for(positions, cu_seqlens, None if host is None else cu_seqlens_host)
         q, block_k = self.project_qk(
             hidden_states, positions, rotary_pos_emb, layout=layout, materialized_rope=materialized_rope
         )
@@ -358,7 +473,12 @@ class Qwen38NextQSAIndexer(MegatronModule):
         if row_shard is not None:
             rank, n_shards = row_shard
             q, row_lo, row_hi = q[rank::n_shards], row_lo[rank::n_shards], row_hi[rank::n_shards]
-        lo_list, hi_list = row_lo.tolist(), row_hi.tolist()
+        if host is None:
+            lo_list, hi_list = row_lo.tolist(), row_hi.tolist()
+        elif row_shard is None:
+            lo_list, hi_list = host.lo, host.hi
+        else:
+            lo_list, hi_list = host.lo.strided(*row_shard), host.hi.strided(*row_shard)
         scale = math.sqrt(self.head_dim)
         # per row: the fp32 query copy; the top-k scores and ids, their sort and mask
         # temporaries and the yielded ids
@@ -384,17 +504,24 @@ class Qwen38NextQSAIndexer(MegatronModule):
                 block_idx[:, :kk] = torch.where(values == float("-inf"), -1, idx + col_lo)
             yield start, end, block_idx
 
-    def num_blocks(self, positions: Tensor, cu_seqlens: Tensor | None) -> int:
-        """Blocks of the packed block grid (``PackedBlockLayout``) for these rows; host arithmetic only."""
+    def num_blocks(
+        self, positions: Tensor, cu_seqlens: Tensor | None, cu_seqlens_host: tuple[int, ...] | None = None
+    ) -> int:
+        """Blocks of the packed block grid (``PackedBlockLayout``) for these rows; no device read with host bounds."""
         r = self.compress_ratio
         if cu_seqlens is not None and cu_seqlens.numel() > 2:
+            host_ok = HostRowBounds.usable(cu_seqlens_host, positions.shape[0])
+            if host_ok and len(cu_seqlens_host) == cu_seqlens.numel():
+                return sum(HostRowBounds.blocks_per_seq(cu_seqlens_host, r))
             lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
             return sum(-(-int(n) // r) for n in lengths)
         return -(-positions.shape[0] // r)
 
-    def layout_for(self, positions: Tensor, cu_seqlens: Tensor | None) -> PackedBlockLayout | None:
+    def layout_for(
+        self, positions: Tensor, cu_seqlens: Tensor | None, cu_seqlens_host: tuple[int, ...] | None = None
+    ) -> PackedBlockLayout | None:
         if cu_seqlens is not None and cu_seqlens.numel() > 2:
-            return PackedBlockLayout(cu_seqlens, positions, self.compress_ratio)
+            return PackedBlockLayout(cu_seqlens, positions, self.compress_ratio, cu_seqlens_host=cu_seqlens_host)
         return None
 
     def forward(
