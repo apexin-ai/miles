@@ -219,8 +219,11 @@ class _Switch:
     def __init__(self, opt, new_params, bucket_sizes):
         self.opt = opt
         self.new_params = {p: n for p, n in new_params.items() if p in opt.model_param_group_index_map}
+        # Buffers without a new parameter (expert buffers, pipeline stages without the tower) keep their layout: their
+        # optimizer state loads through Megatron's own path. Their param groups may still miss the ViT's (empty) group.
+        self.translate = any(p in new_params for buffer in opt.buffers for p in buffer.params)
         self.plans = []
-        for gbuf_idx, buffer in enumerate(opt.buffers):
+        for gbuf_idx, buffer in enumerate(opt.buffers if self.translate else []):
             running = (buffer.param_index_map, [b.numel_unpadded for b in buffer.buckets])
             old = old_layout_for(
                 buffer.params,
@@ -238,6 +241,7 @@ class _Switch:
         ]
         self.allowed_groups = {opt.model_param_group_index_map[p][0] for p in self.new_params}
         self.summary = {
+            "translate": self.translate,
             "new_tensors_here": len(self.new_params),
             "new_numel_here": sum(p.numel() for p in self.new_params),
             "buffers": [
@@ -264,7 +268,7 @@ class _Switch:
         )
 
     def sharded_param_state(self, model_sharded_state_dict, is_loading=False, metadata=None):
-        if not is_loading or self.loaded:
+        if not is_loading or self.loaded or not self.translate:
             return self.original_sharded(model_sharded_state_dict, is_loading, metadata)
         from megatron.core.dist_checkpointing.mapping import LocalNonpersistentObject, ShardedObject, ShardedTensor
 
@@ -328,6 +332,8 @@ class _Switch:
 
     def load_param_state(self, state_dict):
         if not isinstance(state_dict, dict) or SWITCH_MARKER not in state_dict:
+            if not self.translate and "per_bucket_numel_unpadded" in (state_dict or {}):
+                self.loaded = True
             return self.original_load_param_state(state_dict)
         opt = self.opt
         if state_dict["per_bucket_numel_unpadded"] != self.old_per_bucket_numel_unpadded:
