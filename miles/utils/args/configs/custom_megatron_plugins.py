@@ -73,6 +73,18 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
     qwen38_sft_final_answer_format: A[str, Arg(choices=["dataset", "integer-only"])] = "dataset"
     qwen38_audit_dir: A[str | None, Arg()] = None
     qwen38_visual_snapshot_interval: A[int, Arg()] = 0
+    qwen38_vision_load_from_scope: A[
+        str | None,
+        Arg(
+            choices=["none", "projector"],
+            help=(
+                "Once, on the resume that switches the vision scope up (e.g. projector -> full): the checkpoint was "
+                "saved with this --qwen38-vision-trainable. Its optimizer state is loaded across the DDP layout "
+                "change; the newly trainable vision parameters start with zero Adam moments "
+                "(miles_plugins/models/qwen3_8_next/vision_scope_switch.py). Only Megatron's dp_reshardable format."
+            ),
+        ),
+    ] = None
     qwen38_vit_lr_mult: A[
         float,
         Arg(
