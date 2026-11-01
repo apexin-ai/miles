@@ -113,6 +113,18 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
             )
         ),
     ] = 1.0
+    qwen38_vision_lazy: A[
+        str,
+        Arg(
+            choices=["off", "merger", "vision"],
+            help=(
+                "Lazy Adam on steps whose global batch has no image: the merger (merger) or every trainable vision "
+                "parameter (vision) keeps its weights, fp32 master and Adam moments, with no weight decay; its Adam "
+                "step still follows the global one. Needs --optimizer-cpu-offload --optimizer-offload-fraction 1.0 "
+                "(miles_plugins/models/qwen3_8_next/vision_lazy.py)."
+            ),
+        ),
+    ] = "off"
 
 
 class DsaMegatronPluginsConfig(BaseConfig):

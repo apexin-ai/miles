@@ -332,10 +332,20 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler):
         )
         probes = _capture_probes(optimizer, selected) if audited else []
         language_probes = _capture_probes(optimizer, language_selected) if audited else []
+        lazy = getattr(optimizer, "_qwen38_lazy", None)  # config-access-exempt: vision_lazy's marker
+        lazy_before = [(p, p.detach().clone()) for p in lazy.params] if lazy is not None and audited else []
         result = original(*positional, **keywords)
         torch.cuda.synchronize()
         optimizer.step = original
         state["images_total"] += images
+        lazy_moved = None
+        if lazy is not None:
+            if lazy.last_skipped != (images == 0):
+                raise ValueError(f"The lazy text-step decision {lazy.last_skipped} disagrees with {images} audited images")
+            if lazy.last_skipped and lazy_before:
+                lazy_moved = sum(not torch.equal(p, before) for p, before in lazy_before)
+                if lazy_moved:
+                    raise ValueError(f"A lazy text-only step moved {lazy_moved} lazy vision parameters")
         if not audited:
             snapshot()
             return result
@@ -373,6 +383,9 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler):
             "optimizer_result": str(result),
             "images_in_step": images,
             "images_total": state["images_total"],
+            "lazy_skipped": None if lazy is None else lazy.last_skipped,
+            "lazy_tensors_checked": len(lazy_before),
+            "lazy_moved": lazy_moved,
             "parameters": rows,
             "language_parameters": language_rows,
             "visual_sha256": visual_hash,
