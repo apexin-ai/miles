@@ -348,15 +348,21 @@ class _PLEGateConv(torch.autograd.Function):
                 DIL=dilation,
                 BLOCK_W=BW,
             )
+        # Each fp32 [T, W] buffer is 10 GiB at T = 262144, W = 10240: free each one after its last
+        # read (results are unchanged), so at most 5 are alive at a time instead of 9.
+        del normed
 
         x_hat = (gated.view(T, n, C) * rstdc.unsqueeze(-1)).view(T, W)
         dwc = (dnormed * x_hat).sum(dim=0).to(wc.dtype)
+        del x_hat
         dgated_norm = torch.empty(T, W, dtype=torch.float32, device=dev)
         if T > 0:
             grouped_rmsnorm_bwd_kernel[(T * n,)](
                 gated, wc, rstdc, dnormed, dgated_norm, T, N=n, C=C, BLOCK_C=block_c(C)
             )
+        del gated, dnormed
         dgated += dgated_norm
+        del dgated_norm
 
         dkey = torch.empty_like(key)
         dquery = torch.empty_like(hc_state)
@@ -385,9 +391,13 @@ class _PLEGateConv(torch.autograd.Function):
                 SQRTC=math.sqrt(C),
                 BLOCK_C=block_c(C),
             )
+        del dgated
         dvalue = dvalue_pern.sum(dim=1).to(value.dtype)
+        del dvalue_pern
         dwk = dwk_part.sum(dim=0).to(wk.dtype)
+        del dwk_part
         dwq = dwq_part.sum(dim=0).to(wq.dtype)
+        del dwq_part
         dconv_w = dconvw.view(W, 1, Kk).to(conv_w_dtype)
 
         return (dquery, dkey, dvalue, dwk, dwq, dwc, dconv_w, None, None, None, None)
