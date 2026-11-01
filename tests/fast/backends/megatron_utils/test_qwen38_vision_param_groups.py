@@ -106,6 +106,13 @@ def _groups(chunks, config, overrides):
     return _get_param_groups(chunks, config, overrides)
 
 
+def _standard_groups(chunks, config):
+    """What get_megatron_optimizer builds with config_overrides=None (_get_param_groups itself takes None as none)."""
+    from megatron.core.optimizer import get_standard_config_overrides
+
+    return _groups(chunks, config, get_standard_config_overrides(config))
+
+
 def _group_of(groups, param):
     (group,) = [g for g in groups if any(p is param for p in g["params"])]
     return group
@@ -127,7 +134,7 @@ def test_each_scope_trains_exactly_its_part_of_the_tower_and_only_that_reaches_t
     assert len(tower) > 0 and any(n.startswith("merger.") for n in tower)
     want = {n for n in tower if scope == "full" or (scope == "projector" and n.startswith("merger."))}
     assert {n for n, p in tower.items() if p.requires_grad} == want
-    in_optimizer = {id(p) for g in _groups(chunks, config, None) for p in g["params"]}
+    in_optimizer = {id(p) for g in _standard_groups(chunks, config) for p in g["params"]}
     assert {n for n, p in tower.items() if id(p) in in_optimizer} == want
     assert {id(p) for p in model.head.parameters()} <= in_optimizer
     summary = vision_optimizer.check_vision_param_groups(
@@ -220,7 +227,7 @@ def test_default_multipliers_give_exactly_megatrons_standard_param_groups(gloo_w
     config = _optimizer_config()
     overrides = vision_optimizer.vision_config_overrides(config)
     assert set(overrides) == set(get_standard_config_overrides(config))
-    assert _same_groups(_groups([model], config, overrides), _groups([model], config, None))
+    assert _same_groups(_groups([model], config, overrides), _standard_groups([model], config))
 
 
 @pytest.mark.parametrize("scope", ["projector", "full"])
@@ -419,7 +426,7 @@ def test_text_only_steps_still_move_a_trainable_projector_but_never_the_frozen_v
     """Documents the semantics: zero grads on a text-only step do not freeze AdamW (momentum, decoupled decay)."""
     model = _model("projector")
     config = _optimizer_config()
-    groups = _groups([model], config, None)
+    groups = _standard_groups([model], config)
     optimizer = torch.optim.AdamW(
         [{"params": g["params"], "weight_decay": wd * g["wd_mult"]} for g in groups if g["params"]], lr=_LR
     )
@@ -489,7 +496,7 @@ def test_setup_refuses_multipliers_that_would_do_nothing_or_are_invalid(args, ma
 def test_describe_optimizer_names_the_vision_parameters_a_built_optimizer_updates(gloo_world_of_one):
     model = _model("projector")
     config = _optimizer_config()
-    groups = _groups([model], config, None)
+    groups = _standard_groups([model], config)
     inner = torch.optim.AdamW([dict(g) for g in groups if g["params"]], lr=_LR)
     wrapper = SimpleNamespace(optimizer=inner, param_groups=inner.param_groups)
     described = vision_optimizer.describe_optimizer([model], SimpleNamespace(chained_optimizers=[wrapper]))
