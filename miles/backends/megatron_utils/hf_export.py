@@ -15,6 +15,7 @@ from miles.backends.megatron_utils import ple_provenance
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update import hf_passthrough
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
@@ -115,6 +116,10 @@ def save_hf_model(
             if receipt is not None:
                 # the PLE table was copied from --hf-checkpoint now: it must still be the one this run trained with
                 ple_provenance.check_export(receipt["passthrough_sha256"])
+            if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                # one naming for every shard (exported, whole base, passthrough): model-i-of-N, before .complete;
+                # writer only, after every collective, like the completion above
+                hf_passthrough.normalize_shard_names(checkpoint_dir, receipt)
 
     if should_log:
         logger.info(f"Saving model in HuggingFace format to {path}")

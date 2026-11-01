@@ -221,6 +221,8 @@ _HF_EXPORT_MODULE = "miles.backends.megatron_utils.hf_export"
 
 
 class TestSaveHfModelRawLoRA:
+    # the mocked publisher writes no shards or index; the shard naming of real raw exports is test_hf_export_complete's
+    @patch(f"{_HF_EXPORT_MODULE}.hf_passthrough.normalize_shard_names")
     @patch(f"{_HF_EXPORT_MODULE}._get_hf_bridge")
     @patch(f"{_HF_EXPORT_MODULE}.merge_lora_into_weights")
     @patch(f"{_HF_EXPORT_MODULE}.named_params_and_buffers")
@@ -228,7 +230,7 @@ class TestSaveHfModelRawLoRA:
     @patch(f"{_HF_EXPORT_MODULE}.write_checkpoint_dir", side_effect=lambda path, write, **_kwargs: write(path))
     @patch(f"{_HF_EXPORT_MODULE}.get_parallel_state")
     def test_raw_lora_writes_merged_weights_and_the_adapter(
-        self, _parallel_state, _write_dir, _is_lora, named_weights, merge, get_bridge, tmp_path
+        self, _parallel_state, _write_dir, _is_lora, named_weights, merge, get_bridge, normalize, tmp_path
     ):
         from miles.backends.megatron_utils.hf_export import save_hf_model
 
@@ -242,4 +244,5 @@ class TestSaveHfModelRawLoRA:
         merge.assert_called_once_with(model, dict(named_weights.return_value))
         publisher.write_model.assert_called_once_with(tmp_path, weights=merge.return_value, hf_checkpoint="/hf")
         publisher.write_adapter.assert_called_once_with(None, tmp_path / "adapter")
+        normalize.assert_called_once_with(tmp_path, publisher.complete_model.return_value)
         get_bridge.assert_not_called()
