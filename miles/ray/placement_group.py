@@ -271,8 +271,11 @@ async def create_training_models(
     args.start_rollout_id = actor_info.start_rollout_id
 
     await rollout_executor.set_train_parallel_config(await actor_info.handle.get_train_parallel_config())
-    if args.start_rollout_id > 0:
-        await rollout_executor.load(args.start_rollout_id - 1, load=args.load)
+    # The rollout state (the data cursor) is the one saved with the weights the trainer restored. --start-rollout-id
+    # only renumbers the rounds that follow (e.g. a resume on another global batch size); start_rollout_id - 1 would
+    # read the state of another save of that run, or none.
+    if actor_info.restored_rollout_id > 0:
+        await rollout_executor.load(actor_info.restored_rollout_id - 1, load=args.load)
 
     return actor_info.handle, critic_info.handle if critic_info is not None else None
 
