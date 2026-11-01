@@ -210,6 +210,12 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             raise AssertionError(f"{message}: a retried request, a failed delete or a missed release")
         logger.warning(message)
 
+    # async but never awaits, like save: runs on the loop before any get
+    async def skip_output_snapshot_copies(self) -> None:
+        """Called by a driver that saves only after every rollout it fetched has trained (train.py): the snapshot of
+        each generated batch is then discarded unread, so its per-rollout deepcopy is skipped."""
+        self._output_snapshotter.skip_capture_copies()
+
     # -------------------------- data generation -----------------------------
 
     @event_logger_context(lambda _self, rollout_id, trainer_model_id=None: dict(rollout_id=rollout_id))
