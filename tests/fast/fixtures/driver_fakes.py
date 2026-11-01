@@ -149,6 +149,9 @@ class FakeTrainingModel:
     async def clear_memory(self) -> None:
         self.events.append(f"{self.role}_clear_memory")
 
+    async def log_memory(self) -> None:
+        self.events.append(f"{self.role}_log_memory")
+
     async def dispose(self) -> None:
         self.events.append(f"{self.role}_dispose")
 
