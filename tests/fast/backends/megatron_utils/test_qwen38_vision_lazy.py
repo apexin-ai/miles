@@ -461,7 +461,7 @@ def test_the_audit_records_lazy_text_steps_and_finds_no_movement(tmp_path, audit
 
 def test_positive_control_the_audit_catches_a_lazy_step_that_moved_the_merger(tmp_path, audit_without_probes):
     model, opt, lazy = _setup()
-    lazy._inner = lambda hdo: []  # broken: nothing is detached, so AdamW moves the merger on the text step
+    lazy._split = lambda hdo: ([], [])  # broken: nothing is detached, so AdamW moves the merger on the text step
     args = _audit_args(tmp_path, 3)
     with pytest.raises(ValueError, match="lazy text-only step moved"):
         _audited_train(model, opt, [True, False, True], args)

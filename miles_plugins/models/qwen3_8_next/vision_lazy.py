@@ -24,6 +24,12 @@ production path) and nothing else:
     if it had none yet), and HDO's state view is synced again.
   - HDO copies every CPU parameter back to the GPU after the step: the lazy ones are unchanged, so are their bf16
     model copies.
+  - With --optimizer-offload-fraction < 1, HDO steps the parameters it keeps on the GPU with the GPU optimizer (TE
+    FusedAdam over fp32 copies), wherever its split puts them, lazy ones included. HDO sets those fp32 copies' .grad
+    anew on every step; a skipped step sets it to None afterwards, and FusedAdam skips such a parameter entirely
+    (it only creates zero moments if it has none). FusedAdam keeps one step per param group, advanced on every step,
+    so bias correction uses the global step as on the CPU side; nothing is fixed after the step. That group step
+    must survive a resume: miles/backends/megatron_utils/hdo_group_step.py (M-023).
 HDO rebuilds its CPU copies and optimizers on load_state_dict, so the shard -> CPU copy mapping is looked up on every
 step, never cached. Install after vision_scope_switch.install (it only changes how a checkpoint loads).
 """
@@ -135,18 +141,22 @@ class LazyTextSteps:
 
     def _inner(self, hdo):
         """This HDO's CPU parameters (what AdamW steps) of the lazy shards; looked up now, HDO rebuilds them."""
-        inners = []
+        return self._split(hdo)[0]
+
+    def _split(self, hdo):
+        """(CPU inners, GPU inners) of this HDO's lazy shards: what its CPU AdamW and its GPU optimizer step."""
+        cpu, gpu = [], []
         for owner, shard in self.shards:
             if owner is not hdo:
                 continue
             inner = hdo.param_to_inner_param.get(shard)
-            if inner is None or (hdo.gpu_optimizer is not None and _holds(hdo.gpu_optimizer, inner)):
-                raise ValueError(
-                    "--qwen38-vision-lazy needs every lazy parameter in HDO's CPU optimizer "
-                    "(--optimizer-offload-fraction 1.0)"
-                )
-            inners.append(inner)
-        return inners
+            if inner is not None and hdo.gpu_optimizer is not None and _holds(hdo.gpu_optimizer, inner):
+                gpu.append(inner)
+            elif inner is not None and inner in hdo.cpu_copys_map_gpu_param:
+                cpu.append(inner)
+            else:
+                raise ValueError("--qwen38-vision-lazy: a lazy parameter is in neither of HDO's sub-optimizers")
+        return cpu, gpu
 
     def install(self):
         for tower in self.towers:
@@ -190,16 +200,22 @@ class LazyTextSteps:
 
         def set_sub_optimizer_grads():
             original_set_grads()
-            for inner in self._inner(hdo):
+            cpu, gpu = self._split(hdo)
+            for inner in cpu:
                 if self.skip:
                     inner.grad = None  # torch AdamW skips it entirely
                 elif inner in hdo.cpu_copy_map_grad:
                     inner.grad = hdo.cpu_copy_map_grad[inner]  # HDO attaches it once; put it back after a skip
+            if self.skip:
+                for inner in gpu:
+                    inner.grad = None  # FusedAdam skips it; HDO sets a fresh .grad on the next step
 
         def step(closure=None):
             if not self.skip:
                 return original_step(closure)
             inners = self._inner(hdo)
+            if not inners:  # every lazy shard here is on the GPU side: its group step is already the global one
+                return original_step(closure)
             owners = _owners(hdo)
             before = {inner: _step_value(owners[inner].state.get(inner)) for inner in inners}
             result = original_step(closure)
