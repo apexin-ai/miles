@@ -24,6 +24,7 @@ from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.sglang_utils.sglang_scaling_config import SglangScalingConfig
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.dashboard.args import validate_dashboard_args
+from miles.ray.rollout.rollout_prefetcher import validate_prefetch_rollout_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.router.backend import RouterKind
@@ -1349,6 +1350,7 @@ def miles_validate_args(args):
     if args.debug_train_only:
         args.rollout_num_gpus = 0
     args.starts_inference_engines = not args.debug_train_only or args.eval_num_gpus > 0
+    validate_prefetch_rollout_args(args)
 
     if args.use_critic and not args.debug_rollout_only:
         if args.offload_train is None:
