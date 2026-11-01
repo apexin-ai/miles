@@ -42,8 +42,13 @@ def _install_ple_context_hooks(model: GPTModel) -> None:
         cu_seqlens = (
             getattr(packed, "cu_seqlens_q", None) if packed is not None else None
         )  # config-access-exempt: packed-sequence implementations may omit cumulative lengths
+        cu_seqlens_host = (
+            getattr(packed, "cu_seqlens_host", None) if packed is not None else None
+        )  # config-access-exempt: only miles' PackedSeqParamsWithHostCuSeqlens carries the host copy
         flat = input_ids.reshape(-1)
-        contexts = build_ngram_contexts_packed(flat, cu_seqlens, ple_embedding.ngram_size, ple_embedding.eos_token_id)
+        contexts = build_ngram_contexts_packed(
+            flat, cu_seqlens, ple_embedding.ngram_size, ple_embedding.eos_token_id, cu_seqlens_host=cu_seqlens_host
+        )
         ngram_ids = ple_embedding.compute_ngram_ids(contexts)
         publish_ple_batch(ngram_ids, cu_seqlens)
 
