@@ -715,6 +715,50 @@ class TestCreateTrainingModels:
 
         rollout_executor.load.assert_not_awaited()
 
+    @staticmethod
+    def _restoring(monkeypatch, restored: int) -> None:
+        def _create_handle(args, *, capability, trainer_id: str):
+            handle = _make_trainer_handle()
+            handle.init = AsyncMock(return_value=[restored])
+            return handle
+
+        monkeypatch.setattr(placement_group_module, "create_trainer_controller_handle", _create_handle)
+
+    async def test_a_resume_loads_the_rollout_state_saved_with_the_restored_weights(self, tmp_path, monkeypatch):
+        """The weights of rollout 6 continue at rollout 7 only with the data cursor saved next to them."""
+        self._restoring(monkeypatch, restored=7)
+        rollout_executor = self._rollout_executor()
+        args = self._args(tmp_path)
+
+        await create_training_models(args, rollout_executor, handles=self._handles(args))
+
+        assert args.start_rollout_id == 7
+        rollout_executor.load.assert_awaited_once_with(6, load=args.load)
+
+    async def test_a_renumbered_start_still_loads_the_rollout_state_of_the_restored_weights(
+        self, tmp_path, monkeypatch
+    ):
+        """A resume on another global batch size renumbers the rounds; rollout 3's saved state is another position."""
+        self._restoring(monkeypatch, restored=7)
+        rollout_executor = self._rollout_executor()
+        args = self._args(tmp_path, "--start-rollout-id", "4")
+
+        await create_training_models(args, rollout_executor, handles=self._handles(args))
+
+        assert args.start_rollout_id == 4
+        rollout_executor.load.assert_awaited_once_with(6, load=args.load)
+
+    async def test_a_start_set_on_a_cold_run_loads_no_rollout_state(self, tmp_path, monkeypatch):
+        """Nothing was restored, so there is no saved state that belongs to the weights."""
+        self._restoring(monkeypatch, restored=0)
+        rollout_executor = self._rollout_executor()
+        args = self._args(tmp_path, "--start-rollout-id", "9")
+
+        await create_training_models(args, rollout_executor, handles=self._handles(args))
+
+        assert args.start_rollout_id == 9
+        rollout_executor.load.assert_not_awaited()
+
     async def test_an_external_trainer_is_identified_and_driven_through_one_handle(self, tmp_path, monkeypatch):
         """A second handle would identify one connection and drive another, so the check would guard nothing."""
         handles = self._patched(monkeypatch, [])
