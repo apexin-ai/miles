@@ -791,3 +791,33 @@ class TestFinalizeInjection:
 
         assert list(signature.parameters)[:2] == ["model", "num_tokens"]
         assert bound.arguments["num_tokens"].item() == 3
+
+
+class TestLowMemoryClearLog:
+    """The in-step clear under 10% free stays; with --no-clear-memory-every-step it must be visible in the log,
+    because firing on most steps would spend the time the flag saves."""
+
+    def test_clears_under_ten_percent_free_and_logs_the_1st_2nd_4th_clear(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from miles.backends.megatron_utils import model as model_module
+
+        free = {"bytes": 5 * 2**30}
+        clears: list[int] = []
+        monkeypatch.setattr(model_module, "_low_memory_clears", 0)
+        monkeypatch.setattr(model_module, "clear_memory", lambda: clears.append(free["bytes"]))
+        monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+        monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (free["bytes"], 100 * 2**30))
+        finalize = Mock()
+
+        with caplog.at_level(logging.INFO, logger=model_module.logger.name):
+            for _ in range(5):
+                model_module.finalize_model_grads_with_empty_cache([], None, finalize=finalize)
+            free["bytes"] = 50 * 2**30
+            model_module.finalize_model_grads_with_empty_cache([], None, finalize=finalize)
+
+        assert len(clears) == 5
+        assert finalize.call_count == 6
+        logged = [r.getMessage() for r in caplog.records if "low-memory clear" in r.getMessage()]
+        assert [m.rsplit("#", 1)[1] for m in logged] == ["1 on this rank)", "2 on this rank)", "4 on this rank)"]
+        assert "free 5.0 of 100.0 GiB" in logged[0]
