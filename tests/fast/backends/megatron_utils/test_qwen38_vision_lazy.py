@@ -376,10 +376,11 @@ def test_images_are_counted_only_in_gradient_enabled_forwards_and_reset_by_zero_
 def test_unsupported_optimizers_and_scopes_are_refused():
     vision_lazy = _vision_lazy()
     model = Toy("projector")
-    plain = SimpleNamespace(optimizer=torch.optim.AdamW(model.parameters()), model_param_group_index_map={})
+    held = {p: (0, i) for i, p in enumerate(model.parameters())}
+    plain = SimpleNamespace(optimizer=torch.optim.AdamW(model.parameters()), model_param_group_index_map=held)
     with pytest.raises(ValueError, match="HybridDeviceOptimizer"):
         vision_lazy.install([model], plain, mode="merger")
-    with pytest.raises(ValueError, match="no trainable"):
+    with pytest.raises(ValueError, match="no trainable merger"):
         vision_lazy.install([Toy("none")], DistOpt(Toy("projector")), mode="merger")
     with pytest.raises(ValueError, match="mode"):
         vision_lazy.install([model], DistOpt(model), mode="sometimes")
@@ -389,3 +390,56 @@ def test_install_twice_is_refused():
     model, opt, _ = _setup()
     with pytest.raises(ValueError, match="already"):
         _vision_lazy().install([model], opt, mode="merger")
+
+
+# --- the vision audit checks lazy text steps on its own ---
+
+
+def _audit_args(tmp_path, steps):
+    hf = tmp_path / "hf"
+    hf.mkdir(parents=True, exist_ok=True)
+    (hf / "config.json").write_text("{}")
+    names = ["blocks.weight", "merger.norm.weight", "merger.norm.bias", "merger.fc.weight", "merger.fc.bias"]
+    (hf / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {f"model.visual.{n}": "v" for n in names}}))
+    return SimpleNamespace(
+        qwen38_audit_dir=str(tmp_path / "audit"), qwen38_freeze_language=False, qwen38_visual_snapshot_interval=0,
+        qwen38_audit_interval=1, hf_checkpoint=str(hf), num_rollout=steps, rollout_batch_size=1,
+        n_samples_per_prompt=1, global_batch_size=1,
+    )
+
+
+def _audited_train(model, opt, images, args):
+    from miles_plugins.models.qwen3_8_next import vision_audit
+
+    for step, image in enumerate(images):
+        opt.zero_grad()
+        vision_audit.before_step(args, step, 0, [model], opt, None)
+        model(_X, image=image).backward()
+        opt.step()
+
+
+@pytest.fixture
+def audit_without_probes(monkeypatch):
+    from miles_plugins.models.qwen3_8_next import vision_audit
+
+    # the gradient probes read Megatron's DDP buffers, which this stand-in does not have (covered by the audit tests)
+    monkeypatch.setattr(vision_audit, "_capture_probes", lambda optimizer, parameters: [])
+    monkeypatch.setattr(vision_audit, "_runtime_identity", lambda: {})
+    return vision_audit
+
+
+def test_the_audit_records_lazy_text_steps_and_finds_no_movement(tmp_path, audit_without_probes):
+    model, opt, _ = _setup()
+    args = _audit_args(tmp_path, 3)
+    _audited_train(model, opt, [True, False, True], args)
+    records = [json.loads((tmp_path / f"audit/rank-000-update-{u:06d}.json").read_text()) for u in (1, 2, 3)]
+    assert [r["lazy_skipped"] for r in records] == [False, True, False]
+    assert records[1]["lazy_tensors_checked"] == 4 and records[1]["lazy_moved"] == 0
+
+
+def test_positive_control_the_audit_catches_a_lazy_step_that_moved_the_merger(tmp_path, audit_without_probes):
+    model, opt, lazy = _setup()
+    lazy._inner = lambda hdo: []  # broken: nothing is detached, so AdamW moves the merger on the text step
+    args = _audit_args(tmp_path, 3)
+    with pytest.raises(ValueError, match="lazy text-only step moved"):
+        _audited_train(model, opt, [True, False, True], args)
