@@ -82,6 +82,19 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
         ),
     ] = 1
     qwen38_visual_snapshot_interval: A[int, Arg()] = 0
+    qwen38_reload_check_iterations: A[
+        list[int] | None,
+        Arg(
+            type_parser=int,
+            nargs="+",
+            help=(
+                "With --custom-megatron-init-path miles_plugins.models.qwen3_8_next.vision_audit."
+                "install_final_save_check: also run the save -> reload -> per-parameter compare check after the saves "
+                "of these iterations (rollout ids), not only after the final save. Results go to "
+                "<--qwen38-audit-dir>/checkpoint-reload/iter_NNNNNNN/; a failure stops the run on every rank."
+            ),
+        ),
+    ] = None
     qwen38_vision_load_from_scope: A[
         str | None,
         Arg(
