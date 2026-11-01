@@ -203,7 +203,13 @@ if __name__ == "__main__":
 
     hf_checkpoint = vars(megatron_args).get("hf_checkpoint")
     conversion_args = argparse.Namespace(
-        backend=megatron_args, hf_checkpoint=Path(hf_checkpoint) if hf_checkpoint is not None else None
+        backend=megatron_args,
+        hf_checkpoint=Path(hf_checkpoint) if hf_checkpoint is not None else None,
+        # Qwen3.8-Next's GDN rows are group-major exactly when the head-sharded layer wrote the checkpoint
+        qwen38_gdn_head_sharded=any(
+            key.endswith(LINEAR_ATTN_LAYOUT_KEY)
+            for key in WrappedStorageReader(args.input_dir).read_metadata().state_dict_metadata
+        ),
     )
     save_tensors(conversion_args, args.model_name, state_dict, args.output_dir, args.chunk_size, args.vocab_size)
 

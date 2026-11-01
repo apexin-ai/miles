@@ -1,5 +1,7 @@
-"""Qwen3.8-Next runs its GDN replicated on every TP rank through the HF-attention shim.
-Moved from qwen3_5.py when Qwen3.5 / Qwen3-Next switched to the head-sharded layer."""
+"""Qwen3.8-Next's GDN, either replicated on every TP rank through the HF-attention shim (the default; moved from
+qwen3_5.py when Qwen3.5 / Qwen3-Next switched to the head-sharded layer) or, with ``--qwen38-gdn-head-sharded``,
+Qwen3.5's head-sharded layer: each TP rank holds and computes ``1 / TP`` of the key / value heads, with the q/k/v
+projection and conv rows group-major (``megatron_to_hf.linear_attn_layout``)."""
 
 import torch
 import torch.nn as nn
@@ -16,7 +18,7 @@ from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
 from miles_plugins.models.cp_utils import build_gdn_cp_context
 from miles_plugins.models.hf_attention import HuggingfaceAttention
 from miles_plugins.models.linear_attn import gdn_kernel
-from miles_plugins.models.qwen3_5 import _get_text_config
+from miles_plugins.models.qwen3_5 import Attention, _get_text_config
 
 
 def mark_tp_replicated(module: nn.Module) -> None:
@@ -229,3 +231,18 @@ class ReplicatedGDNAttention(HuggingfaceAttention):
             cu_seqlens=packed_seq_params.cu_seqlens_q,
         )
         return hidden_states
+
+
+class HeadShardedGDNAttention(Attention):
+    """Qwen3.5's head-sharded GDN ``self_attention`` with Qwen3.8-Next's two differences from Qwen3.5: no input
+    layernorm (the attention HC's ``hc_norm`` normalises the GDN input, as in ``Qwen38NextLinearAttention``), and the
+    gated norm's output gate uses ``output_gate_type`` (sigmoid) while ``hidden_act`` stays silu. Parameter names
+    match the replicated layer's; q/k/v and conv rows are group-major and every projection is TP-sharded."""
+
+    @staticmethod
+    def norm_activation(text_config) -> str:
+        return text_config.output_gate_type or text_config.hidden_act
+
+    @staticmethod
+    def build_input_layernorm(args, config, text_config) -> nn.Module:
+        return nn.Identity()

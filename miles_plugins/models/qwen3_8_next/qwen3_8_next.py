@@ -16,6 +16,7 @@ from megatron.core.transformer.transformer_layer import get_transformer_layer_of
 
 from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.qwen3_5 import _get_text_config
+from miles_plugins.models.qwen3_8_next.gdn import HeadShardedGDNAttention
 from miles_plugins.models.qwen3_8_next.gdn import ReplicatedGDNAttention as Qwen35LinearAttention
 from miles_plugins.models.qwen3_8_next.hyper_connection import (
     Qwen38NextHCHeadContraction,
@@ -153,7 +154,7 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
 
         if layer_types[global_layer_id] == "linear_attention":
             layer_spec.submodules.self_attention = ModuleSpec(
-                module=Qwen38NextLinearAttention,
+                module=HeadShardedGDNAttention if args.qwen38_gdn_head_sharded else Qwen38NextLinearAttention,
                 params={"args": args},
             )
         else:
