@@ -10,10 +10,10 @@ as the halo:
 * Real Triton kernels (``TRITON_INTERPRET=1``), one process emulating every rank: the window's
   output, per-token key / value grads and assembled input grad equal the full-sequence ones
   bitwise; the param grads stay within the full-sequence path's error against fp64.
-* The real layer over a gloo group (TP 8) with the fp64 torch references: input and param grads
-  match the unsplit run to 1e-10, with and without full recompute.
-* The real layer and the real kernels over gloo (TP 8, bf16): outputs and input grads of the window
-  path equal the full-sequence path bitwise. The duplicated linears are row-wise here, so the GEMM
+* The real layer over a gloo group (TP 8 and TP 4) with the fp64 torch references: input and param
+  grads match the unsplit run to 1e-10, with and without full recompute.
+* The real layer and the real kernels over gloo (TP 8 and TP 4, bf16): outputs and input grads of the
+  window path equal the full-sequence path bitwise. The duplicated linears are row-wise here, so the GEMM
   shape cannot change a row's result; on GPU that is cuBLAS's choice (see the GPU smoke script).
 """
 
@@ -29,19 +29,27 @@ from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 from tests.fast.miles_plugins.models.qwen3_8_next import test_ple_sequence_parallel_grads as m001
 
-# 1 + 4 spawned cases (8 gloo ranks each) under the Triton interpreter; about 200 s on 2 CPUs
-register_cpu_ci(est_time=240, suite="stage-b-cpu", labels=["miles-plugin"])
+# 2 + 8 spawned cases (8 or 4 gloo ranks each) under the Triton interpreter
+register_cpu_ci(est_time=400, suite="stage-b-cpu", labels=["miles-plugin"])
 
 LOOKBACK = m001.LOOKBACK  # (kernel 4 - 1) * dilation 3 = 9
-TP = 8
-# 8 slices of 12; halos are [12r - 9, 12r). Rows [5, 7) and [7, 8) are shorter than the halo and
-# end inside rank 1's halo, 22 ends a row inside rank 2's halo, 24 is a slice boundary, [42, 90)
+# TP 8: 8 slices of 12; halos are [12r - 9, 12r). Rows [5, 7) and [7, 8) are shorter than the halo
+# and end inside rank 1's halo, 22 ends a row inside rank 2's halo, 24 is a slice boundary, [42, 90)
 # spans four whole slices.
+# TP 4: 4 slices of 24; halos are [24r - 9, 24r). 22 ends a row inside rank 1's halo, 24 is a slice
+# boundary, [42, 90) spans the whole slice [48, 72), 41 and 42 end rows inside rank 2's halo [39, 48).
 PACKED_96 = [0, 5, 7, 8, 14, 22, 24, 33, 41, 42, 90, 96]
-# 8 slices of 9 = the halo: each halo is the whole previous slice
+# TP 8: 8 slices of 9 = the halo: each halo is the whole previous slice
 PACKED_72 = [0, 3, 9, 10, 17, 18, 40, 72]
-CASES = [(96, PACKED_96), (96, None), (72, PACKED_72)]
-CASE_IDS = ["packed-96", "one-sequence-96", "packed-72-slice-equals-halo"]
+# TP 4: 4 slices of 9 = the halo
+PACKED_36 = [0, 3, 9, 10, 17, 18, 30, 36]
+CASES = {
+    8: [(96, PACKED_96), (96, None), (72, PACKED_72)],
+    4: [(96, PACKED_96), (96, None), (36, PACKED_36)],
+}
+CASE_IDS = ["packed-96", "one-sequence-96", "packed-slice-equals-halo"]
+TPS = [8, 4]
+TP_IDS = ["tp8", "tp4"]
 
 
 # ----------------------------------------------------------------------------------------------
@@ -75,7 +83,7 @@ def _windows(seq, tp):
         yield rank, slice(rank * local, (rank + 1) * local), start, torch.arange(start, start + local + LOOKBACK) % seq
 
 
-def _kernel_worker(_rank, _world, _port, seq, cu_bounds, dtype):
+def _kernel_worker(_rank, _world, _port, tp, seq, cu_bounds, dtype):
     os.environ["TRITON_INTERPRET"] = "1"
     from miles.kernels.embedding.ple_gate_conv import ple_gate_conv
 
@@ -102,7 +110,7 @@ def _kernel_worker(_rank, _world, _port, seq, cu_bounds, dtype):
     old_pgrads = [torch.zeros_like(p) for p in params]
     new_pgrads = [torch.zeros_like(p) for p in params]
     halo_grads = {}
-    for rank, own, start, rows in _windows(seq, TP):
+    for rank, own, start, rows in _windows(seq, tp):
         upstream = torch.zeros_like(dout)
         upstream[own] = dout[own]
         old = torch.autograd.grad(full_updated, full_leaves, upstream, retain_graph=True)
@@ -143,10 +151,11 @@ def _kernel_worker(_rank, _world, _port, seq, cu_bounds, dtype):
         assert err_new <= err_old * (1 + 1e-3) + tol, f"{name}: window err {err_new:.3e} vs full {err_old:.3e}"
 
 
+@pytest.mark.parametrize("tp", TPS, ids=TP_IDS)
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
-def test_window_kernels_match_full_sequence(dtype):
-    for seq, cu_bounds in CASES:
-        run_multiprocess(partial(_kernel_worker, seq=seq, cu_bounds=cu_bounds, dtype=dtype), world_size=1)
+def test_window_kernels_match_full_sequence(dtype, tp):
+    for seq, cu_bounds in CASES[tp]:
+        run_multiprocess(partial(_kernel_worker, tp=tp, seq=seq, cu_bounds=cu_bounds, dtype=dtype), world_size=1)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -188,7 +197,7 @@ def _run(layer, x, ngram_ids, cu, upstream, recompute):
 def _split_run(layer, x, ngram_ids, cu, upstream, recompute, rank, tp_group, local_slice):
     from megatron.core.distributed.finalize_model_grads import _allreduce_non_tensor_model_parallel_grads
 
-    local = x.shape[0] // TP
+    local = x.shape[0] // dist.get_world_size(tp_group)
     own = slice(rank * local, (rank + 1) * local)
     layer.config.sequence_parallel = True
     layer.ple_sp_local_slice = local_slice
@@ -253,12 +262,14 @@ def _fp64_worker(rank, world_size, port, seq, cu_bounds, recompute):
         dist.destroy_process_group()
 
 
-@pytest.mark.parametrize("seq,cu_bounds", CASES, ids=CASE_IDS)
+@pytest.mark.parametrize("tp", TPS, ids=TP_IDS)
+@pytest.mark.parametrize("case", range(3), ids=CASE_IDS)
 @pytest.mark.parametrize("recompute", [False, True], ids=["no-recompute", "full-recompute"])
-def test_local_window_layer_grads_match_unsplit(seq, cu_bounds, recompute):
+def test_local_window_layer_grads_match_unsplit(case, recompute, tp):
+    seq, cu_bounds = CASES[tp][case]
     if recompute and cu_bounds is None:
         pytest.skip("recompute is covered by the packed cases")
-    run_multiprocess(partial(_fp64_worker, seq=seq, cu_bounds=cu_bounds, recompute=recompute), world_size=TP)
+    run_multiprocess(partial(_fp64_worker, seq=seq, cu_bounds=cu_bounds, recompute=recompute), world_size=tp)
 
 
 class _RowwiseLinear(torch.nn.Module):
@@ -327,5 +338,6 @@ def _kernel_layer_worker(rank, world_size, port, seq, cu_bounds):
         dist.destroy_process_group()
 
 
-def test_local_window_layer_bitwise_with_real_kernels():
-    run_multiprocess(partial(_kernel_layer_worker, seq=96, cu_bounds=PACKED_96), world_size=TP)
+@pytest.mark.parametrize("tp", TPS, ids=TP_IDS)
+def test_local_window_layer_bitwise_with_real_kernels(tp):
+    run_multiprocess(partial(_kernel_layer_worker, seq=96, cu_bounds=PACKED_96), world_size=tp)
