@@ -230,8 +230,12 @@ def test_default_multipliers_give_exactly_megatrons_standard_param_groups(gloo_w
     assert _same_groups(_groups([model], config, overrides), _standard_groups([model], config))
 
 
-@pytest.mark.parametrize("scope", ["projector", "full"])
-def test_vision_lr_mult_scales_only_the_trainable_vision_parameters(scope, gloo_world_of_one):
+def _is_vit(name):
+    return name.startswith("vision_model.") and not name.startswith("vision_model.merger.")
+
+
+def test_vit_lr_mult_scales_only_the_vit_and_the_merger_keeps_the_language_lr(gloo_world_of_one):
+    scope = "full"
     model = _model(scope)
     chunks = [_Wrapped(model)]
     config = _optimizer_config()
@@ -243,16 +247,25 @@ def test_vision_lr_mult_scales_only_the_trainable_vision_parameters(scope, gloo_
         group = _group_of(groups, p)
         decayed = not (p.ndim == 1 or name.endswith(".bias"))
         assert group["wd_mult"] == (1.0 if decayed else 0.0), name
-        if name.startswith("vision_model."):
+        if _is_vit(name):
             assert (group["max_lr"], group["min_lr"], group["lr_mult"]) == (_LR * 0.25, _MIN_LR * 0.25, 0.25), name
-        else:
+        else:  # language and merger
             assert (group["max_lr"], group["min_lr"], group["lr_mult"]) == (_LR, _MIN_LR, 1.0), name
     summary = vision_optimizer.check_vision_param_groups(chunks, config, overrides, scope=scope, lr_mult=0.25)
-    assert {(g["part"], g["lr_mult"]) for g in summary["groups"]} == {("vision", 0.25), ("language", 1.0)}
+    assert {(g["part"], g["lr_mult"]) for g in summary["groups"]} == {("vit", 0.25), ("merger", 1.0), ("language", 1.0)}
+
+
+@pytest.mark.parametrize("scope", ["none", "projector"])
+def test_vit_multipliers_are_refused_without_a_trainable_vit(scope, gloo_world_of_one):
+    model = _model(scope)
+    config = _optimizer_config()
+    overrides = vision_optimizer.vision_config_overrides(config, lr_mult=0.2)
+    with pytest.raises(ValueError, match="need a trainable ViT"):
+        vision_optimizer.check_vision_param_groups([model], config, overrides, scope=scope, lr_mult=0.2)
 
 
 @pytest.mark.parametrize("wd_mult", [0.0, 0.3])
-def test_vision_wd_mult_keeps_vision_biases_and_1d_parameters_undecayed(wd_mult, gloo_world_of_one):
+def test_vit_wd_mult_keeps_vit_biases_and_1d_parameters_undecayed(wd_mult, gloo_world_of_one):
     model = _model("full")
     config = _optimizer_config()
     overrides = vision_optimizer.vision_config_overrides(config, wd_mult=wd_mult)
@@ -263,11 +276,13 @@ def test_vision_wd_mult_keeps_vision_biases_and_1d_parameters_undecayed(wd_mult,
             continue
         group = _group_of(groups, p)
         one_d = p.ndim == 1 or name.endswith(".bias")
-        is_vision = name.startswith("vision_model.")
-        kinds.add((is_vision, one_d))
-        assert group["wd_mult"] == (0.0 if one_d else (wd_mult if is_vision else 1.0)), name
+        is_vit = _is_vit(name)
+        kinds.add((is_vit, one_d))
+        assert group["wd_mult"] == (0.0 if one_d else (wd_mult if is_vit else 1.0)), name
         assert (group["max_lr"], group.get("lr_mult")) == (_LR, 1.0), name
     assert kinds == {(True, True), (True, False), (False, True), (False, False)}
+    merger = model.vision_model.merger.linear_fc1.weight
+    assert _group_of(groups, merger) is _group_of(groups, model.head.weight)  # the merger stays with the language
     vision_optimizer.check_vision_param_groups([model], config, overrides, scope="full", wd_mult=wd_mult)
 
 
@@ -278,7 +293,8 @@ def test_the_qk_layernorm_weight_decay_rule_is_kept_too(gloo_world_of_one):
     overrides = vision_optimizer.vision_config_overrides(config, lr_mult=2.0, wd_mult=0.5)
     groups = _groups([model], config, overrides)
     for name, p in model.vision_model.named_parameters():
-        assert _group_of(groups, p)["wd_mult"] == (0.0 if p.ndim == 1 or name.endswith(".bias") else 0.5), name
+        want = 0.0 if p.ndim == 1 or name.endswith(".bias") else (1.0 if name.startswith("merger.") else 0.5)
+        assert _group_of(groups, p)["wd_mult"] == want, name
     vision_optimizer.check_vision_param_groups([model], config, overrides, scope="full", lr_mult=2.0, wd_mult=0.5)
 
 
@@ -299,7 +315,7 @@ def test_the_check_refuses_a_rule_that_reaches_language_parameters(gloo_world_of
 
 @pytest.mark.parametrize("lr_mult,wd_mult", [(0.0, 1.0), (-1.0, 1.0), (float("nan"), 1.0), (float("inf"), 1.0), (1.0, -0.1), (1.0, float("nan"))])
 def test_bad_multipliers_are_refused(lr_mult, wd_mult):
-    with pytest.raises(ValueError, match="qwen38-vision"):
+    with pytest.raises(ValueError, match="qwen38-vit"):
         vision_optimizer.check_multipliers(lr_mult, wd_mult)
 
 
@@ -326,10 +342,12 @@ def _scheduler(optimizer):
 
 
 def _lr_wd_by_part(optimizer, model):
-    vision_ids = {id(p) for p in model.vision_model.parameters()}
+    vit_ids = {id(p) for n, p in model.named_parameters() if _is_vit(n)}
     out = {}
     for g in optimizer.param_groups:
-        part = "vision" if id(g["params"][0]) in vision_ids else "language"
+        parts = {id(p) in vit_ids for p in g["params"]}
+        assert len(parts) == 1, "a group mixes ViT and other parameters"
+        part = "vision" if parts.pop() else "language"
         decayed = g["wd_mult"] != 0.0
         out[(part, decayed)] = (g["lr"], g["weight_decay"])
     return out
@@ -404,7 +422,7 @@ def test_positive_control_a_vision_lr_given_by_max_lr_alone_is_lost_on_reload(gl
 
     config = _optimizer_config()
     naive = dict(get_standard_config_overrides(config))
-    naive[ParamKey(with_name_predicate=ParamWithNamePredicate(name="naive", fn=lambda p, n: n.startswith("vision_model.")))] = {
+    naive[ParamKey(with_name_predicate=ParamWithNamePredicate(name="naive", fn=lambda p, n: _is_vit(n)))] = {
         "max_lr": _LR * 0.5,
         "min_lr": _MIN_LR * 0.5,
     }
@@ -454,7 +472,7 @@ def test_text_only_steps_still_move_a_trainable_projector_but_never_the_frozen_v
 
 
 def _args(provider="miles_plugins.models.qwen3_8_next.vision.get_qwen38_vision_model_provider", **kwargs):
-    fields = {"qwen38_vision_lr_mult": 1.0, "qwen38_vision_wd_mult": 1.0, "qwen38_vision_trainable": "projector"}
+    fields = {"qwen38_vit_lr_mult": 1.0, "qwen38_vit_wd_mult": 1.0, "qwen38_vision_trainable": "projector"}
     return SimpleNamespace(custom_model_provider_path=SimpleNamespace(path=provider) if provider else None, **(fields | kwargs))
 
 
@@ -473,7 +491,10 @@ def test_setup_passes_the_merged_overrides_only_when_a_multiplier_is_set(megatro
     with caplog.at_level("INFO", logger=megatron_model_module.logger.name):
         assert megatron_model_module._qwen38_vision_config_overrides(_args(), config, model) is None
     assert "qwen38 vision param groups" in caplog.text and "'vision_trainable_prefixes': ['merger']" in caplog.text
-    overrides = megatron_model_module._qwen38_vision_config_overrides(_args(qwen38_vision_lr_mult=0.5), config, model)
+    full = [_model("full")]
+    overrides = megatron_model_module._qwen38_vision_config_overrides(
+        _args(qwen38_vit_lr_mult=0.5, qwen38_vision_trainable="full"), config, full
+    )
     assert set(overrides) >= set(vision_optimizer.vision_config_overrides(_optimizer_config()))
     assert len(overrides) == len(vision_optimizer.vision_config_overrides(config)) + 1
     assert megatron_model_module._qwen38_vision_config_overrides(_args(provider=None), config, model) is None
@@ -482,10 +503,11 @@ def test_setup_passes_the_merged_overrides_only_when_a_multiplier_is_set(megatro
 @pytest.mark.parametrize(
     "args,match",
     [
-        (dict(provider=None, qwen38_vision_lr_mult=0.5), "need the Qwen3.8 vision provider"),
-        (dict(provider="miles_plugins.models.qwen3_8_next.model_provider.x", qwen38_vision_wd_mult=0.0), "need the Qwen3.8 vision provider"),
-        (dict(qwen38_vision_trainable="none", qwen38_vision_lr_mult=2.0), "frozen tower"),
-        (dict(qwen38_vision_lr_mult=0.0), "must be a finite number > 0"),
+        (dict(provider=None, qwen38_vit_lr_mult=0.5), "need the Qwen3.8 vision provider"),
+        (dict(provider="miles_plugins.models.qwen3_8_next.model_provider.x", qwen38_vit_wd_mult=0.0), "need the Qwen3.8 vision provider"),
+        (dict(qwen38_vision_trainable="none", qwen38_vit_lr_mult=2.0), "need a trainable ViT"),
+        (dict(qwen38_vision_trainable="projector", qwen38_vit_lr_mult=0.2), "need a trainable ViT"),
+        (dict(qwen38_vit_lr_mult=0.0), "must be a finite number > 0"),
     ],
 )
 def test_setup_refuses_multipliers_that_would_do_nothing_or_are_invalid(args, match, megatron_model_module, gloo_world_of_one):
