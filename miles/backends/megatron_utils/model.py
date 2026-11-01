@@ -255,8 +255,8 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
-        if not (args.qwen38_vit_lr_mult == 1.0 and args.qwen38_vit_wd_mult == 1.0):
-            raise ValueError("--qwen38-vit-lr-mult / --qwen38-vit-wd-mult are not wired into the Muon optimizer")
+        if not (args.qwen38_vit_lr_mult == 1.0 and args.qwen38_vit_wd_mult == 1.0) or args.qwen38_vision_load_from_scope:
+            raise ValueError("--qwen38-vit-*-mult / --qwen38-vision-load-from-scope are not wired into the Muon optimizer")
         if args.stream_optimizer_state_to_disk:
             from miles_plugins.optimizers.nvme_stream import setup_muon_state_on_disk
 
@@ -293,6 +293,17 @@ def setup_model_and_optimizer(
         )
         if _uses_qwen38_vision(args):
             _log_qwen38_vision_optimizer(model, optimizer)
+            if args.qwen38_vision_load_from_scope is not None:
+                from miles_plugins.models.qwen3_8_next import vision_scope_switch
+
+                vision_scope_switch.install(
+                    model,
+                    optimizer,
+                    from_scope=args.qwen38_vision_load_from_scope,
+                    to_scope=args.qwen38_vision_trainable,
+                )
+        elif args.qwen38_vision_load_from_scope is not None:
+            raise ValueError("--qwen38-vision-load-from-scope needs the Qwen3.8 vision provider")
 
     if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
         # Muon took the chunked-offloader route above; this store is DistOpt-only.
