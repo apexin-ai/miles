@@ -182,6 +182,109 @@ class TestQwenFinalSaveCheck:
         assert failure["stage"] == "compare" and failure["loader_entered"] and failure["loader_returned"]
         assert {row["name"] for row in failure["mismatches"]} == {"decoder.w", "vision_model.blocks.0.w"}
 
+    def test_without_listed_iterations_only_the_final_save_reloads(self, tmp_path, harness) -> None:
+        args = self._args(tmp_path)
+        assert args.qwen38_reload_check_iterations is None
+        model, saved = _model(["decoder.w"])
+        harness.perturbed = lambda: [p for chunk in model for _, p in chunk.named_parameters()]
+        harness.restore = lambda: [p.data.copy_(saved[n]) for chunk in model for n, p in chunk.named_parameters()]
+        _install(args)
+        for rollout_id in range(NUM_ROLLOUT - 1):
+            _final_save(harness, args, model, rollout_id=rollout_id)
+        assert len(harness.saves) == NUM_ROLLOUT - 1 and harness.loads == []
+        assert not (tmp_path / "audit/checkpoint-reload").exists()
+
+    def test_listed_iteration_reloads_and_training_goes_on(self, tmp_path, harness) -> None:
+        # The formal run's early save at step 3 = rollout id 1 here; the final save is still checked.
+        args = _trainer_config(
+            QWEN_HOOK, tmp_path, "--qwen38-audit-dir", str(tmp_path / "audit"), "--qwen38-reload-check-iterations", "1"
+        )
+        assert args.qwen38_reload_check_iterations == [1]
+        model, saved = _model(["decoder.w", "vision_model.blocks.0.w"])
+        params = [p for chunk in model for _, p in chunk.named_parameters()]
+        harness.perturbed = lambda: params
+        harness.restore = lambda: [p.data.copy_(saved[n]) for chunk in model for n, p in chunk.named_parameters()]
+        _install(args)
+
+        _final_save(harness, args, model, rollout_id=0)
+        assert harness.loads == []
+        _final_save(harness, args, model, rollout_id=1)
+        load = dict(load=args.backend.save, no_load_optim=True, no_load_rng=True, finetune=True)
+        assert harness.loads == [dict(load, ckpt_step=1)]
+        assert CHECKPOINT_LOAD_FIELDS.isdisjoint(vars(args.backend))
+        # the live model is back bit for bit, so training continues from it
+        assert all(torch.equal(p, saved[n]) for chunk in model for n, p in chunk.named_parameters())
+        early = json.loads((tmp_path / "audit/checkpoint-reload/iter_0000001/rank-000.json").read_text())
+        assert early["passed"] and early["checkpoint_iteration"] == 1
+        assert not (tmp_path / "audit/checkpoint-reload/rank-000.json").exists()
+
+        _final_save(harness, args, model)
+        assert harness.loads == [dict(load, ckpt_step=1), dict(load, ckpt_step=NUM_ROLLOUT - 1)]
+        final = json.loads((tmp_path / "audit/checkpoint-reload/rank-000.json").read_text())
+        assert final["passed"] and final["checkpoint_iteration"] == NUM_ROLLOUT - 1
+        assert json.loads((tmp_path / "audit/checkpoint-reload/iter_0000001/rank-000.json").read_text()) == early
+
+    def test_failed_listed_reload_raises_and_leaves_no_nan_slices(self, tmp_path, harness) -> None:
+        args = _trainer_config(
+            QWEN_HOOK, tmp_path, "--qwen38-audit-dir", str(tmp_path / "audit"), "--qwen38-reload-check-iterations", "1"
+        )
+        model, saved = _model(["decoder.w", "vision_model.blocks.0.w"])
+        harness.perturbed = lambda: [p for chunk in model for _, p in chunk.named_parameters()]
+        _install(args)
+
+        with pytest.raises(ValueError, match="did not restore"):
+            _final_save(harness, args, model, rollout_id=1)
+        assert all(torch.equal(p, saved[n]) for chunk in model for n, p in chunk.named_parameters())
+        assert CHECKPOINT_LOAD_FIELDS.isdisjoint(vars(args.backend))
+        root = tmp_path / "audit/checkpoint-reload/iter_0000001"
+        assert not (root / "rank-000.json").exists()
+        failure = json.loads((root / "rank-000.failed.json").read_text())
+        assert failure["checkpoint_iteration"] == 1 and failure["stage"] == "compare"
+        assert {row["name"] for row in failure["mismatches"]} == {"decoder.w", "vision_model.blocks.0.w"}
+
+    def test_listed_reload_stops_a_rank_that_passed_when_another_failed(self, tmp_path, harness, monkeypatch) -> None:
+        from miles_plugins.models.qwen3_8_next import vision_audit
+
+        args = _trainer_config(
+            QWEN_HOOK, tmp_path, "--qwen38-audit-dir", str(tmp_path / "audit"), "--qwen38-reload-check-iterations", "1"
+        )
+        model, saved = _model(["decoder.w"])
+        harness.perturbed = lambda: [p for chunk in model for _, p in chunk.named_parameters()]
+        harness.restore = lambda: [p.data.copy_(saved[n]) for chunk in model for n, p in chunk.named_parameters()]
+        reduced = []
+
+        def all_reduce(tensor):
+            reduced.append(int(tensor.item()))
+            tensor.add_(1)  # the other rank's failure
+
+        monkeypatch.setattr(vision_audit.dist, "get_world_size", lambda: 2)
+        monkeypatch.setattr(vision_audit.dist, "get_backend", lambda: "gloo")
+        monkeypatch.setattr(vision_audit.dist, "all_reduce", all_reduce)
+        _install(args)
+        with pytest.raises(ValueError, match="failed on 1 other rank"):
+            _final_save(harness, args, model, rollout_id=1)
+        assert reduced == [0]  # this rank passed and still joined the vote
+        assert json.loads((tmp_path / "audit/checkpoint-reload/iter_0000001/rank-000.json").read_text())["passed"]
+
+    @pytest.mark.parametrize("listed", [["1", "1"], ["-1"]])
+    def test_hook_rejects_bad_listed_iterations(self, tmp_path, harness, listed) -> None:
+        args = _trainer_config(
+            QWEN_HOOK, tmp_path, "--qwen38-audit-dir", str(tmp_path / "audit"), "--qwen38-reload-check-iterations", *listed
+        )
+        with pytest.raises(ValueError, match="distinct iterations"):
+            _install(args)
+
+    def test_listed_iteration_past_the_final_save_is_refused_before_saving(self, tmp_path, harness) -> None:
+        args = _trainer_config(
+            QWEN_HOOK, tmp_path, "--qwen38-audit-dir", str(tmp_path / "audit"), "--qwen38-reload-check-iterations",
+            str(NUM_ROLLOUT),
+        )
+        model, _ = _model(["decoder.w"])
+        _install(args)
+        with pytest.raises(ValueError, match="the final save is iteration"):
+            _final_save(harness, args, model, rollout_id=0)
+        assert harness.saves == [] and harness.loads == []
+
     def test_hook_rejects_async_save(self, tmp_path, harness) -> None:
         # Megatron's parser drops --async-save for this toy setup, so set the parsed value directly.
         args = replace_config_values(self._args(tmp_path), async_save=True)
