@@ -136,6 +136,28 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
             )
         ),
     ] = False
+    qwen38_indexer_score_dtype: A[
+        str,
+        Arg(
+            choices=["fp32", "bf16"],
+            help=(
+                "Operand precision of the frozen QSA indexer's block scores. fp32: fp32 einsum (SIMT SGEMM on "
+                "Blackwell, the reference). bf16: one fused Triton kernel, bf16 operands with fp32 accumulation and "
+                "fp32 logits, as sglang's prefill indexer; the indexer's q and keys are bf16 already, so only the "
+                "fp32 summation order differs. Selection only; no parameter or checkpoint change."
+            ),
+        ),
+    ] = "fp32"
+    qwen38_indexer_tp_shard: A[
+        bool,
+        Arg(
+            help=(
+                "Split the QSA indexer's query rows across TP (rank r scores rows r, r + TP, ...) and all-gather the "
+                "selected block ids, instead of every TP rank scoring the whole SP-gathered sequence. Same selection; "
+                "no parameter or checkpoint change."
+            )
+        ),
+    ] = False
 
 
 class DsaMegatronPluginsConfig(BaseConfig):

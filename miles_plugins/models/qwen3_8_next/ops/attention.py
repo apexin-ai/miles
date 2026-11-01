@@ -159,6 +159,7 @@ class Qwen38NextAttention(SelfAttention):
                     rotary_pos_emb,
                     self._qsa_cu_seqlens,
                     materialized_rope=materialized_rope,
+                    tp_group=self._indexer_tp_group(),
                 )
             else:
                 self._qsa_selection = self._token_selection(
@@ -171,6 +172,21 @@ class Qwen38NextAttention(SelfAttention):
             self._qsa_selection = None
             self._qsa_cu_seqlens = None
             self._qsa_blocks = None
+
+    def _indexer_tp_group(self):
+        """The TP group the indexer splits its query rows over, or None (every rank scores every row).
+
+        --qwen38-indexer-tp-shard: the indexer input is the full sequence on every TP rank (SP-gathered), so the
+        replicated indexer scores the same rows TP times. Sharded, each rank scores every TP-th row and the
+        selections are all-gathered; every rank ends with the same ``[T, K]`` block ids.
+        """
+        if not getattr(
+            self.config, "qwen3_8_next_indexer_tp_shard", False
+        ):  # config-access-exempt: optional knob, absent from older configs
+            return None
+        if get_tensor_model_parallel_world_size() <= 1:
+            return None
+        return get_tensor_model_parallel_group()
 
     def _token_selection(
         self, indexer_states: Tensor, positions: Tensor, rotary_pos_emb: Tensor, materialized_rope: bool
@@ -209,6 +225,7 @@ def qsa_selected_blocks(
     rotary_pos_emb: Tensor,
     cu_seqlens: Tensor | None,
     materialized_rope: bool = False,
+    tp_group=None,
 ) -> tuple[Tensor, Tensor]:
     """Indexer selection -> ``(blocks, cu_seqlens)``, the input of ``build_qsa_block_index``.
 
@@ -219,20 +236,43 @@ def qsa_selected_blocks(
     tail itself, and a tail id here would be a block the kernel ignores. The ids are written tile by
     tile into one buffer, so neither a ``[T, token_budget]`` token selection nor a ``[T, blocks]``
     bitmap is built.
+
+    With ``tp_group`` each of its ``n`` ranks scores the rows ``rank, rank + n, ...`` and the shards are
+    all-gathered and interleaved back; a row's selection does not depend on the other rows, so the result is the
+    replicated one.
     """
     seq = positions.shape[0]
     device = positions.device
     cu = cu_seqlens
     if cu is None or cu.numel() <= 2:
         cu = torch.tensor([0, seq], dtype=torch.int32, device=device)
-    blocks = None
+    row_shard = None
+    rows = seq
+    if tp_group is not None:
+        n_shards = torch.distributed.get_world_size(tp_group)
+        row_shard = (torch.distributed.get_rank(tp_group), n_shards)
+        rows = -(-seq // n_shards)  # every shard padded to the longest (rank 0's)
+    width = indexer_block_width(indexer, positions, cu_seqlens)
+    blocks = torch.full((rows, width), -1, dtype=torch.int32, device=device)
     for start, end, block_idx in indexer.iter_selected_blocks(
-        indexer_states, positions, rotary_pos_emb, cu_seqlens, materialized_rope=materialized_rope
+        indexer_states,
+        positions,
+        rotary_pos_emb,
+        cu_seqlens,
+        materialized_rope=materialized_rope,
+        row_shard=row_shard,
     ):
-        if blocks is None:
-            # every tile has the same width
-            blocks = torch.full((seq, block_idx.shape[1]), -1, dtype=torch.int32, device=device)
         blocks[start:end] = block_idx
-    if blocks is None:
-        blocks = torch.full((seq, 0), -1, dtype=torch.int32, device=device)
+    if row_shard is not None:
+        n_shards = row_shard[1]
+        gathered = torch.empty((n_shards * rows, width), dtype=torch.int32, device=device)
+        torch.distributed.all_gather_into_tensor(gathered, blocks, group=tp_group)
+        # [shard, i] holds query shard + i * n_shards
+        blocks = gathered.view(n_shards, rows, width).transpose(0, 1).reshape(n_shards * rows, width)[:seq]
     return blocks, cu
+
+
+def indexer_block_width(indexer: Qwen38NextQSAIndexer, positions: Tensor, cu_seqlens: Tensor | None) -> int:
+    """``K`` of ``qsa_selected_blocks``: ``min(block_topk, blocks in the batch)``."""
+    layout_blocks = indexer.num_blocks(positions, cu_seqlens)
+    return min(indexer.block_topk, layout_blocks)

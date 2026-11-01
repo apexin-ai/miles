@@ -99,6 +99,13 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
         # This model requires the checkpoint's axis interleaving, not the text-RoPE default.
         config.mrope_interleaved = rope["mrope_interleaved"]
     config.qwen3_8_next_materialized_rope = args.backend.position_embedding_type == "mrope"
+    # QSA indexer speed knobs (selection only); argparse namespaces built by hand in tests may omit them
+    config.qwen3_8_next_indexer_score_dtype = getattr(
+        args, "qwen38_indexer_score_dtype", "fp32"
+    )  # config-access-exempt: hand-built test args may omit the knob
+    config.qwen3_8_next_indexer_tp_shard = bool(
+        getattr(args, "qwen38_indexer_tp_shard", False)
+    )  # config-access-exempt: hand-built test args may omit the knob
 
     if getattr(
         config, "virtual_pipeline_model_parallel_size", None
