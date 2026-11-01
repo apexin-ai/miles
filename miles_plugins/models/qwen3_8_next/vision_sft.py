@@ -117,7 +117,11 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
     for (sample,) in data_buffer.get_samples(args.rollout_batch_size):
         if not isinstance(sample.prompt, list):
             raise ValueError("Pass messages to image SFT without --apply-chat-template")
-        images = (sample.multimodal_inputs or {}).get("images", [])
+        media = sample.multimodal_inputs or {}
+        if media.get("videos"):
+            raise ValueError(f"Sample {sample.index} has videos; Qwen image SFT takes images only")
+        # The dataset's Qwen media helper (qwen_vl_utils) gives images=None for a conversation without images.
+        images = media.get("images") or []
         if images and data == "text":
             raise ValueError(f"Sample {sample.index} has images but --qwen38-vision-data is text")
         tokens, mask, inputs = encode_sft_sample(
