@@ -1941,6 +1941,32 @@ def test_shared_actor_critic_ppo_rejects_indep_dp():
         miles_validate_args(args)
 
 
+class TestClearMemoryEveryStep:
+    def test_defaults_on(self):
+        assert _parse_megatron_args([]).clear_memory_every_step is True
+
+    def test_pure_training_run_may_turn_it_off(self):
+        args = _parse_megatron_args(["--debug-train-only", "--no-clear-memory-every-step"])
+        miles_validate_args(args)
+        assert args.clear_memory_every_step is False
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            [],
+            ["--debug-train-only", "--offload-train"],
+            ["--debug-train-only", "--offload-rollout"],
+            ["--debug-train-only", "--colocate"],
+            ["--debug-train-only", "--advantage-estimator", "ppo"] + DYNAMIC_BATCH_ARGS,
+        ],
+    )
+    def test_off_is_refused_when_something_else_wants_the_memory(self, extra):
+        """Rollout engines, an offloaded trainer or a critic share the GPU between steps: they need the clear."""
+        args = _parse_megatron_args(extra + ["--no-clear-memory-every-step"])
+        with pytest.raises(AssertionError, match="--no-clear-memory-every-step needs a pure training run"):
+            miles_validate_args(args)
+
+
 class TestIndepDpBatchSchedule:
     def test_indep_dp_requires_dynamic_batch_size(self):
         """Static micro-batching cannot align once the live cell count stops dividing the global batch."""

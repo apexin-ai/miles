@@ -1365,6 +1365,14 @@ def miles_validate_args(args):
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
+    if not args.clear_memory_every_step:
+        # The per-step clear frees the cache for whoever shares the GPU next; only a pure training run has nobody.
+        assert args.debug_train_only and not (
+            args.colocate or args.offload_train or args.offload_rollout or args.use_critic
+        ), (
+            "--no-clear-memory-every-step needs a pure training run: --debug-train-only without --colocate, "
+            "--offload-train, --offload-rollout or a critic"
+        )
     # One decision for both the colocated LoRA weight sync and the trainer's host backup.
     args.lora_sync_sends_base = lora_sync_sends_base(args)
 

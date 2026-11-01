@@ -86,12 +86,12 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         await inference_controller.prepare_eval()
         await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
 
-    async def offload_train():
+    async def offload_train(*, clear_memory: bool = True):
         if args.use_critic:
             return
         if args.offload_train:
             await actor_model.offload()
-        else:
+        elif clear_memory:
             await actor_model.clear_memory()
 
     async def save(rollout_id, force_sync=False):
@@ -156,9 +156,13 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         await rollout_executor.release(rollout_id)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
-        if external_save or should_run_periodic_action(
+        save_due = external_save or should_run_periodic_action(
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
-        ):
+        )
+        if save_due:
+            if not args.clear_memory_every_step:
+                # The save (and its HF export) allocates outside the cache the steps kept: start it from a clear one.
+                await actor_model.clear_memory()
             await save(rollout_id, force_sync=external_save)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
@@ -173,7 +177,9 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
                 await inference_controller.onload_weights()
                 await offload_train()
             else:
-                await offload_train()
+                # --no-clear-memory-every-step: nothing else uses the GPU between steps, so keep the cache unless a
+                # save just ran or an eval follows.
+                await offload_train(clear_memory=args.clear_memory_every_step or save_due or eval_due)
                 if args.offload_rollout:
                     await inference_controller.onload_weights()
             await update_weights(args, actor_model, rollout_executor, inference_controller, rollout_id=rollout_id)
