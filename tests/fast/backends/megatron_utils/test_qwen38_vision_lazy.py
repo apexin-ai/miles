@@ -22,6 +22,8 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
+from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer  # before streams are stubbed
+
 from miles_plugins.models.qwen3_8_next.vision import _ZeroGradsFor
 
 BETAS, EPS, LR, WD = (0.9, 0.98), 1e-8, 1e-2, 0.1
@@ -56,8 +58,6 @@ def process_group(tmp_path_factory):
 
 
 def _hdo_class():
-    from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
-
     class _OffloadingHDO(HybridDeviceOptimizer):
         def _get_sub_optimizer_param_groups(self, offload_fraction):
             assert offload_fraction == 1.0
@@ -100,7 +100,7 @@ class Toy(torch.nn.Module):
         self.decoder = torch.nn.Linear(4, 4)
         self.vision_model = _Vision()
         for name, p in self.vision_model.named_parameters():
-            p.requires_grad_(scope == "full" or name.startswith("merger."))
+            p.requires_grad_(scope == "full" or (scope == "projector" and name.startswith("merger.")))
         self.to(torch.bfloat16)
 
     def forward(self, x, *, image):
@@ -228,8 +228,10 @@ def test_a_text_step_leaves_the_merger_and_its_adam_state_bitwise_unchanged():
     assert lazy.skipped_updates == 2 and lazy.updates == 3
 
 
-def test_the_language_trains_exactly_as_without_lazy():
-    images = [True, False, False, True, False]
+def test_the_language_trains_exactly_as_without_lazy_until_the_merger_differs():
+    # text steps do not run the tower, so the language is bitwise the same through them; an image step after a
+    # skipped text step sees a different merger (that is the point of lazy), so it is not compared
+    images = [True, True, False, False, False]
     off_model, off_opt, _ = _setup(mode="off", seed=1)
     on_model, on_opt, _ = _setup(seed=1)
     _train(off_model, off_opt, images)
@@ -443,6 +445,7 @@ def audit_without_probes(monkeypatch):
 
     # the gradient probes read Megatron's DDP buffers, which this stand-in does not have (covered by the audit tests)
     monkeypatch.setattr(vision_audit, "_capture_probes", lambda optimizer, parameters: [])
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
     monkeypatch.setattr(vision_audit, "_runtime_identity", lambda: {})
     return vision_audit
 
