@@ -23,6 +23,16 @@ class DataConfig(BaseConfig):
             help="Exit training after this many rollouts (for testing checkpoint resume with consistent scheduler params)."
         ),
     ] = None
+    prefetch_rollout: A[
+        int,
+        Arg(
+            help=(
+                "train.py: fetch the training data of up to this many next rollouts while the current one trains "
+                "(0: fetch each when its step starts). Needs --debug-train-only. A fetch never starts before the "
+                "checkpoint save of an earlier rollout, so saved data progress and resumes are as without it."
+            )
+        ),
+    ] = 0
     num_epoch: A[
         int | None,
         Arg(
