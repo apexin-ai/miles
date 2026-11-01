@@ -82,6 +82,24 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
         ),
     ] = 1
     qwen38_visual_snapshot_interval: A[int, Arg()] = 0
+    qwen38_vision_lr_mult: A[
+        float,
+        Arg(
+            help=(
+                "The trainable vision parameters' lr = the language lr schedule times this (max and min lr both "
+                "scaled). 1.0 keeps Megatron's standard param groups."
+            )
+        ),
+    ] = 1.0
+    qwen38_vision_wd_mult: A[
+        float,
+        Arg(
+            help=(
+                "The trainable vision parameters' weight decay = the language weight decay times this; vision biases "
+                "and 1-D parameters stay undecayed. 1.0 keeps Megatron's standard param groups."
+            )
+        ),
+    ] = 1.0
 
 
 class DsaMegatronPluginsConfig(BaseConfig):
