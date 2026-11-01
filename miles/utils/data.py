@@ -26,12 +26,44 @@ try:
 except ImportError:
     pq = None
 
+try:
+    import orjson
+except ImportError:
+    orjson = None
+
 from miles.utils import chat_template_utils
 from miles.utils.types import MultimodalTypes, Sample
 
 __all__ = ["Dataset"]
 
 logger = logging.getLogger(__name__)
+
+
+# 19 ASCII digits in a row: the line may hold an integer outside [-2**63, 2**64 - 1], which orjson turns into a float
+# without an error (json.loads keeps it exact). Every integer of up to 18 digits fits; token ids have at most 6.
+# Found by mapping 1-9 to 0 and looking for 19 zeros (str.translate + `in`, ~10x faster than re.search(r"\d{19}")
+# on token-id rows). JSON numbers only use ASCII digits.
+_DIGITS_TO_ZERO = str.maketrans("123456789", "000000000")
+_NINETEEN_ZEROS = "0" * 19
+
+
+def _has_long_digit_run(line: str) -> bool:
+    return _NINETEEN_ZEROS in line.translate(_DIGITS_TO_ZERO)
+
+
+def _json_loads(line: str):
+    """json.loads, through orjson when it can (the same Python objects, about 2x faster on token-id rows).
+
+    orjson refuses some input the standard library accepts (NaN / Infinity, 1e400, lone surrogates, ...): such a line
+    is parsed again by json.loads, so the result and the errors raised are json.loads'. A line with a 19-digit run
+    goes to json.loads directly (_has_long_digit_run).
+    """
+    if orjson is not None and not _has_long_digit_run(line):
+        try:
+            return orjson.loads(line)
+        except orjson.JSONDecodeError:
+            pass
+    return json.loads(line)
 
 
 def read_file(path):
@@ -50,7 +82,7 @@ def read_file(path):
                     if not line:
                         continue
                     try:
-                        yield json.loads(line)
+                        yield _json_loads(line)
                     except json.JSONDecodeError as e:
                         print(f"JSON decode error at line {line_num}: {e}")
                         continue
