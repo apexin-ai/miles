@@ -18,7 +18,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
 from miles.kernels.hyper_connection.hc import hc_combine, hc_mix_inject
-from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE, current_ple_batch
+from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE, current_ple_batch, window_cu_seqlens
 
 
 class Qwen38NextHyperConnection(MegatronModule):
@@ -153,8 +153,14 @@ class Qwen38NextHCHeadContraction(MegatronModule):
 
 
 class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
-    """Attention-site HC for the PLE layer: applies the PLE increment (full-seq
-    under SP) before the read."""
+    """Attention-site HC for the PLE layer: applies the PLE increment before the read.
+
+    Under SP each rank computes the increment for its own slice only, on a window that adds the
+    conv's look-back halo (the previous rank's last ``(kernel - 1) * dilation`` tokens); see
+    ``_apply_ple_local_window``. ``ple_sp_local_slice = False`` selects the older full-sequence
+    path (all-gather, PLE on all T tokens, keep the own slice), which is also the fallback when
+    the window does not apply.
+    """
 
     def __init__(self, config: TransformerConfig, layer_number: int, **kwargs):
         super().__init__(config, layer_number, **kwargs)
@@ -165,6 +171,7 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         except AssertionError:
             pass  # not initialised (shape audits); falls back to unsharded
         self.ple = Qwen38NextPLE(config, layer_number=layer_number, tp_group=tp_group)
+        self.ple_sp_local_slice = True
 
     def _resolve_ple_batch(self):
         """The published batch, made safe under activation recompute.
@@ -190,8 +197,8 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
             self._ple_recompute_fifo.append(batch)
         return batch
 
-    def _apply_ple(self, hidden_states, ngram_ids, cu_seqlens):
-        seq, batch = hidden_states.shape[0], hidden_states.shape[1]
+    @staticmethod
+    def _flat_ple_ids(ngram_ids, seq, batch):
         if ngram_ids.dim() == 3:
             if ngram_ids.shape[:2] != (batch, seq):
                 raise RuntimeError(
@@ -199,7 +206,11 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
                     f"does not match the hidden state's B={batch}, S={seq}"
                 )
             ngram_ids = ngram_ids.transpose(0, 1)
-        flat_ids = ngram_ids.reshape(seq * batch, ngram_ids.shape[-1])
+        return ngram_ids.reshape(seq * batch, ngram_ids.shape[-1])
+
+    def _apply_ple(self, hidden_states, ngram_ids, cu_seqlens):
+        seq, batch = hidden_states.shape[0], hidden_states.shape[1]
+        flat_ids = self._flat_ple_ids(ngram_ids, seq, batch)
         flat_state = hidden_states.reshape(seq * batch, hidden_states.shape[-1])
 
         increment = self.ple(flat_state, flat_ids, cu_seqlens)
@@ -209,6 +220,54 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         ), f"PLE increment {tuple(increment.shape)} != state {tuple(flat_state.shape)}"
         hidden_states = hidden_states + increment.view_as(hidden_states)
         return hidden_states
+
+    def _apply_ple_local_window(self, hidden_states, ngram_ids, cu_seqlens, sp_rank, sp_size):
+        """The PLE update of this rank's SP slice ``[S/sp, 1, n*C]``, computed on its slice only.
+
+        The window is ``[start, start + local + lookback)`` with ``start = rank * local - lookback``:
+        the previous rank's last ``lookback`` tokens (the halo) and this rank's slice. The halo
+        state comes from an all-gather of every rank's tail (``sp * lookback`` rows); its backward
+        is the reduce-scatter (SUM) that returns the halo's gradient to the previous rank, as the
+        full-sequence path's reduce-scatter does. Rank 0 has no previous tokens: it takes the last
+        rank's tail as filler rows in a separate segment, which its tokens never read, so every
+        rank runs the same shapes and collectives. The n-gram embedding lookup and its TP
+        all-reduce stay on the full sequence; only the window's rows go on.
+
+        Gradient order matches the full-sequence path bitwise: the residual is added on the window,
+        so this rank's own (residual + PLE) gradient is summed first and the next rank's halo
+        gradient is added to it afterwards, as the reduce-scatter there adds it.
+        """
+        local, batch, width = hidden_states.shape
+        lookback = self.ple.conv_lookback
+        total = local * sp_size
+        start = sp_rank * local - lookback
+        length = local + lookback
+        group = get_tensor_model_parallel_group()
+
+        flat_ids = self._flat_ple_ids(ngram_ids, total, batch)
+        if flat_ids.shape[0] != total:
+            raise RuntimeError(
+                f"PLE ngram ids cover {flat_ids.shape[0]} tokens; the SP slices cover {sp_size} x {local} = {total}"
+            )
+        flat_state = hidden_states.reshape(local, width)
+
+        tails = gather_from_sequence_parallel_region(
+            flat_state[local - lookback :], tensor_parallel_output_grad=True, group=group
+        )
+        prev = (sp_rank - 1) % sp_size
+        halo = tails[prev * lookback : (prev + 1) * lookback]
+        window_state = torch.cat([halo, flat_state])
+
+        rows = torch.arange(start, start + length, device=flat_ids.device) % total
+        embeddings = self.ple.embed(flat_ids).index_select(0, rows)
+        window_cu = window_cu_seqlens(cu_seqlens, total, start, length, device=flat_ids.device)
+
+        increment = self.ple.increment(window_state, embeddings, window_cu)
+        assert (
+            increment.shape == window_state.shape
+        ), f"PLE increment {tuple(increment.shape)} != window state {tuple(window_state.shape)}"
+        updated = window_state + increment
+        return updated[lookback:].view_as(hidden_states)
 
     def forward(
         self,
@@ -223,7 +282,16 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
             self.config, "sequence_parallel", False
         ):  # config-access-exempt: model configs may omit sequence_parallel
             sp_size = get_tensor_model_parallel_world_size()
-        if sp_size > 1:
+        if (
+            sp_size > 1
+            and self.ple_sp_local_slice
+            and hidden_states.shape[1] == 1
+            and hidden_states.shape[0] >= self.ple.conv_lookback
+        ):
+            hidden_states = self._apply_ple_local_window(
+                hidden_states, ngram_ids, cu_seqlens, get_tensor_model_parallel_rank(), sp_size
+            )
+        elif sp_size > 1:
             sp_rank = get_tensor_model_parallel_rank()
             local_seq = hidden_states.shape[0]
             # The causal conv reads (kernel - 1) * dilation tokens back, so this rank's loss also
