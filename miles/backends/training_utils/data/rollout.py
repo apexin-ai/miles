@@ -251,6 +251,8 @@ def get_batch(
 
     elif qkv_format == "thd":
         cp_rank = parallel_state.cp.rank
+        # cu_seqlens below may end with a pad segment; consumers that need the rows count them from here
+        batch["sample_count"] = len(tokens)
 
         if allgather_cp:
             assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "

@@ -119,20 +119,20 @@ def packed_rope_positions(
     positions,
     grids,
     *,
+    rows,
     image_token_id,
     vision_start_token_id,
     vision_end_token_id,
     merge_size,
-    pad_token_id=0,
 ):
     """[tokens, 3] mRoPE positions of a packed microbatch (THD rows back to back, then miles' trailing pad).
 
-    ``boundaries`` are the cu_seqlens of the pack (rows, then the pad segment if any). ``positions`` are the rows'
-    ``qwen38_position_ids`` concatenated in row order (miles concatenates them per microbatch), or None when no row
-    of the microbatch has any (then no row may hold an image). Every row restarts at 0. Each row's positions must
-    be exactly what its own tokens and images give (text: the token index on every axis; image: native image
-    mRoPE), so a row that came without positions cannot be mistaken for another row. Only miles' trailing pad
-    segment (all ``pad_token_id``) may be left uncovered; it gets 0.
+    ``boundaries`` are the cu_seqlens of the pack; the first ``rows`` segments are real rows (get_batch's
+    ``sample_count``) and at most one segment after them is its trailing pad, which gets 0. ``positions`` are the
+    rows' ``qwen38_position_ids`` concatenated in row order (miles concatenates them per microbatch), or None when
+    no row has any (then no row may hold an image). Every row restarts at 0. Positions must cover exactly the
+    rows, and each row's must equal what its own tokens and images give (text: the token index on every axis;
+    image: native image mRoPE), so a row that came without positions is refused, whatever its tokens are.
     """
     ids = torch.as_tensor(token_ids)
     total = ids.shape[0]
@@ -141,20 +141,25 @@ def packed_rope_positions(
         raise ValueError(f"cu_seqlens {bounds[:4]}... do not describe a packed sequence of {total} tokens")
     if any(b <= a for a, b in zip(bounds, bounds[1:], strict=False)):
         raise ValueError("cu_seqlens must be strictly increasing")
+    segments = len(bounds) - 1
+    if not 1 <= rows <= segments or segments - rows > 1:
+        raise ValueError(f"{rows} rows do not fit cu_seqlens of {segments} segments (rows, then at most one pad)")
+    end_of_rows = bounds[rows]
     out = torch.zeros((total, 3), dtype=torch.long, device=ids.device)
     if positions is None:
-        if image_span_starts(ids, image_token_id):
+        if image_span_starts(ids[:end_of_rows], image_token_id):
             raise ValueError("Image tokens reached the model without mRoPE positions")
-        for start, end in zip(bounds, bounds[1:], strict=False):
+        for start, end in zip(bounds[:rows], bounds[1 : rows + 1], strict=True):
             out[start:end] = text_rope_positions(end - start, device=ids.device)
         return out
     positions = torch.as_tensor(positions).to(device=ids.device, dtype=torch.long)
-    covered = positions.shape[0]
-    if positions.ndim != 2 or positions.shape[1] != 3 or covered not in bounds or covered == 0:
-        raise ValueError(f"mRoPE positions of {covered} tokens do not end at a row boundary of {bounds[:4]}...")
-    rows = bounds.index(covered)
-    if rows != len(bounds) - 1 and (rows != len(bounds) - 2 or not bool((ids[covered:] == pad_token_id).all())):
-        raise ValueError("Rows without mRoPE positions in a microbatch that has them (every row must carry them)")
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        raise ValueError(f"mRoPE positions must be [tokens, 3], got {tuple(positions.shape)}")
+    if positions.shape[0] != end_of_rows:
+        raise ValueError(
+            f"Rows without mRoPE positions in a microbatch that has them: positions cover {positions.shape[0]} "
+            f"of the {end_of_rows} tokens of its {rows} rows (every row must carry them)"
+        )
     grids = torch.zeros((0, 3), dtype=torch.long) if grids is None else torch.as_tensor(grids)
     used = 0
     for start, end in zip(bounds[:rows], bounds[1 : rows + 1], strict=True):
@@ -177,6 +182,8 @@ def packed_rope_positions(
         out[start:end] = positions[start:end]
     if used != grids.shape[0]:
         raise ValueError(f"{grids.shape[0]} image grids for {used} image spans in the microbatch")
+    if image_span_starts(ids[end_of_rows:], image_token_id):
+        raise ValueError("Image tokens in the trailing pad segment")
     return out
 
 

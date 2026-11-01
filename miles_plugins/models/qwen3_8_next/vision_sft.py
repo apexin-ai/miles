@@ -10,6 +10,7 @@ from miles_plugins.models.qwen3_8_next.vision_inputs import (
     apply_final_answer_format,
     image_rope_positions,
     normalize_image_messages,
+    text_rope_positions,
 )
 
 
@@ -37,8 +38,9 @@ def encode_sft_sample(
 ):
     """Tokens, loss mask and model inputs of one SFT sample.
 
-    The inputs are None for a sample without images, which only ``allow_text`` (text or mixed data) accepts:
-    the model then skips the vision tower for it.
+    A sample without images, which only ``allow_text`` (text or mixed data) accepts, gets only its text positions
+    (``qwen38_position_ids``): rows packed into one microbatch must all carry positions. The model skips the
+    vision tower for it.
     """
     normalized = normalize_image_messages(messages, len(images))
     if (not images and not allow_text) or not normalized or normalized[-1]["role"] != "assistant":
@@ -71,7 +73,7 @@ def encode_sft_sample(
     if not images:
         if config["image_token_id"] in raw["input_ids"] or not any(raw_mask):
             raise ValueError("A text sample must have no image placeholder and some supervised tokens")
-        return list(raw["input_ids"]), raw_mask, None
+        return list(raw["input_ids"]), raw_mask, {"qwen38_position_ids": text_rope_positions(len(raw_mask)).clone()}
     encoded = processor(text=[text], images=images, return_tensors="pt", add_special_tokens=False)
     if "pixel_values" not in encoded or "image_grid_thw" not in encoded:
         raise ValueError("The native processor did not return image patches and grids")

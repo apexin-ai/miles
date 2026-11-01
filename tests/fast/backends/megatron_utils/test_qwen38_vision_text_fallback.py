@@ -315,7 +315,8 @@ _TEXT_MESSAGES = [{"role": "user", "content": "Q"}, {"role": "assistant", "conte
 
 def test_a_text_sample_encodes_without_image_inputs_when_text_is_allowed():
     tokens, mask, inputs = vision_sft.encode_sft_sample(_Processor(), _CONFIG, _TEXT_MESSAGES, [], allow_text=True)
-    assert inputs is None
+    assert set(inputs) == {"qwen38_position_ids"}  # text positions only, no image inputs
+    assert torch.equal(inputs["qwen38_position_ids"], text_rope_positions(len(tokens)))
     assert len(tokens) == len(mask)
     assert "".join(chr(t) for t, m in zip(tokens, mask, strict=True) if m) == "A[end]"
     with pytest.raises(ValueError, match="needs real images"):
@@ -353,7 +354,7 @@ def test_generate_rollout_follows_the_data_mode(data, images, expect, monkeypatc
             vision_sft.generate_rollout(args, 0, buffer)
     else:
         [[out]] = vision_sft.generate_rollout(args, 0, buffer)
-        assert out.multimodal_train_inputs is None
+        assert set(out.multimodal_train_inputs) == {"qwen38_position_ids"}
         assert out.response_length == sum(out.loss_mask) == len("A[end]")
 
 
@@ -382,7 +383,7 @@ def test_a_text_row_from_the_dataset_follows_the_data_mode(data, tmp_path, monke
             vision_sft.generate_rollout(_rollout_args(data), 0, buffer)
         return
     [[out]] = vision_sft.generate_rollout(_rollout_args(data), 0, buffer)
-    assert out.multimodal_train_inputs is None
+    assert set(out.multimodal_train_inputs) == {"qwen38_position_ids"}
     assert out.response_length == sum(out.loss_mask) == len("A[end]")
 
 
