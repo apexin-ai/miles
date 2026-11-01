@@ -74,12 +74,22 @@ def build_ngram_contexts(tokens: Tensor, ngram_size: int, eos_token_id: int) -> 
 
 
 def build_ngram_contexts_packed(
-    tokens: Tensor, cu_seqlens: Tensor | None, ngram_size: int, eos_token_id: int
+    tokens: Tensor,
+    cu_seqlens: Tensor | None,
+    ngram_size: int,
+    eos_token_id: int,
+    cu_seqlens_host: tuple[int, ...] | None = None,
 ) -> Tensor:
-    """``build_ngram_contexts`` for a packed (THD) batch."""
+    """``build_ngram_contexts`` for a packed (THD) batch.
+
+    ``cu_seqlens_host``, the same boundaries as host ints, spares reading ``cu_seqlens`` back (a host sync).
+    """
     if cu_seqlens is None:
         return build_ngram_contexts(tokens, ngram_size, eos_token_id)
-    bounds = cu_seqlens.tolist()
+    if cu_seqlens_host is not None and len(cu_seqlens_host) == cu_seqlens.numel():
+        bounds = [int(b) for b in cu_seqlens_host]
+    else:
+        bounds = cu_seqlens.tolist()
     parts = [
         build_ngram_contexts(tokens[lo:hi], ngram_size, eos_token_id)
         for lo, hi in zip(bounds[:-1], bounds[1:], strict=True)
