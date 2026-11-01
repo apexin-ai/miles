@@ -327,7 +327,9 @@ def before_step(args, rollout_id, step_id, model, optimizer, scheduler):
 
     def audited_step(*positional, **keywords):
         # Every rank reaches optimizer.step together (a skipped update skips it on every rank), so this sum is safe.
-        images = _images_in_step(state["towers"], _collective_device(parameters) if dist.get_world_size() > 1 else None)
+        images = _images_in_step(
+            state["towers"], _collective_device(parameters) if dist.get_world_size() > 1 else None
+        )
         probes = _capture_probes(optimizer, selected) if audited else []
         language_probes = _capture_probes(optimizer, language_selected) if audited else []
         result = original(*positional, **keywords)
