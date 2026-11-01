@@ -302,7 +302,7 @@ def _kernel_layer_worker(rank, world_size, port, seq, cu_bounds):
         # the conv input is RMSNorm(gate * value): with eps 1e-6 the cross-slice gradient is
         # below bf16 resolution and a dropped halo gradient would still compare equal
         config.layernorm_epsilon = 2.0
-        layer =Qwen38NextPLEHyperConnection(config, layer_number=1)
+        layer = Qwen38NextPLEHyperConnection(config, layer_number=1)
         layer.ddp_config = SimpleNamespace(use_megatron_fsdp=False)
         gen = torch.Generator().manual_seed(0)
         with torch.no_grad():
