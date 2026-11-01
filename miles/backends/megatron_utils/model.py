@@ -148,6 +148,54 @@ def _is_muon_optimizer(optimizer: str | None) -> bool:
     return optimizer is not None and "muon" in optimizer.lower()
 
 
+_QWEN38_VISION_PROVIDER = "miles_plugins.models.qwen3_8_next.vision.get_qwen38_vision_model_provider"
+
+
+def _uses_qwen38_vision(args: TrainerConfig) -> bool:
+    provider = args.custom_model_provider_path
+    return getattr(provider, "path", provider) == _QWEN38_VISION_PROVIDER
+
+
+def _qwen38_vision_config_overrides(args: TrainerConfig, config: OptimizerConfig, model) -> dict | None:
+    """Megatron's standard param groups plus the Qwen3.8 vision lr / wd rule; None (Megatron's own default) otherwise.
+
+    Checks, on every rank before the optimizer exists, the vision scope's trainable set and each trainable
+    parameter's lr / wd (vision_optimizer.check_vision_param_groups), and logs the summary.
+    """
+    from miles_plugins.models.qwen3_8_next import vision_optimizer
+
+    lr_mult, wd_mult = args.qwen38_vision_lr_mult, args.qwen38_vision_wd_mult
+    vision_optimizer.check_multipliers(lr_mult, wd_mult)
+    if not _uses_qwen38_vision(args):
+        if not vision_optimizer.is_default(lr_mult, wd_mult):
+            raise ValueError("--qwen38-vision-lr-mult / --qwen38-vision-wd-mult need the Qwen3.8 vision provider")
+        return None
+    if not vision_optimizer.is_default(lr_mult, wd_mult) and args.qwen38_vision_trainable == "none":
+        raise ValueError("--qwen38-vision-lr-mult / --qwen38-vision-wd-mult with a frozen tower (trainable none)")
+    overrides = vision_optimizer.vision_config_overrides(config, lr_mult=lr_mult, wd_mult=wd_mult)
+    summary = vision_optimizer.check_vision_param_groups(
+        model, config, overrides, scope=args.qwen38_vision_trainable, lr_mult=lr_mult, wd_mult=wd_mult
+    )
+    if mpu.get_data_parallel_rank() == 0 and mpu.get_tensor_model_parallel_rank() == 0:
+        logger.info(
+            "qwen38 vision param groups (pp rank %d): %s", mpu.get_pipeline_model_parallel_rank(), summary
+        )
+    if vision_optimizer.is_default(lr_mult, wd_mult):
+        return None  # get_megatron_optimizer applies the same standard overrides itself
+    return overrides
+
+
+def _log_qwen38_vision_optimizer(model, optimizer) -> None:
+    from miles_plugins.models.qwen3_8_next import vision_optimizer
+
+    if mpu.get_data_parallel_rank() == 0 and mpu.get_tensor_model_parallel_rank() == 0:
+        logger.info(
+            "qwen38 vision optimizer (pp rank %d): %s",
+            mpu.get_pipeline_model_parallel_rank(),
+            vision_optimizer.describe_optimizer(model, optimizer),
+        )
+
+
 def setup_model_and_optimizer(
     args: TrainerConfig,
     role: str = "actor",
@@ -207,6 +255,8 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
+        if not (args.qwen38_vision_lr_mult == 1.0 and args.qwen38_vision_wd_mult == 1.0):
+            raise ValueError("--qwen38-vision-lr-mult / --qwen38-vision-wd-mult are not wired into the Muon optimizer")
         if args.stream_optimizer_state_to_disk:
             from miles_plugins.optimizers.nvme_stream import setup_muon_state_on_disk
 
@@ -234,11 +284,15 @@ def setup_model_and_optimizer(
         validate_multi_lora_optimizer_args(args)
         return model, None, None
     else:
+        config_overrides = _qwen38_vision_config_overrides(args, config, model)
         optimizer = get_megatron_optimizer(
             config=config,
             model_chunks=model,
             use_gloo_process_groups=args.backend.use_gloo_process_groups,
+            **({} if config_overrides is None else {"config_overrides": config_overrides}),
         )
+        if _uses_qwen38_vision(args):
+            _log_qwen38_vision_optimizer(model, optimizer)
 
     if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
         # Muon took the chunked-offloader route above; this store is DistOpt-only.
