@@ -157,21 +157,21 @@ def _uses_qwen38_vision(args: TrainerConfig) -> bool:
 
 
 def _qwen38_vision_config_overrides(args: TrainerConfig, config: OptimizerConfig, model) -> dict | None:
-    """Megatron's standard param groups plus the Qwen3.8 vision lr / wd rule; None (Megatron's own default) otherwise.
+    """Megatron's standard param groups plus the Qwen3.8 ViT lr / wd rule; None (Megatron's own default) otherwise.
 
     Checks, on every rank before the optimizer exists, the vision scope's trainable set and each trainable
     parameter's lr / wd (vision_optimizer.check_vision_param_groups), and logs the summary.
     """
     from miles_plugins.models.qwen3_8_next import vision_optimizer
 
-    lr_mult, wd_mult = args.qwen38_vision_lr_mult, args.qwen38_vision_wd_mult
+    lr_mult, wd_mult = args.qwen38_vit_lr_mult, args.qwen38_vit_wd_mult
     vision_optimizer.check_multipliers(lr_mult, wd_mult)
     if not _uses_qwen38_vision(args):
         if not vision_optimizer.is_default(lr_mult, wd_mult):
-            raise ValueError("--qwen38-vision-lr-mult / --qwen38-vision-wd-mult need the Qwen3.8 vision provider")
+            raise ValueError("--qwen38-vit-lr-mult / --qwen38-vit-wd-mult need the Qwen3.8 vision provider")
         return None
-    if not vision_optimizer.is_default(lr_mult, wd_mult) and args.qwen38_vision_trainable == "none":
-        raise ValueError("--qwen38-vision-lr-mult / --qwen38-vision-wd-mult with a frozen tower (trainable none)")
+    if not vision_optimizer.is_default(lr_mult, wd_mult) and args.qwen38_vision_trainable != "full":
+        raise ValueError("--qwen38-vit-lr-mult / --qwen38-vit-wd-mult need a trainable ViT (--qwen38-vision-trainable full)")
     overrides = vision_optimizer.vision_config_overrides(config, lr_mult=lr_mult, wd_mult=wd_mult)
     summary = vision_optimizer.check_vision_param_groups(
         model, config, overrides, scope=args.qwen38_vision_trainable, lr_mult=lr_mult, wd_mult=wd_mult
@@ -255,8 +255,8 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
-        if not (args.qwen38_vision_lr_mult == 1.0 and args.qwen38_vision_wd_mult == 1.0):
-            raise ValueError("--qwen38-vision-lr-mult / --qwen38-vision-wd-mult are not wired into the Muon optimizer")
+        if not (args.qwen38_vit_lr_mult == 1.0 and args.qwen38_vit_wd_mult == 1.0):
+            raise ValueError("--qwen38-vit-lr-mult / --qwen38-vit-wd-mult are not wired into the Muon optimizer")
         if args.stream_optimizer_state_to_disk:
             from miles_plugins.optimizers.nvme_stream import setup_muon_state_on_disk
 
