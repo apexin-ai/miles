@@ -88,6 +88,26 @@ def build_ngram_contexts_packed(
     return torch.cat(parts, dim=0)
 
 
+def window_cu_seqlens(cu_seqlens: Tensor | None, total: int, start: int, length: int, device=None) -> Tensor:
+    """Segment bounds of the token window ``[start, start + length)`` of a packed sequence of ``total`` tokens.
+
+    Bounds are shifted to window coordinates and clipped to ``[0, length]``, so no packed row
+    leaks into another and a row that began before the window starts at window index 0 (only the
+    window's own leading tokens read past it, and their outputs are dropped). A window that starts
+    before token 0 (``start < 0``, the first SP rank) gets a separate leading segment for its
+    ``-start`` filler rows, which the real tokens never read. Clipped rows become zero-length
+    segments, which the PLE conv skips. Stays on the device: no host sync.
+    """
+    if cu_seqlens is None:
+        bounds = torch.tensor([0, total], dtype=torch.long, device=device)
+    else:
+        bounds = cu_seqlens.to(torch.long)
+    inner = (bounds - start).clamp(0, length)
+    head = inner.new_zeros(1)
+    tail = inner.new_full((1,), length)
+    return torch.cat([head, inner, tail]).to(torch.int32)
+
+
 _state = threading.local()
 
 
@@ -319,17 +339,17 @@ class Qwen38NextPLE(MegatronModule):
         for p in (self.norm_key, self.norm_query, self.norm_conv, self.conv1d_weight):
             p.sequence_parallel = config.sequence_parallel
 
-    def forward(self, hc_state: Tensor, ngram_ids: Tensor, cu_seqlens: Tensor | None = None) -> Tensor:
-        """``hc_state`` ``[T, n*C]``, ``ngram_ids`` ``[T, n_heads]`` -> increment ``[T, n*C]``."""
-        if hc_state.dim() != 2 or ngram_ids.dim() != 2:
-            raise RuntimeError(
-                "PLE takes a flat token axis: expected hc_state [T, n*C] and ngram_ids "
-                f"[T, heads], got {tuple(hc_state.shape)} and {tuple(ngram_ids.shape)}"
-            )
-        if hc_state.shape[0] != ngram_ids.shape[0]:
-            raise RuntimeError(f"PLE token counts differ: state {hc_state.shape[0]} vs ids {ngram_ids.shape[0]}")
+    @property
+    def conv_lookback(self) -> int:
+        """Tokens the causal conv reads back: ``(kernel - 1) * dilation``."""
+        return (self.conv1d_weight.shape[-1] - 1) * self.conv_dilation
 
-        embeddings = self.ple_embedding(ngram_ids)
+    def embed(self, ngram_ids: Tensor) -> Tensor:
+        """``[T, n_heads]`` row ids -> ``[T, embed_dim]``, all-reduced over TP (the table is row-sharded)."""
+        return self.ple_embedding(ngram_ids)
+
+    def increment(self, hc_state: Tensor, embeddings: Tensor, cu_seqlens: Tensor | None = None) -> Tensor:
+        """``hc_state`` ``[T, n*C]`` and its tokens' ``embeddings`` ``[T, embed_dim]`` -> increment ``[T, n*C]``."""
         key, _ = self.key_proj(embeddings)
         value, _ = self.value_proj(embeddings)
 
@@ -352,3 +372,15 @@ class Qwen38NextPLE(MegatronModule):
             self.conv_dilation,
             cu_seqlens,
         )
+
+    def forward(self, hc_state: Tensor, ngram_ids: Tensor, cu_seqlens: Tensor | None = None) -> Tensor:
+        """``hc_state`` ``[T, n*C]``, ``ngram_ids`` ``[T, n_heads]`` -> increment ``[T, n*C]``."""
+        if hc_state.dim() != 2 or ngram_ids.dim() != 2:
+            raise RuntimeError(
+                "PLE takes a flat token axis: expected hc_state [T, n*C] and ngram_ids "
+                f"[T, heads], got {tuple(hc_state.shape)} and {tuple(ngram_ids.shape)}"
+            )
+        if hc_state.shape[0] != ngram_ids.shape[0]:
+            raise RuntimeError(f"PLE token counts differ: state {hc_state.shape[0]} vs ids {ngram_ids.shape[0]}")
+
+        return self.increment(hc_state, self.embed(ngram_ids), cu_seqlens)
