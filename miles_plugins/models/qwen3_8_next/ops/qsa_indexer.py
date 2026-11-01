@@ -14,6 +14,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
 from miles_plugins.models.indexer import freeze_indexer_parameters
+from miles_plugins.models.qwen3_8_next.ops.qsa_score import SCORE_DTYPES, score_blocks
 
 
 def _indexer_acc_dtype(x):
@@ -252,6 +253,14 @@ class Qwen38NextQSAIndexer(MegatronModule):
         self.tile_bytes = getattr(
             config, "qwen3_8_next_indexer_tile_bytes", DEFAULT_TILE_BYTES
         )  # config-access-exempt: optional knob, absent from older configs
+        # --qwen38-indexer-score-dtype: fp32 (einsum, the reference) or bf16 (fused, fp32 accumulate; sglang's)
+        self.score_dtype = getattr(
+            config, "qwen3_8_next_indexer_score_dtype", "fp32"
+        )  # config-access-exempt: optional knob, absent from older configs
+        if self.score_dtype not in SCORE_DTYPES:
+            raise ValueError(
+                f"qwen3_8_next_indexer_score_dtype must be one of {SCORE_DTYPES}, got {self.score_dtype!r}"
+            )
 
         self.index_qk_proj = TELinear(
             config.hidden_size,
@@ -322,8 +331,12 @@ class Qwen38NextQSAIndexer(MegatronModule):
         cu_seqlens: Tensor | None = None,
         row_bytes: int = 0,
         materialized_rope: bool = False,
+        row_shard: tuple[int, int] | None = None,
     ):
         """Yield ``(start, end, block_idx)`` per query tile; ``block_idx`` is ``[end - start, k]``.
+
+        ``row_shard = (r, n)`` scores only the query rows ``r, r + n, r + 2n, ...`` (the TP-sharded indexer);
+        ``start`` / ``end`` then count those rows (row ``i`` of the shard is query ``r + i * n``).
 
         Block ids index the packed block grid (``PackedBlockLayout``), ``-1`` where unused,
         ordered by score then block id. Each tile scores only the blocks its rows can see
@@ -342,8 +355,10 @@ class Qwen38NextQSAIndexer(MegatronModule):
         else:
             row_lo = layout.token_block_start
         row_hi = row_lo + (positions + 1) // self.compress_ratio
+        if row_shard is not None:
+            rank, n_shards = row_shard
+            q, row_lo, row_hi = q[rank::n_shards], row_lo[rank::n_shards], row_hi[rank::n_shards]
         lo_list, hi_list = row_lo.tolist(), row_hi.tolist()
-        block_k = block_k.float()
         scale = math.sqrt(self.head_dim)
         # per row: the fp32 query copy; the top-k scores and ids, their sort and mask
         # temporaries and the yielded ids
@@ -354,19 +369,28 @@ class Qwen38NextQSAIndexer(MegatronModule):
             width = col_hi - col_lo
             block_idx = torch.full((end - start, k), -1, dtype=torch.long, device=q.device)
             if width > 0 and k > 0:
-                scores = torch.einsum("mhd,nd->mnh", q[start:end].float(), block_k[col_lo:col_hi])
-                logits = scores.relu_().sum(dim=-1)
-                del scores
-                logits.div_(scale)
-                cols = torch.arange(col_lo, col_hi, device=q.device).unsqueeze(0)
-                valid = (cols >= row_lo[start:end].unsqueeze(1)) & (cols < row_hi[start:end].unsqueeze(1))
-                logits.masked_fill_(~valid, float("-inf"))
-                del valid
+                logits = score_blocks(
+                    q[start:end],
+                    block_k[col_lo:col_hi],
+                    row_lo[start:end],
+                    row_hi[start:end],
+                    col_lo,
+                    scale,
+                    self.score_dtype,
+                )
                 kk = min(k, width)
                 values, idx = select_topk_blocks(logits, kk)
                 del logits
                 block_idx[:, :kk] = torch.where(values == float("-inf"), -1, idx + col_lo)
             yield start, end, block_idx
+
+    def num_blocks(self, positions: Tensor, cu_seqlens: Tensor | None) -> int:
+        """Blocks of the packed block grid (``PackedBlockLayout``) for these rows; host arithmetic only."""
+        r = self.compress_ratio
+        if cu_seqlens is not None and cu_seqlens.numel() > 2:
+            lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+            return sum(-(-int(n) // r) for n in lengths)
+        return -(-positions.shape[0] // r)
 
     def layout_for(self, positions: Tensor, cu_seqlens: Tensor | None) -> PackedBlockLayout | None:
         if cu_seqlens is not None and cu_seqlens.numel() > 2:
