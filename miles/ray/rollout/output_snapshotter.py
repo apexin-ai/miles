@@ -19,6 +19,13 @@ class _RolloutExecutorOutputSnapshotter:
     def __init__(self, *, args: Namespace) -> None:
         self._args = args
         self._snapshots: dict[_OutputSnapshotKey, _OutputSnapshotEntry] = {}
+        self._copy_captures = True
+
+    def skip_capture_copies(self) -> None:
+        """The driver saves only once every rollout it fetched has trained (train.py), so every captured batch is
+        discarded unread at the next save: keep only its key, not a deepcopy of the whole batch. A save that would
+        still hold such a batch refuses instead of losing it."""
+        self._copy_captures = False
 
     def capture(
         self, *, trainer_model_id: str | None, rollout_id: int, data: list[Sample], metadata: dict[str, Any]
@@ -29,9 +36,12 @@ class _RolloutExecutorOutputSnapshotter:
             "a replayed batch must not be captured again"
         )
 
-        self._snapshots[key] = copy.deepcopy(
-            _OutputSnapshotEntry(data=data, metadata=metadata, phase=_OutputSnapshotPhase.CAPTURED)
-        )
+        if self._copy_captures:
+            self._snapshots[key] = copy.deepcopy(
+                _OutputSnapshotEntry(data=data, metadata=metadata, phase=_OutputSnapshotPhase.CAPTURED)
+            )
+        else:
+            self._snapshots[key] = _OutputSnapshotEntry(data=None, metadata=None, phase=_OutputSnapshotPhase.CAPTURED)
         captured = [one for one, entry in self._snapshots.items() if entry.phase is _OutputSnapshotPhase.CAPTURED]
         for stale in captured[: max(len(captured) - _MAX_RETAINED_OUTPUTS, 0)]:
             del self._snapshots[stale]
@@ -68,6 +78,11 @@ class _RolloutExecutorOutputSnapshotter:
         }
 
     def save(self, directory: Path) -> None:
+        uncopied = [key for key, entry in self._snapshots.items() if entry.data is None]
+        assert not uncopied, (
+            f"rollouts {uncopied} were captured without a copy (skip_capture_copies) but had not trained by this "
+            "save; only a driver that saves after every fetched rollout has trained may skip the copies"
+        )
         save_simple_checkpoint(
             directory=directory,
             data={key: (entry.data, entry.metadata) for key, entry in self._snapshots.items()},
@@ -112,6 +127,6 @@ class _OutputSnapshotPhase(enum.Enum):
 
 @dataclass(frozen=True)
 class _OutputSnapshotEntry:
-    data: list[Sample]
-    metadata: dict[str, Any]
+    data: list[Sample] | None  # None: captured under skip_capture_copies, never saved or replayed
+    metadata: dict[str, Any] | None
     phase: _OutputSnapshotPhase

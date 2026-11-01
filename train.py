@@ -48,6 +48,8 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         args, capability=capability, trainer_handles=trainer_handles
     )
     disposer.add(inference_controller, rollout_executor)
+    # This loop saves only after every rollout it fetched has trained, so the executor's batch snapshots go unread.
+    await rollout_executor.skip_output_snapshot_copies()
 
     # create the actor and critic models
     actor_model, critic_model = await create_training_models(args, rollout_executor, handles=trainer_handles)
