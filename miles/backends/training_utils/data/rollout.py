@@ -295,7 +295,8 @@ def get_batch(
             cu_seqlens_host = tuple(boundary * cp_size for boundary in cu_seqlens)
             cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int, device=current_platform.current_device()) * cp_size
 
-        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
+        # from the host copy: reading the device tensor back would wait for the previous microbatch's backward
+        max_seqlen = max(end - start for start, end in zip(cu_seqlens_host[:-1], cu_seqlens_host[1:], strict=True))
 
         tokens = tokens.unsqueeze(0)
 
