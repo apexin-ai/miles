@@ -73,21 +73,22 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
     qwen38_sft_final_answer_format: A[str, Arg(choices=["dataset", "integer-only"])] = "dataset"
     qwen38_audit_dir: A[str | None, Arg()] = None
     qwen38_visual_snapshot_interval: A[int, Arg()] = 0
-    qwen38_vision_lr_mult: A[
+    qwen38_vit_lr_mult: A[
         float,
         Arg(
             help=(
-                "The trainable vision parameters' lr = the language lr schedule times this (max and min lr both "
-                "scaled). 1.0 keeps Megatron's standard param groups."
+                "With --qwen38-vision-trainable full: the ViT's lr (every vision parameter except the merger) = the "
+                "language lr schedule times this (max and min lr both scaled). The merger keeps the language lr. "
+                "1.0 keeps Megatron's standard param groups."
             )
         ),
     ] = 1.0
-    qwen38_vision_wd_mult: A[
+    qwen38_vit_wd_mult: A[
         float,
         Arg(
             help=(
-                "The trainable vision parameters' weight decay = the language weight decay times this; vision biases "
-                "and 1-D parameters stay undecayed. 1.0 keeps Megatron's standard param groups."
+                "With --qwen38-vision-trainable full: the ViT's weight decay = the language weight decay times this; "
+                "ViT biases and 1-D parameters stay undecayed. 1.0 keeps Megatron's standard param groups."
             )
         ),
     ] = 1.0

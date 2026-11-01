@@ -5,19 +5,21 @@
   projector  the merger (merger.*) only; the ViT (patch_embed, pos_embed, blocks) is frozen;
   full       the whole tower.
 
---qwen38-vision-lr-mult / --qwen38-vision-wd-mult scale the language schedule for the trainable vision parameters:
-their lr is the language lr times lr_mult at every step (max_lr and min_lr are both scaled; the warmup starts from the
-shared --lr-warmup-init), and their weight decay is the language weight decay schedule times wd_mult. With both 1.0
-(the default) the param groups are exactly Megatron's standard ones (get_standard_config_overrides).
+--qwen38-vit-lr-mult / --qwen38-vit-wd-mult scale the language schedule for the ViT (every vision parameter except the
+merger), and are accepted only with full: the ViT's lr is the language lr times lr_mult at every step (max_lr and min_lr
+are both scaled; the warmup starts from the shared --lr-warmup-init), and its weight decay is the language weight decay
+schedule times wd_mult. The merger always trains with the language lr / wd, in projector and in full, so a projector run
+and a full run (or a projector -> full switch) keep the merger in the same param groups. With both 1.0 (the default) the
+param groups are exactly Megatron's standard ones (get_standard_config_overrides).
 
-The vision rules are merged into get_standard_config_overrides, not given instead of it: Megatron applies a non-None
-config_overrides in place of its defaults, which would drop the no-decay rule for biases and 1-D parameters. Vision
+The ViT rules are merged into get_standard_config_overrides, not given instead of it: Megatron applies a non-None
+config_overrides in place of its defaults, which would drop the no-decay rule for biases and 1-D parameters. ViT
 biases and 1-D parameters stay undecayed whatever wd_mult is.
 
-Every vision group with its own lr also carries lr_mult. Megatron matches checkpointed param groups to the running ones
+Every ViT group with its own lr also carries lr_mult. Megatron matches checkpointed param groups to the running ones
 by (wd_mult, lr_mult, is_expert_parallel, is_decoupled_lr) only (DistributedOptimizer.load_state_dict,
 MixedPrecisionOptimizer._filter_and_reorder_param_groups). A group that differs from the language group only in
-max_lr / min_lr would share its key, and on a resume both would take one checkpointed group's max_lr: the vision lr
+max_lr / min_lr would share its key, and on a resume both would take one checkpointed group's max_lr: the ViT lr
 would silently become the language lr (or the reverse). lr_mult != 1.0 makes the key distinct.
 
 Zero gradients still move parameters under AdamW. On a step whose global batch has no image, the trainable vision
@@ -41,6 +43,11 @@ PROJECTOR_PREFIX = "merger."
 SCOPES = ("none", "projector", "full")
 
 
+def is_vit_parameter_name(name: str) -> bool:
+    """A vision parameter outside the merger: what --qwen38-vit-lr-mult / --qwen38-vit-wd-mult scale."""
+    return is_vision_parameter_name(name) and not vision_relative_name(name).startswith(PROJECTOR_PREFIX)
+
+
 def is_vision_parameter_name(name: str) -> bool:
     """A parameter of the vision tower, under any wrapper prefix (module., module.module., ...)."""
     return VISION_MODULE in name.split(".")
@@ -60,41 +67,41 @@ def expected_trainable(scope: str, relative_name: str) -> bool:
 
 def check_multipliers(lr_mult: float, wd_mult: float) -> None:
     if not (isinstance(lr_mult, (int, float)) and math.isfinite(lr_mult) and lr_mult > 0):
-        raise ValueError(f"--qwen38-vision-lr-mult must be a finite number > 0, got {lr_mult!r}")
+        raise ValueError(f"--qwen38-vit-lr-mult must be a finite number > 0, got {lr_mult!r}")
     if not (isinstance(wd_mult, (int, float)) and math.isfinite(wd_mult) and wd_mult >= 0):
-        raise ValueError(f"--qwen38-vision-wd-mult must be a finite number >= 0, got {wd_mult!r}")
+        raise ValueError(f"--qwen38-vit-wd-mult must be a finite number >= 0, got {wd_mult!r}")
 
 
 def is_default(lr_mult: float, wd_mult: float) -> bool:
     return float(lr_mult) == 1.0 and float(wd_mult) == 1.0
 
 
-def _vision_predicate(_param, name):
-    return is_vision_parameter_name(name)
+def _vit_predicate(_param, name):
+    return is_vit_parameter_name(name)
 
 
 def vision_config_overrides(config, *, lr_mult: float = 1.0, wd_mult: float = 1.0) -> dict:
-    """Megatron's standard config overrides plus the vision lr / wd rules (for get_megatron_optimizer)."""
+    """Megatron's standard config overrides plus the ViT lr / wd rules (for get_megatron_optimizer)."""
     from megatron.core.optimizer import ParamKey, ParamWithNamePredicate, get_standard_config_overrides
 
     check_multipliers(lr_mult, wd_mult)
     overrides = dict(get_standard_config_overrides(config))
     if is_default(lr_mult, wd_mult):
         return overrides
-    # the standard keys that turn weight decay off (biases / 1-D parameters): vision wd_mult must not collide with them
+    # the standard keys that turn weight decay off (biases / 1-D parameters): the ViT wd_mult must not collide with them
     no_decay = [key for key, value in overrides.items() if value.get("wd_mult") == 0.0]
     if lr_mult != 1.0:
         if config.lr is None or config.min_lr is None:
-            raise ValueError("--qwen38-vision-lr-mult needs --lr and --min-lr")
-        key = ParamKey(with_name_predicate=ParamWithNamePredicate(name="qwen38_vision_lr", fn=_vision_predicate))
+            raise ValueError("--qwen38-vit-lr-mult needs --lr and --min-lr")
+        key = ParamKey(with_name_predicate=ParamWithNamePredicate(name="qwen38_vit_lr", fn=_vit_predicate))
         # lr_mult is not read by the scheduler (it uses max_lr / min_lr); it keeps the group's checkpoint key distinct
         overrides[key] = {"max_lr": config.lr * lr_mult, "min_lr": config.min_lr * lr_mult, "lr_mult": float(lr_mult)}
     if wd_mult != 1.0:
 
-        def decayed_vision(param, name):
-            return is_vision_parameter_name(name) and not any(k.matches(param, name) for k in no_decay)
+        def decayed_vit(param, name):
+            return is_vit_parameter_name(name) and not any(k.matches(param, name) for k in no_decay)
 
-        key = ParamKey(with_name_predicate=ParamWithNamePredicate(name="qwen38_vision_wd", fn=decayed_vision))
+        key = ParamKey(with_name_predicate=ParamWithNamePredicate(name="qwen38_vit_wd", fn=decayed_vit))
         overrides[key] = {"wd_mult": float(wd_mult)}
     return overrides
 
@@ -125,6 +132,8 @@ def check_vision_param_groups(model_chunks, config, overrides, *, scope, lr_mult
     from megatron.core.optimizer import get_standard_config_overrides
 
     check_multipliers(lr_mult, wd_mult)
+    if not is_default(lr_mult, wd_mult) and scope != "full":
+        raise ValueError(f"--qwen38-vit-lr-mult / --qwen38-vit-wd-mult need a trainable ViT (scope full), got {scope}")
     standard = get_standard_config_overrides(config)
     vision = {"tensors": 0, "trainable": 0, "frozen_names": [], "trainable_names": []}
     errors = []
@@ -147,16 +156,17 @@ def check_vision_param_groups(model_chunks, config, overrides, *, scope, lr_mult
     numel = Counter()
     for name, param, got in resolve_overrides(model_chunks, overrides):
         base = resolve_overrides_for(standard, param, name)
-        is_vision = is_vision_parameter_name(name)
+        is_vit = is_vit_parameter_name(name)
         want = dict(base)
-        if is_vision and lr_mult != 1.0:
+        if is_vit and lr_mult != 1.0:
             want.update(max_lr=config.lr * lr_mult, min_lr=config.min_lr * lr_mult, lr_mult=float(lr_mult))
-        if is_vision and wd_mult != 1.0 and base.get("wd_mult") != 0.0:
+        if is_vit and wd_mult != 1.0 and base.get("wd_mult") != 0.0:
             want["wd_mult"] = float(wd_mult)
         if got != want:
             errors.append(f"{name}: override {got}, expected {want}")
+        part = "vit" if is_vit else ("merger" if is_vision_parameter_name(name) else "language")
         key = (
-            "vision" if is_vision else "language",
+            part,
             got.get("lr_mult", 1.0),
             got.get("wd_mult", 1.0),
             got.get("max_lr", config.lr),
