@@ -298,6 +298,11 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.backend.use_gloo_process_groups,
             **({} if config_overrides is None else {"config_overrides": config_overrides}),
         )
+        if config.optimizer_cpu_offload and config.optimizer_offload_fraction < 1.0:
+            # HDO with a GPU sub-optimizer: keep its group step across resumes (M-023); before vision_lazy wraps step
+            from miles.backends.megatron_utils import hdo_group_step
+
+            hdo_group_step.install(optimizer)
         if _uses_qwen38_vision(args):
             _log_qwen38_vision_optimizer(model, optimizer)
             if args.qwen38_vision_load_from_scope is not None:

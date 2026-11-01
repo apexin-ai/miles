@@ -120,7 +120,7 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
             help=(
                 "Lazy Adam on steps whose global batch has no image: the merger (merger) or every trainable vision "
                 "parameter (vision) keeps its weights, fp32 master and Adam moments, with no weight decay; its Adam "
-                "step still follows the global one. Needs --optimizer-cpu-offload --optimizer-offload-fraction 1.0 "
+                "step still follows the global one. Needs --optimizer-cpu-offload (any --optimizer-offload-fraction > 0) "
                 "(miles_plugins/models/qwen3_8_next/vision_lazy.py)."
             ),
         ),
