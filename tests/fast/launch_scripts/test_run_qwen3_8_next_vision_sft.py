@@ -45,6 +45,12 @@ def test_four_layer_cut_keeps_the_vision_model_args(monkeypatch, tmp_path):
     ):
         assert setting in command
     assert "--num-layers 48" not in command and "--moe-layer-freq '[1,1,1,1]'" in command
+    # TP8 keeps the 248320-row vocabulary unpadded (Megatron's default 128 x 8 would pad it to 248832)
+    assert "--make-vocab-size-divisible-by 64" in command
+
+
+def test_the_default_tp2_layout_keeps_megatron_s_vocab_divisor(monkeypatch, tmp_path):
+    assert "--make-vocab-size-divisible-by" not in _record(monkeypatch, tmp_path, {})
 
 
 def test_existing_process_cleanup_is_explicitly_opt_in_for_this_recipe(monkeypatch, tmp_path):
