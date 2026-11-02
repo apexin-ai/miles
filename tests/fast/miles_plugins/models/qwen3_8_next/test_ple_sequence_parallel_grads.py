@@ -54,8 +54,8 @@ def _causal_depthwise_conv(x, weight, dilation, cu_seqlens):
     return torch.cat([_conv(x[lo:hi]) for lo, hi in zip(bounds[:-1], bounds[1:], strict=True) if hi > lo])
 
 
-def _ple_gate_conv_reference(hc, key, value, wk, wq, wc, convw, n, eps, dil, cu):
-    """``ple_reference`` of tests/fast-gpu/test_qwen3_8_next_ops.py, in the input dtype."""
+def _ple_gate_conv_reference(hc, key, value, wk, wq, wc, convw, n, eps, dil, cu, deterministic_conv_grad=False):
+    """``ple_reference`` of tests/fast-gpu/test_qwen3_8_next_ops.py, in the input dtype (autograd: no atomics)."""
     T, C = hc.shape[0], hc.shape[1] // n
     kn = _grouped_rmsnorm(key, wk, n, eps).reshape(T, n, C)
     qn = _grouped_rmsnorm(hc, wq, n, eps).reshape(T, n, C)
