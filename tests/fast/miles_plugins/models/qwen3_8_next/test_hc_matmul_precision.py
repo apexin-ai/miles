@@ -214,8 +214,9 @@ def test_bf16_forward_matches_operand_rounded_reference(cpu_kernels):
 
 
 def test_bf16_close_to_fp64_and_fp32(cpu_kernels):
-    """Every output and gradient of bf16 mode is within 1% of the fp64 reference, and its error is a small
-    multiple of fp32 mode's (whose bf16 output / bf16 grads dominate its error)."""
+    """Every output and gradient of bf16 mode is within 1% of the fp64 reference. Where the result is bf16 (mixed
+    and the grads), its error is a small multiple of fp32 mode's, whose final bf16 rounding dominates; h_post is
+    fp32, so there the bf16 operand rounding (~2e-4) shows against fp32's ~1e-7."""
     tensors, dmixed, dh_post = _inputs(2)
 
     def ref(x, weight, w_down, w_up, w_inj):
@@ -229,8 +230,12 @@ def test_bf16_close_to_fp64_and_fp32(cpu_kernels):
     for name, w, a, b in zip(names, want, fp32, bf16, strict=True):
         assert a.dtype == b.dtype, name
         err32, err16 = _rel(a, w), _rel(b, w)
+        print(f"{name}: rel err fp32 {err32:.3e} bf16 {err16:.3e}")
         assert err16 < 1e-2, (name, err16)
-        assert err16 < max(10 * err32, 1e-4), (name, err16, err32)
+        if a.dtype == torch.float32:
+            assert err16 < 1e-3, (name, err16)
+        else:
+            assert err16 < max(10 * err32, 1e-4), (name, err16, err32)
 
 
 def test_tf32_scope_sets_and_restores(cpu_kernels, monkeypatch):
