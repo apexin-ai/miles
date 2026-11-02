@@ -10,6 +10,7 @@ on a GPU with ``torch.cuda.set_sync_debug_mode`` (not here: CPU tensors never sy
 """
 
 import itertools
+import random
 import math
 import random
 from types import SimpleNamespace
@@ -23,6 +24,42 @@ from miles.kernels.embedding import ple_gate_conv  # noqa: E402
 from miles_plugins.models.qwen3_8_next.ops.ple import build_ngram_contexts_packed  # noqa: E402
 
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["miles-plugin"])
+
+
+# boundaries the device path accepts: one row, rows + get_batch's pad segment, empty rows in the middle
+CU_CASES = [
+    (0, 1),
+    (0, 3),
+    (0, 4),
+    (0, 37),
+    (0, 64),
+    (0, 37, 40),
+    (0, 64, 128),
+    (0, 37, 50, 72),
+    (0, 1, 2, 3),
+    (0, 5, 5, 11),
+    (0, 3, 3, 7, 10),
+    (0, 0, 9, 20),
+    (0, 8, 8, 8, 30, 31),
+]
+
+
+def _random_cases(n=40, seed=0):
+    rng = random.Random(seed)
+    cases = []
+    for _ in range(n):
+        lens = [rng.choice([0, 1, 2, 3, 4, 5, 7, 8, 13, 31, 64, 97]) for _ in range(rng.randint(1, 6))]
+        if sum(lens) == 0:
+            lens[0] = 5
+        cu = [0]
+        for length in lens:
+            cu.append(cu[-1] + length)
+        cases.append(tuple(cu))
+    return cases
+
+
+ALL_CU = CU_CASES + _random_cases()
+
 
 class _NoDeviceReads:
     """Fail on the reads the host path must not do: ``.tolist()``, ``int()`` / ``bool()`` of a tensor, and
