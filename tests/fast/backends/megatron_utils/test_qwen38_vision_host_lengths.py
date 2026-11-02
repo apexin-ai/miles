@@ -153,8 +153,6 @@ def test_wire_visual_installs_the_hook():
 
     model = _Language()
     config = {"image_token_id": 9001, "vision_start_token_id": 9002, "vision_end_token_id": 9003}
-    vision.wire_visual(
-        model, config | {"vision_config": _VISION}, scope="full", recompute=True, freeze_language=False
-    )
+    vision.wire_visual(model, config | {"vision_config": _VISION}, scope="full", recompute=True, freeze_language=False)
     hooks = list(model.vision_model._forward_pre_hooks.values())
     assert vision_host_lengths._pre_hook in hooks
