@@ -126,6 +126,31 @@ def compute_advantages_and_returns(
     rollout_data["returns"] = returns
 
 
+def _metric_values(values: list, device: torch.device) -> torch.Tensor:
+    """``torch.tensor(values, device=device)`` without reading device scalars on the host.
+
+    torch.tensor reads each device scalar with ``.item()`` (a device sync each, every microbatch) and copies the list
+    back with a blocking H2D. Here the scalars stay on the device: the result has the dtype torch.tensor infers (taken
+    from host stand-ins of the same dtypes) and every value cast to it, as torch.tensor stores it. Python numbers are
+    filled on the device (``torch.full``), which needs no host-to-device copy.
+    """
+    if any(isinstance(value, torch.Tensor) and value.dim() != 0 for value in values):
+        return torch.tensor(values, device=device)
+    dtype = torch.tensor(
+        [torch.zeros((), dtype=value.dtype) if isinstance(value, torch.Tensor) else value for value in values]
+    ).dtype
+    return torch.stack(
+        [
+            (
+                value.detach().to(device=device, dtype=dtype)
+                if isinstance(value, torch.Tensor)
+                else torch.full((), value, dtype=dtype, device=device)
+            )
+            for value in values
+        ]
+    )
+
+
 def count_loss_tokens(loss_masks: list[torch.Tensor]) -> torch.Tensor:
     """The per-token loss normalizer: the supervised-token count; a fully masked sample adds nothing."""
     # Fully masked samples must contribute neither numerator nor denominator.
@@ -244,9 +269,9 @@ def loss_function(
         {
             **({"per_datum": per_datum} if per_datum is not None else {}),
             "keys": list(log.keys()),
-            "values": torch.tensor(
+            "values": _metric_values(
                 [num_samples if not args.backend.calculate_per_token_loss else num_tokens] + list(log.values()),
-                device=logits.device,
+                logits.device,
             ),
         },
     )
