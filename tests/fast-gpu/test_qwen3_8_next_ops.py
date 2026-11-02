@@ -270,9 +270,10 @@ PLE_CASES = [
 ]
 
 
+@pytest.mark.parametrize("deterministic", [False, True])
 @pytest.mark.parametrize("T,C,n,segs", PLE_CASES)
 @pytest.mark.parametrize("dtype,tol", [(torch.float32, 5e-4), (torch.bfloat16, 4e-2)])
-def test_ple_gate_conv(T, C, n, segs, dtype, tol):
+def test_ple_gate_conv(T, C, n, segs, dtype, tol, deterministic):
     g = torch.Generator(device="cuda").manual_seed(T)
     W, eps, K, dil = n * C, 1e-6, 4, 3
 
@@ -296,13 +297,21 @@ def test_ple_gate_conv(T, C, n, segs, dtype, tol):
     for p in params:
         p.grad = None
 
-    tri = ple_gate_conv(hc, key, value, wk, wq, wc, convw, n, eps, dil, cu)
+    tri = ple_gate_conv(hc, key, value, wk, wq, wc, convw, n, eps, dil, cu, deterministic_conv_grad=deterministic)
     tri.backward(dout)
     assert rel_err(tri, ref) < tol
     names = ["dhc", "dkey", "dvalue", "dwk", "dwq", "dwc", "dconvw"]
     for name, r, p in zip(names, ref_grads, params, strict=False):
         err = rel_err(p.grad, r)
         assert err < tol, f"{name}: {err:.2e} > {tol}"
+    if deterministic:
+        # no atomics: a second backward gives the same bits for every grad, the conv weight grad included
+        first = [p.grad.clone() for p in params]
+        for p in params:
+            p.grad = None
+        ple_gate_conv(hc, key, value, wk, wq, wc, convw, n, eps, dil, cu, deterministic_conv_grad=True).backward(dout)
+        for name, a, p in zip(names, first, params, strict=True):
+            assert torch.equal(a, p.grad), f"{name}: two deterministic backwards differ"
 
 
 QSA_CASES = [
