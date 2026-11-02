@@ -867,7 +867,7 @@ def _apply_custom_config(args, data: dict) -> None:
 
 def _validate_balance_data_lockstep_group(args) -> None:
     group = args.balance_data_lockstep_group
-    assert group > 1, f"--balance-data-lockstep-group must be >= 1, got {group}"
+    assert group > 1, f"--balance-data-lockstep-group must be 1 (off) or greater than 1, got {group}"
     assert (
         args.balance_data or args.balance_by_flops
     ), "--balance-data-lockstep-group > 1 needs --balance-data (or --balance-by-flops)"

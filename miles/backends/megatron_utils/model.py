@@ -23,7 +23,7 @@ from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.utils import get_model_config
 from megatron.training.training import get_model
 
-from miles.backends.megatron_utils import ple_provenance
+from miles.backends.megatron_utils import ddp_trace, ple_provenance
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
@@ -238,6 +238,7 @@ def setup_model_and_optimizer(
         from miles_plugins.models.qwen3_8_next.vision_grad_sync import defer_vision_bucket_groups
 
         defer_vision_bucket_groups(model)  # with --overlap-grad-reduce: vision bucket groups at finish_grad_sync
+    ddp_trace.install(model)  # Q38_DDP_TRACE=<dir> only; after the bucket groups' final wrapping
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
@@ -593,6 +594,7 @@ def run_forward_backward_pass(
             args.qkv_format,
             allgather_cp=args.allgather_cp,
         )
+        ddp_trace.on_microbatch(batch)
 
         if "adapter_token_counts" in batch:
             from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
@@ -683,6 +685,7 @@ def train_one_step(
     if args.enable_sample_ownership_checker:
         sample_consumption_start = data_iterator[0].offset
     _zero_grads(model, optimizer, disable_optimizer)
+    ddp_trace.begin_step()
     global _step_num_tokens
     _step_num_tokens = None
 
@@ -697,6 +700,7 @@ def train_one_step(
     losses_reduced = run_forward_backward_pass(
         args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts
     )
+    ddp_trace.end_step(rollout_id)  # Q38_DDP_TRACE only: the step's reductions, after finalize_model_grads
     if args.enable_sample_ownership_checker:
         local_consumed_identities = SampleIdentityExtractor.get_consumed_sample_identities(
             start_offset=sample_consumption_start,
