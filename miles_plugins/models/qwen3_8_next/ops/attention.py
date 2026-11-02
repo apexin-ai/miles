@@ -14,8 +14,11 @@ from torch import Tensor
 
 from miles.kernels.attention.qsa import build_qsa_block_index, qsa_block_attention, qsa_sparse_attention
 from miles_plugins.models.qwen3_8_next.ops.cp import (
+    SINGLE_RANK_GROUP,
     compose_row_shard,
     cp_enabled,
+    cp_local_packed_seq_params,
+    cp_local_rope,
     gather_sequence,
     gather_sequence_no_grad,
     local_rows,
@@ -211,9 +214,27 @@ class Qwen38NextAttention(SelfAttention):
                     indexer_states[:, 0], positions, rotary_pos_emb, materialized_rope
                 )
                 self._qsa_blocks = None
+        original_cp_group = None
+        if cp:
+            # SelfAttention applies RoPE with apply_rotary_pos_emb(cp_group=pg_collection.cp), which
+            # maps a THD token to its position with the zigzag split; this rank holds a contiguous
+            # slice. Hand it this rank's rows of the frequencies, one packed segment of those rows
+            # and a CP group of one: every local token then gets the frequencies the CP1 run gives
+            # it. The core attention reads the global boundaries kept above, not this packing.
+            # With a CP group of one, SelfAttention's CP layout conversion is a no-op too.
+            kwargs["rotary_pos_emb"] = cp_local_rope(
+                kwargs["rotary_pos_emb"], positions, self._qsa_cp_rows, self.config
+            )
+            lo, hi = self._qsa_cp_rows
+            # the query rows after SelfAttention's projection (SP gathers over TP, not CP)
+            kwargs["packed_seq_params"] = cp_local_packed_seq_params(packed, hi - lo)
+            original_cp_group = self.pg_collection.cp
+            self.pg_collection.cp = SINGLE_RANK_GROUP
         try:
             return super().forward(hidden_states, *args, **kwargs)
         finally:
+            if original_cp_group is not None:
+                self.pg_collection.cp = original_cp_group
             self._qsa_selection = None
             self._qsa_cu_seqlens = None
             self._qsa_blocks = None

@@ -122,3 +122,71 @@ def compose_row_shard(
     # rows of the window this TP rank takes: ceil((span - tp_rank) / n), clamped at 0
     rows = max(0, -(-(span - tp_rank) // n_shards)) if span > tp_rank else 0
     return (lo + tp_rank, n_shards), rows
+
+
+class _SingleRankGroup:
+    """What Megatron's RoPE reads of a CP group (``size()``, ``rank()``) for a CP group of one rank."""
+
+    def size(self) -> int:
+        return 1
+
+    def rank(self) -> int:
+        return 0
+
+
+SINGLE_RANK_GROUP = _SingleRankGroup()
+
+
+def cp_local_rope(rotary_pos_emb, positions: Tensor, cp_rows: tuple[int, int], config):
+    """This rank's rows ``[lo, hi)`` of the RoPE GPTModel built for the whole packed stream, one row per token.
+
+    Under allgather-CP GPTModel builds the RoPE of the whole stream (THD keeps full frequencies). Megatron's
+    ``apply_rotary_pos_emb`` would map a local token to its position with the zigzag split, which a contiguous
+    slice does not have; given these rows, ``cp_local_packed_seq_params`` and a CP group of one, it applies to
+    every local token exactly the frequencies the CP1 run applies to it.
+
+    * raw mRoPE frequencies ``[3, 1, T, rotary_dim / 2]`` (rope fusion): per token, sliced on dim 2;
+    * a materialized mRoPE table ``[T, 1, 1, rotary_dim]``: per token, sliced on dim 0;
+    * a text RoPE table ``[max_seqlen, 1, 1, rotary_dim]``: indexed by in-sequence position, gathered for the
+      window's tokens.
+    A ``(query, key)`` tuple is sliced per element.
+    """
+    if isinstance(rotary_pos_emb, tuple):
+        return tuple(cp_local_rope(r, positions, cp_rows, config) for r in rotary_pos_emb)
+    lo, hi = cp_rows
+    mrope_section = getattr(config, "mrope_section", None)  # config-access-exempt: only mRoPE configs set it
+    if mrope_section is None:
+        return rotary_pos_emb[positions[lo:hi].long()]
+    if (
+        rotary_pos_emb.dim() == 4
+        and rotary_pos_emb.shape[0] == 3
+        and rotary_pos_emb.shape[1] == 1
+        and rotary_pos_emb.shape[-1] == sum(mrope_section)
+    ):
+        return rotary_pos_emb[:, :, lo:hi].contiguous()  # as GPTModel hands them to the fused kernel
+    return rotary_pos_emb[lo:hi]
+
+
+def cp_local_packed_seq_params(packed_seq_params, rows: int):
+    """A copy of ``packed_seq_params`` whose packing is one segment of this rank's ``rows`` tokens.
+
+    For SelfAttention's RoPE only (with ``cp_local_rope``'s per-token rows): the QSA core attention reads the
+    global boundaries the layer kept (``Qwen38NextAttention._qsa_cu_seqlens``), not this. A shallow copy, not
+    ``dataclasses.replace``: PackedSeqParams.__post_init__ would rebuild ``seq_idx`` with a device sync per layer.
+    The boundaries ``[0, rows]`` are made on the device without a host copy for the same reason.
+    """
+    import copy
+
+    cu = torch.arange(2, dtype=torch.int32, device=packed_seq_params.cu_seqlens_q.device) * rows
+    local = copy.copy(packed_seq_params)
+    local.cu_seqlens_q = local.cu_seqlens_kv = cu
+    local.max_seqlen_q = local.max_seqlen_kv = rows
+    for name in ("cu_seqlens_q_padded", "cu_seqlens_kv_padded"):
+        if getattr(local, name, None) is not None:  # config-access-exempt: optional dataclass fields
+            setattr(local, name, cu)
+    for name, value in (("cu_seqlens_host", (0, rows)), ("total_tokens", rows), ("sample_count", 1)):
+        if hasattr(local, name):  # config-access-exempt: fields of miles' subclass / newer Megatron
+            setattr(local, name, value)
+    if hasattr(local, "seq_idx"):  # config-access-exempt: Mamba-only field of newer Megatron
+        local.seq_idx = None
+    return local
