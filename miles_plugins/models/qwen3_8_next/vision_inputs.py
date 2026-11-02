@@ -124,6 +124,8 @@ def packed_rope_positions(
     vision_start_token_id,
     vision_end_token_id,
     merge_size,
+    device=None,
+    device_positions=None,
 ):
     """[tokens, 3] mRoPE positions of a packed microbatch (THD rows back to back, then miles' trailing pad).
 
@@ -133,6 +135,10 @@ def packed_rope_positions(
     no row has any (then no row may hold an image). Every row restarts at 0. Positions must cover exactly the
     rows, and each row's must equal what its own tokens and images give (text: the token index on every axis;
     image: native image mRoPE), so a row that came without positions is refused, whatever its tokens are.
+
+    The checks read ``token_ids``, ``positions`` and ``grids`` where they are: given host copies, they need no device
+    sync. The result is built on ``device`` (default: the device of ``token_ids``) from ``device_positions``, the same
+    positions already on that device (default: ``positions``).
     """
     ids = torch.as_tensor(token_ids)
     total = ids.shape[0]
@@ -145,12 +151,13 @@ def packed_rope_positions(
     if not 1 <= rows <= segments or segments - rows > 1:
         raise ValueError(f"{rows} rows do not fit cu_seqlens of {segments} segments (rows, then at most one pad)")
     end_of_rows = bounds[rows]
-    out = torch.zeros((total, 3), dtype=torch.long, device=ids.device)
+    device = ids.device if device is None else torch.device(device)
+    out = torch.zeros((total, 3), dtype=torch.long, device=device)
     if positions is None:
         if image_span_starts(ids[:end_of_rows], image_token_id):
             raise ValueError("Image tokens reached the model without mRoPE positions")
         for start, end in zip(bounds[:rows], bounds[1 : rows + 1], strict=True):
-            out[start:end] = text_rope_positions(end - start, device=ids.device)
+            out[start:end] = text_rope_positions(end - start, device=device)
         return out
     positions = torch.as_tensor(positions).to(device=ids.device, dtype=torch.long)
     if positions.ndim != 2 or positions.shape[1] != 3:
@@ -179,12 +186,24 @@ def packed_rope_positions(
         used += count
         if not torch.equal(positions[start:end], expected.to(ids.device)):
             raise ValueError(f"mRoPE positions of the row at [{start}, {end}) differ from its tokens and images")
-        out[start:end] = positions[start:end]
     if used != grids.shape[0]:
         raise ValueError(f"{grids.shape[0]} image grids for {used} image spans in the microbatch")
     if image_span_starts(ids[end_of_rows:], image_token_id):
         raise ValueError("Image tokens in the trailing pad segment")
+    # the rows tile [0, end_of_rows) and each row's positions passed the checks above
+    source = positions if device_positions is None else torch.as_tensor(device_positions)
+    out[:end_of_rows] = to_device(source.to(dtype=torch.long), device)
     return out
+
+
+def to_device(tensor, device):
+    """``tensor`` on ``device``; a host tensor goes from pinned memory without blocking the host on a CUDA device."""
+    device = torch.device(device)
+    if tensor.device == device:
+        return tensor
+    if tensor.device.type == "cpu" and device.type == "cuda":
+        return tensor.pin_memory().to(device, non_blocking=True)
+    return tensor.to(device)
 
 
 def scatter_image_embeddings(decoder_input, token_positions, image_embeddings, *, tp_rank=0, sequence_parallel=False):
@@ -193,13 +212,16 @@ def scatter_image_embeddings(decoder_input, token_positions, image_embeddings, *
         raise ValueError("Qwen image SFT requires micro-batch-size 1")
     if token_positions.numel() != image_embeddings.shape[0]:
         raise ValueError("Image embeddings and expanded placeholder counts differ")
-    local = token_positions.to(decoder_input.device)
+    # selected where token_positions are: host positions keep the check and the selection off the device
+    local = token_positions
     if sequence_parallel:
         local = local - tp_rank * decoder_input.shape[0]
     selected = (local >= 0) & (local < decoder_input.shape[0])
     if not sequence_parallel and not selected.all():
         raise ValueError("An image token lies outside the decoder input")
     output = decoder_input.clone()
-    output[local[selected], 0] = image_embeddings[selected].to(output.dtype)
+    rows = to_device(local[selected], decoder_input.device)
+    picks = to_device(selected.nonzero().flatten(), image_embeddings.device)
+    output[rows, 0] = image_embeddings[picks].to(output.dtype)
     # Even a TP slice without image tokens must participate in visual gradient reduction.
     return output + image_embeddings.sum().to(output.dtype) * 0

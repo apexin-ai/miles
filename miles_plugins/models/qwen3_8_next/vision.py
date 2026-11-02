@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel
 
@@ -11,6 +12,7 @@ from miles_plugins.models.qwen3_8_next.vision_inputs import (
     image_span_starts,
     packed_rope_positions,
     scatter_image_embeddings,
+    to_device,
 )
 
 # What the training data holds: "image" = every microbatch has images; "text" = none does (the tower is held but
@@ -84,7 +86,9 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
             raise ValueError("Qwen image SFT owns image injection and native mRoPE positions")
         if (pixel_values is None) != (image_grid_thw is None):
             raise ValueError("Qwen image SFT requires genuine image patches and grids together")
-        has_images = bool(image_span_starts(ids[0], hf_config["image_token_id"]))
+        # one device-to-host copy per microbatch: every check and span search below reads the host copies
+        host_ids, host_positions, host_grids = _host_copies(ids[0], qwen38_position_ids, image_grid_thw)
+        has_images = bool(image_span_starts(host_ids, hf_config["image_token_id"]))
         if data == "image" and not has_images:
             raise ValueError("Qwen image SFT requires genuine image patches, grids and mRoPE positions")
         if has_images and data == "text":
@@ -95,15 +99,17 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         boundaries, rows = ((0, ids.shape[1]), 1) if packed is None else _host_boundaries(packed, ids.shape[1])
         # One row, or THD rows back to back: each row restarts at 0 (text) or has its native image mRoPE.
         positions = packed_rope_positions(
-            ids[0],
+            host_ids,
             boundaries,
-            qwen38_position_ids,
-            image_grid_thw,
+            host_positions,
+            host_grids,
             rows=rows,
             image_token_id=hf_config["image_token_id"],
             vision_start_token_id=hf_config["vision_start_token_id"],
             vision_end_token_id=hf_config["vision_end_token_id"],
             merge_size=hf_config["vision_config"]["spatial_merge_size"],
+            device=ids.device,
+            device_positions=qwen38_position_ids,
         )
         kwargs["position_ids"] = positions.T.unsqueeze(1).contiguous()
         if not has_images:
@@ -124,9 +130,10 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
                     pixel_values.to(device=decoder.device, dtype=model.config.params_dtype),
                     grid_thw=image_grid_thw,
                     return_dict=True,
+                    **_grid_inputs(model.vision_model, host_grids, decoder.device),
                 )
             # images in row order, rows in pack order: the tower's outputs line up with the pad tokens
-            image_positions = (ids[0] == hf_config["image_token_id"]).nonzero().flatten()
+            image_positions = (host_ids == hf_config["image_token_id"]).nonzero().flatten()
             kwargs["decoder_input"] = scatter_image_embeddings(
                 decoder,
                 image_positions,
@@ -137,6 +144,62 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         return original_forward(*args, **kwargs)
 
     model.forward = forward
+
+
+def _host_copies(*tensors):
+    """Host copies of the given tensors (None stays None), with one device sync for all of them when they can share
+    a single copy (same device, same dtype)."""
+    on_device = [t for t in tensors if t is not None and t.device.type != "cpu"]
+    if len(on_device) > 1 and len({(t.device, t.dtype) for t in on_device}) == 1:
+        flat = torch.cat([t.reshape(-1) for t in on_device]).cpu()
+        parts = iter(flat.split([t.numel() for t in on_device]))
+        return tuple(t if t is None or t.device.type == "cpu" else next(parts).reshape(t.shape) for t in tensors)
+    return tuple(None if t is None else t.cpu() for t in tensors)
+
+
+def _grid_inputs(visual, grid_thw, device):
+    """What Qwen3VLVisionModel.forward derives from ``grid_thw``, made from its host copy, under the keys
+    transformers' vision_utils takes precomputed.
+
+    From a device grid_thw the tower reads it back with repeat_interleave / tolist (a device sync each) and, in sdpa
+    mode, reads its cu_seqlens back in every block (``lengths.tolist()``, forward and recompute). The integer inputs
+    are the same numbers made on the host: cu_seqlens stays there (sdpa splits by it on the host), the position ids
+    and the interpolation rows / columns go to the device, where the interpolation weights are computed with the same
+    kernels as before. Returns no inputs (the tower computes them itself) for a transformers without vision_utils or
+    an attention that needs cu_seqlens on the device.
+    """
+    try:
+        from transformers import vision_utils
+    except ImportError:
+        return {}
+    if visual.config._attn_implementation != "sdpa":
+        return {}
+    merge, side = visual.config.spatial_merge_size, visual.num_grid_per_side
+    # get_vision_interpolation_indices_and_weights up to its float part, on the host
+    counts = grid_thw[:, 0] * grid_thw[:, 1] * grid_thw[:, 2]
+    heights = torch.repeat_interleave(grid_thw[:, 1], counts)
+    widths = torch.repeat_interleave(grid_thw[:, 2], counts)
+    starts = torch.repeat_interleave(F.pad(counts.cumsum(0)[:-1], (1, 0)), counts)
+    within = (torch.arange(counts.sum()) - starts) % (heights * widths)
+    blocks_w = widths // merge
+    in_col = within % merge
+    in_row = (within // merge) % merge
+    block_col = (within // (merge * merge)) % blocks_w
+    block_row = within // (merge * merge * blocks_w)
+    row = block_row * merge + in_row
+    col = block_col * merge + in_col
+    row, col, heights, widths = to_device(torch.stack((row, col, heights, widths)), device).unbind(0)
+    # ... and its float part on the device, as the tower runs it
+    mode, align_corners = visual.interpolation_mode, visual.interpolation_align_corners
+    h_taps, h_weights = vision_utils._interpolation_axis_taps_weights(row, heights, side, mode, align_corners)
+    w_taps, w_weights = vision_utils._interpolation_axis_taps_weights(col, widths, side, mode, align_corners)
+    n = h_taps.shape[1]
+    return {
+        "interp_indices": (h_taps[:, :, None] * side + w_taps[:, None, :]).reshape(-1, n * n),
+        "interp_weights": (h_weights[:, :, None] * w_weights[:, None, :]).reshape(-1, n * n),
+        "position_ids": to_device(vision_utils.get_vision_position_ids(grid_thw, visual.spatial_merge_size), device),
+        "cu_seqlens": vision_utils.get_vision_cu_seqlens(grid_thw),
+    }
 
 
 def _host_boundaries(packed_seq_params, total):
