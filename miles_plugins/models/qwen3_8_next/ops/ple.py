@@ -9,6 +9,7 @@ import json
 import logging
 import struct
 import threading
+from collections.abc import Sequence
 
 import torch
 from megatron.core.extensions.transformer_engine import TELinear
@@ -74,12 +75,20 @@ def build_ngram_contexts(tokens: Tensor, ngram_size: int, eos_token_id: int) -> 
 
 
 def build_ngram_contexts_packed(
-    tokens: Tensor, cu_seqlens: Tensor | None, ngram_size: int, eos_token_id: int
+    tokens: Tensor,
+    cu_seqlens: Tensor | None,
+    ngram_size: int,
+    eos_token_id: int,
+    cu_seqlens_host: Sequence[int] | None = None,
 ) -> Tensor:
-    """``build_ngram_contexts`` for a packed (THD) batch."""
+    """``build_ngram_contexts`` for a packed (THD) batch.
+
+    ``cu_seqlens_host`` is the host copy of ``cu_seqlens`` (miles' get_batch keeps it); with it the boundaries are
+    read without ``cu_seqlens.tolist()``, a device sync every forward.
+    """
     if cu_seqlens is None:
         return build_ngram_contexts(tokens, ngram_size, eos_token_id)
-    bounds = cu_seqlens.tolist()
+    bounds = list(cu_seqlens_host) if cu_seqlens_host is not None else cu_seqlens.tolist()
     parts = [
         build_ngram_contexts(tokens[lo:hi], ngram_size, eos_token_id)
         for lo, hi in zip(bounds[:-1], bounds[1:], strict=True)
