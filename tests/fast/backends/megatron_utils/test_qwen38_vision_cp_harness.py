@@ -15,10 +15,14 @@ Claims, per packed layout (``CASES``):
 
 * decoder input: the CP ranks' pieces, concatenated, equal the CP1 decoder input bitwise (fp64; each rank runs the
   same tower on the same images, so no tolerance);
-* mRoPE positions: the CP ranks' ``[3, T/2]`` pieces, concatenated, equal the CP1 ``[3, T]`` positions exactly;
+* mRoPE positions: each CP rank hands the language model either its ``[3, T/2]`` slice of the CP1 ``[3, T]``
+  positions or the whole CP1 positions (both ranks the same form), exactly;
 * gradients: the CP ranks' losses sum to the CP1 loss and, for every parameter (vision tower, word embeddings, head),
-  the per-rank gradients sum to the CP1 gradient (fp64, rtol 1e-10, atol 1e-12): vision parameters are replicated
-  over CP and DDP sums their gradients over DP x CP;
+  the per-rank gradients sum to the CP1 gradient (fp64; rtol 1e-10, atol 1e-8 x the largest |CP1 gradient| of
+  that parameter): vision parameters are replicated over CP and DDP sums their gradients over DP x CP. The atol
+  is rounding, measured without any CP code: one tower backward against two backwards on the two halves of the
+  same upstream gradient differ by up to 2.1e-10 x max|grad| when an image straddles the split (0 otherwise). A
+  missing or doubled contribution is of the order of the gradient itself;
 * every trainable vision parameter gets a gradient on every CP rank (zero on a text microbatch), as on CP1:
   with --overlap-grad-reduce a parameter that never reports keeps its DDP bucket from being reduced;
 * the lazy-vision and audit image counters (the tower's forward pre-hooks) count on each CP rank the images CP1
@@ -69,7 +73,7 @@ _CONFIG = {
         "deepstack_visual_indexes": [],
     },
 }
-GRAD_RTOL, GRAD_ATOL = 1e-10, 1e-12
+GRAD_RTOL, GRAD_ATOL_SCALE = 1e-10, 1e-8
 _JOIN_TIMEOUT_S = 240
 _GLOO_TIMEOUT_S = 60
 
@@ -491,26 +495,39 @@ def test_cp2_decoder_input_slices_concatenate_to_cp1(results, case):
 
 @_CP2
 @pytest.mark.parametrize("case", CASES)
-def test_cp2_position_slices_concatenate_to_cp1(results, case):
+def test_cp2_positions_match_cp1(results, case):
+    """Each CP rank hands the language model either its own [lo, hi) slice of the CP1 positions or the whole CP1
+    positions (when the language side slices them itself, e.g. for an indexer that reads the whole sequence), and
+    both ranks do the same. Which of the two the language side expects is not observable here."""
     cp1, ranks = _cp2(results, case)
-    half = cp1["total"] // 2
+    want, half = cp1["position_ids"], cp1["total"] // 2
+    forms = []
     for rank, result in enumerate(ranks):
-        assert result["position_ids"] is not None, f"rank {rank}: no position_ids reached the language model"
-        assert result["position_ids"].shape == (3, half), f"rank {rank}: {tuple(result['position_ids'].shape)}"
-    got = torch.cat([r["position_ids"] for r in ranks], dim=1)
-    assert torch.equal(got, cp1["position_ids"]), _first_diff(got, cp1["position_ids"])
+        got = result["position_ids"]
+        assert got is not None, f"rank {rank}: no position_ids reached the language model"
+        if got.shape == (3, cp1["total"]):
+            assert torch.equal(got, want), f"rank {rank} (whole): {_first_diff(got, want)}"
+            forms.append("whole")
+        else:
+            piece = want[:, rank * half : (rank + 1) * half]
+            assert torch.equal(got, piece), f"rank {rank} (slice [{rank * half}, {(rank + 1) * half})): " + (
+                _first_diff(got, piece)
+            )
+            forms.append("slice")
+    assert forms[0] == forms[1], f"the CP ranks use different position forms: {forms}"
 
 
 @_CP2
 @pytest.mark.parametrize("case", CASES)
 def test_cp2_losses_and_gradients_sum_to_cp1(results, case):
     cp1, ranks = _cp2(results, case)
-    torch.testing.assert_close(ranks[0]["loss"] + ranks[1]["loss"], cp1["loss"], rtol=GRAD_RTOL, atol=GRAD_ATOL)
+    torch.testing.assert_close(ranks[0]["loss"] + ranks[1]["loss"], cp1["loss"], rtol=GRAD_RTOL, atol=0)
     assert set(ranks[0]["grads"]) == set(ranks[1]["grads"]) == set(cp1["grads"])
     for name, want in cp1["grads"].items():
         parts = [r["grads"][name] for r in ranks]
         got = sum(torch.zeros_like(want) if g is None else g for g in parts)
-        torch.testing.assert_close(got, want, rtol=GRAD_RTOL, atol=GRAD_ATOL, msg=lambda m: f"{name}: {m}")
+        atol = GRAD_ATOL_SCALE * float(want.abs().max())
+        torch.testing.assert_close(got, want, rtol=GRAD_RTOL, atol=atol, msg=lambda m: f"{name} (atol {atol:.1e}): {m}")
 
 
 @_CP2
