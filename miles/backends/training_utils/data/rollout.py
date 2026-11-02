@@ -171,6 +171,18 @@ def _prepare_loss_masks(
     return loss_mask.unsqueeze(0)
 
 
+def _host_ints_to_device(values: list[int], dtype: torch.dtype, device) -> torch.Tensor:
+    """``torch.tensor(values, dtype=dtype, device=device)`` without blocking the host.
+
+    A copy from pageable memory waits for the device stream; a copy from pinned memory with ``non_blocking=True`` is
+    queued (PyTorch's pinned allocator keeps the buffer until the copy has run).
+    """
+    host = torch.tensor(values, dtype=dtype)
+    if torch.device(device).type != "cuda":
+        return host.to(device)
+    return host.pin_memory().to(device, non_blocking=True)
+
+
 def get_batch(
     data_iterator: "DataIterator",
     keys: Sequence[str],
@@ -273,7 +285,7 @@ def get_batch(
                 cu_seqlens_list.append(cu_seqlens_list[-1] + pad)
 
             cu_seqlens_host = tuple(cu_seqlens_list)
-            cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=current_platform.current_device())
+            cu_seqlens = _host_ints_to_device(cu_seqlens_list, torch.int, current_platform.current_device())
             tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
@@ -293,9 +305,10 @@ def get_batch(
 
             # thd requires the cu_seqlens to be of the origin length
             cu_seqlens_host = tuple(boundary * cp_size for boundary in cu_seqlens)
-            cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int, device=current_platform.current_device()) * cp_size
+            cu_seqlens = _host_ints_to_device(cu_seqlens, torch.int, current_platform.current_device()) * cp_size
 
-        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
+        # from the host boundaries: reading the device copy (.max().item()) syncs every microbatch
+        max_seqlen = max(end - start for start, end in zip(cu_seqlens_host[:-1], cu_seqlens_host[1:], strict=True))
 
         tokens = tokens.unsqueeze(0)
 
