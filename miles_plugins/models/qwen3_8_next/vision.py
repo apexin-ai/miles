@@ -138,7 +138,7 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         # cu_seqlens, the image patches, their grids and the rows' positions describe the whole microbatch. Every
         # CP rank works on the whole stream's ids (one all-gather of the token ids, as the PLE hook does): all of
         # them take the same text / image branch, run the tower on every image and build the whole positions.
-        cp = cp_enabled(model.config)
+        cp = _allgather_cp(model.config)
         if cp and packed is None:
             raise ValueError("Qwen image SFT under context parallelism needs the packed (thd) layout")
         whole_ids = gather_sequence_no_grad(ids[0])[None] if cp else ids
@@ -207,6 +207,16 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         return original_forward(*args, **kwargs)
 
     model.forward = forward
+
+
+def _allgather_cp(config):
+    """Whether this forward runs under allgather-CP. False without a CP group (one process, CPU tests): Megatron's
+    get_context_parallel_world_size asserts on a missing group once torch.distributed is up."""
+    from megatron.core import parallel_state
+
+    if parallel_state.get_context_parallel_group(check_initialized=False) is None:
+        return False
+    return cp_enabled(config)
 
 
 def _text_decoder_input(model, ids, kwargs):

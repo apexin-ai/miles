@@ -78,6 +78,7 @@ def cp_world(monkeypatch):
     from megatron.core import parallel_state
 
     state = {"size": 1, "rank": 0, "whole": None}
+    monkeypatch.setattr(parallel_state, "get_context_parallel_group", lambda check_initialized=True: object())
     monkeypatch.setattr(parallel_state, "get_context_parallel_world_size", lambda: state["size"])
     monkeypatch.setattr(parallel_state, "get_context_parallel_rank", lambda: state["rank"])
     monkeypatch.setattr(parallel_state, "get_tensor_model_parallel_rank", lambda: 0)
@@ -275,6 +276,7 @@ def test_images_are_counted_once_per_dp_replica_not_once_per_cp_rank(monkeypatch
     from megatron.core import parallel_state
 
     monkeypatch.setattr(parallel_state, "model_parallel_is_initialized", lambda: True)
+    monkeypatch.setattr(parallel_state, "get_context_parallel_group", lambda check_initialized=True: object())
     monkeypatch.setattr(parallel_state, "get_context_parallel_world_size", lambda: cp_size)
     counted = 0
     for cp_rank in range(cp_size):
