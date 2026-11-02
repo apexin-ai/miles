@@ -179,7 +179,8 @@ def test_a_packed_text_microbatch_skips_the_tower_and_still_reports_zero_grads(m
     ids, bounds, nrows = _pack([_text(4), _text(6, 50)], pad=2)
     positions = torch.cat((text_rope_positions(4), text_rope_positions(6)))
     model(input_ids=ids[None], packed_seq_params=_packed(bounds, nrows), qwen38_position_ids=positions).backward()
-    assert model.calls[-1]["decoder_input"] is None
+    # the zero grads are reported from the input embeddings (where an image microbatch merges the tower)
+    assert torch.equal(model.calls[-1]["decoder_input"], model.embedding(input_ids=ids[None]))
     assert torch.equal(model.calls[-1]["position_ids"][:, 0].T[:10], positions)
     assert all(p.grad is not None and not p.grad.any() for p in model.vision_model.parameters())
 
