@@ -86,8 +86,9 @@ def _sched_args(group, balance_data=True):
 def test_build_dp_schedule_default_is_token_balance():
     rng = random.Random(7)
     lens = [rng.randint(100, 262_144) for _ in range(64)]
-    parts, mbi, nmb, _ = build_dp_schedule(_sched_args(1), make_tp(dp_size=16), lens, global_batch_size=64,
-                                           rollout_indices=list(range(64)))
+    parts, mbi, nmb, _ = build_dp_schedule(
+        _sched_args(1), make_tp(dp_size=16), lens, global_batch_size=64, rollout_indices=list(range(64))
+    )
     assert parts == get_seqlen_balanced_partitions(lens, 16, equal_size=True)
     assert nmb == [4]
 
@@ -98,13 +99,14 @@ def test_build_dp_schedule_lockstep_static_multi_step():
     gbs = dp * per_rank
     lens = [rng.randint(100, 262_144) for _ in range(gbs * steps)]
     args = _sched_args(2)
-    parts, mbi, nmb, _ = build_dp_schedule(args, make_tp(dp_size=dp), lens, global_batch_size=gbs,
-                                           rollout_indices=list(range(len(lens))))
+    parts, mbi, nmb, _ = build_dp_schedule(
+        args, make_tp(dp_size=dp), lens, global_batch_size=gbs, rollout_indices=list(range(len(lens)))
+    )
     assert nmb == [per_rank] * steps
-    assert_invariants(parts, mbi, nmb, dp_size=dp, expected_global_sample_indices=range(len(lens)),
-                      total_lengths=lens)
-    base, _, _, _ = build_dp_schedule(_sched_args(1), make_tp(dp_size=dp), lens, global_batch_size=gbs,
-                                      rollout_indices=list(range(len(lens))))
+    assert_invariants(parts, mbi, nmb, dp_size=dp, expected_global_sample_indices=range(len(lens)), total_lengths=lens)
+    base, _, _, _ = build_dp_schedule(
+        _sched_args(1), make_tp(dp_size=dp), lens, global_batch_size=gbs, rollout_indices=list(range(len(lens)))
+    )
     for s in range(steps):
         # same rows in every step, same count per rank
         new_rows = [parts[r][s * per_rank : (s + 1) * per_rank] for r in range(dp)]
@@ -118,10 +120,12 @@ def test_split_train_data_by_dp_raw_lockstep():
     rng = random.Random(3)
     lens = [rng.randint(1, 50) for _ in range(16)]
     data = {"tokens": [[0] * n for n in lens], "response_lengths": lens, "sample_indices": list(range(16))}
-    old = split_train_data_by_dp_raw(Namespace(balance_data=True, balance_data_lockstep_group=1), dict(data),
-                                     dp_size=4)
-    new = split_train_data_by_dp_raw(Namespace(balance_data=True, balance_data_lockstep_group=2), dict(data),
-                                     dp_size=4)
+    old = split_train_data_by_dp_raw(
+        Namespace(balance_data=True, balance_data_lockstep_group=1), dict(data), dp_size=4
+    )
+    new = split_train_data_by_dp_raw(
+        Namespace(balance_data=True, balance_data_lockstep_group=2), dict(data), dp_size=4
+    )
     assert [list(s["partition"]) for s in old] == get_seqlen_balanced_partitions(lens, 4, equal_size=True)
     assert [list(s["partition"]) for s in new] == get_lockstep_balanced_partitions(lens, 4, 2)
     for shard in new:
@@ -129,9 +133,16 @@ def test_split_train_data_by_dp_raw_lockstep():
 
 
 def _megatron_ns(**kw):
-    base = dict(balance_data_lockstep_group=2, balance_data=True, balance_by_flops=False, train_backend="megatron",
-                tensor_model_parallel_size=4, context_parallel_size=1, expert_model_parallel_size=8,
-                expert_tensor_parallel_size=1)
+    base = dict(
+        balance_data_lockstep_group=2,
+        balance_data=True,
+        balance_by_flops=False,
+        train_backend="megatron",
+        tensor_model_parallel_size=4,
+        context_parallel_size=1,
+        expert_model_parallel_size=8,
+        expert_tensor_parallel_size=1,
+    )
     return Namespace(**(base | kw))
 
 
