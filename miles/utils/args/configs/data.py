@@ -149,6 +149,22 @@ class DataConfig(BaseConfig):
             )
         ),
     ] = False
+    balance_data_lockstep_group: A[
+        int,
+        Arg(
+            help=(
+                "With --balance-data (or --balance-by-flops on the rollout-side schedule): the number of consecutive "
+                "data-parallel ranks whose micro-batches run in lockstep, i.e. that share one expert-parallel "
+                "all-to-all in every micro-batch, so each micro-batch waits for the longest one in the group. "
+                "> 1 sorts the micro-batches heaviest first, gives each group slots of this many similar "
+                "micro-batches (one per rank, Karmarkar-Karp over the groups on the slot's heaviest micro-batch) and "
+                "runs the slots lightest first. The rows per rank and per step stay the same; which rank trains a "
+                "row and the micro-batch order change. With the default Megatron rank order it must equal "
+                "expert_model_parallel_size * expert_tensor_parallel_size / (tensor_model_parallel_size * "
+                "context_parallel_size) when that is > 1. 1 (default): the token balance of --balance-data."
+            )
+        ),
+    ] = 1
     balance_by_flops: A[
         bool,
         Arg(

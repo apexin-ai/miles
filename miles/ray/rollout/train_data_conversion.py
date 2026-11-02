@@ -12,7 +12,7 @@ from miles.utils.object_store import ValueSpec
 from miles.utils.output_store.dropped import has_inline_replay
 from miles.utils.output_store.plan import FIELDS, SamplingMaskSegments, StorePlanError
 from miles.utils.rollout_topk_logprobs import requests_support_logprobs
-from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+from miles.utils.seqlen_balancing import get_lockstep_balanced_partitions, get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
 
@@ -502,7 +502,9 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
     total_lengths = [len(t) for t in data["tokens"]]
     data["total_lengths"] = total_lengths
 
-    if args.balance_data:
+    if args.balance_data and args.balance_data_lockstep_group > 1:
+        partitions = get_lockstep_balanced_partitions(total_lengths, dp_size, args.balance_data_lockstep_group)
+    elif args.balance_data:
         partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]

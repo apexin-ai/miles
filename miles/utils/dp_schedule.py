@@ -13,6 +13,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.seqlen_balancing import (
     expand_bins_by_splitting,
     first_fit_decreasing_pack,
+    get_lockstep_balanced_partitions,
     get_seqlen_balanced_partitions,
 )
 
@@ -160,13 +161,19 @@ def build_dp_schedule(
 
         # Distribute the micro-batches across DP ranks, len(step_micro_batches) / dp_size each: strided
         # round-robin, or Karmarkar-Karp on micro-batch weights (tokens under --balance-data,
-        # FLOPs under --balance-by-flops).
+        # FLOPs under --balance-by-flops); --balance-data-lockstep-group > 1 balances groups of DP
+        # ranks whose micro-batches run in lockstep instead (see get_lockstep_balanced_partitions).
         if args.balance_data or balance_by_flops:
             if balance_by_flops:
                 weights = [sum(workloads[i] for i in micro_batch) for micro_batch in step_micro_batches]
             else:
                 weights = [sum(step_lengths[i] for i in micro_batch) for micro_batch in step_micro_batches]
-            rank_micro_batch_ids = get_seqlen_balanced_partitions(weights, dp_size, equal_size=True)
+            if args.balance_data_lockstep_group > 1:
+                rank_micro_batch_ids = get_lockstep_balanced_partitions(
+                    weights, dp_size, args.balance_data_lockstep_group
+                )
+            else:
+                rank_micro_batch_ids = get_seqlen_balanced_partitions(weights, dp_size, equal_size=True)
         else:
             rank_micro_batch_ids = [list(range(rank, len(step_micro_batches), dp_size)) for rank in range(dp_size)]
 

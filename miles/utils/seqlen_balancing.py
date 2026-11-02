@@ -177,6 +177,37 @@ def get_seqlen_balanced_partitions(seqlen_list: list[int], k_partitions: int, eq
     return _check_and_sort_partitions(partitions)
 
 
+def get_lockstep_balanced_partitions(weights: list[int], k_partitions: int, lockstep_group: int) -> list[list[int]]:
+    """Equal-size partitions for ranks that run their items in lockstep groups.
+
+    Partitions ``g * lockstep_group .. (g + 1) * lockstep_group - 1`` form one group whose j-th items run
+    together, so the j-th step of the group takes as long as its heaviest item (e.g. data-parallel ranks that
+    share an expert-parallel all-to-all in every micro-batch). Each group's time is then the sum over its
+    steps of the heaviest item, not the per-partition sum that ``get_seqlen_balanced_partitions`` balances.
+
+    The items are sorted heaviest first and cut into slots of ``lockstep_group`` consecutive items (similar
+    weights run together), the slots are balanced over the groups by Karmarkar-Karp on the slot weight (its
+    heaviest item), and inside a group the slots run lightest first; the i-th item of every slot goes to the
+    group's i-th partition. Unlike ``get_seqlen_balanced_partitions`` the returned partitions are in execution
+    order, not sorted by index.
+    """
+    n = len(weights)
+    assert lockstep_group >= 1, f"lockstep_group must be >= 1, got {lockstep_group}"
+    assert k_partitions % lockstep_group == 0, f"{k_partitions} partitions % lockstep group {lockstep_group} != 0"
+    assert n % k_partitions == 0, f"{n} items % {k_partitions} partitions != 0"
+    order = sorted(range(n), key=lambda i: (-weights[i], i))
+    slots = [order[s : s + lockstep_group] for s in range(0, n, lockstep_group)]
+    slot_weights = [weights[slot[0]] for slot in slots]
+    groups = get_seqlen_balanced_partitions(slot_weights, k_partitions // lockstep_group, equal_size=True)
+    partitions: list[list[int]] = [[] for _ in range(k_partitions)]
+    for g, slot_ids in enumerate(groups):
+        for s in sorted(slot_ids, key=lambda s: (slot_weights[s], s)):
+            for j, item in enumerate(slots[s]):
+                partitions[g * lockstep_group + j].append(item)
+    assert sorted(i for p in partitions for i in p) == list(range(n))
+    return partitions
+
+
 def first_fit_pack(total_lengths, max_tokens_per_bin):
     """First-fit bin packing in arrival order; bins hold indices, oversized samples land alone."""
     return _first_fit(range(len(total_lengths)), total_lengths, max_tokens_per_bin)

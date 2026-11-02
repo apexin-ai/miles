@@ -865,6 +865,27 @@ def _apply_custom_config(args, data: dict) -> None:
         setattr(args, k, v)
 
 
+def _validate_balance_data_lockstep_group(args) -> None:
+    group = args.balance_data_lockstep_group
+    assert group > 1, f"--balance-data-lockstep-group must be >= 1, got {group}"
+    assert (
+        args.balance_data or args.balance_by_flops
+    ), "--balance-data-lockstep-group > 1 needs --balance-data (or --balance-by-flops)"
+    if args.train_backend != "megatron":
+        return
+    # Default Megatron rank order: one expert-parallel group spans EP * ETP consecutive global ranks, i.e.
+    # EP * ETP / (TP * CP) consecutive data-parallel ranks, which then run every micro-batch in lockstep.
+    etp = args.expert_tensor_parallel_size or args.tensor_model_parallel_size
+    span = args.expert_model_parallel_size * etp
+    dense = args.tensor_model_parallel_size * args.context_parallel_size
+    expected = span // dense if span > dense and span % dense == 0 else 1
+    assert group == expected, (
+        f"--balance-data-lockstep-group {group} does not match the parallel layout: an expert-parallel group "
+        f"(EP {args.expert_model_parallel_size} x ETP {etp}) spans {expected} data-parallel rank(s) of "
+        f"TP {args.tensor_model_parallel_size} x CP {args.context_parallel_size}"
+    )
+
+
 def miles_validate_args(args):
     from miles.backends.training_utils.weight_update.session import weight_update_selector
 
@@ -1184,6 +1205,9 @@ def miles_validate_args(args):
 
     if args.balance_by_flops:
         assert args.use_dynamic_batch_size, "--balance-by-flops requires --use-dynamic-batch-size"
+
+    if args.balance_data_lockstep_group != 1:
+        _validate_balance_data_lockstep_group(args)
 
     if args.eps_clip_high is None:
         args.eps_clip_high = args.eps_clip

@@ -57,6 +57,7 @@ def make_args(**overrides: Any) -> Namespace:
         wandb_always_use_train_step=False,
         disable_rollout_trim_samples=False,
         balance_data=False,
+        balance_data_lockstep_group=1,
         delay_split_train_data_by_dp=False,
         # object store
         object_store_backend="ray",
