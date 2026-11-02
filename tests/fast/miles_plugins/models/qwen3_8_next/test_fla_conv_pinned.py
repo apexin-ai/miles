@@ -71,3 +71,69 @@ def test_real_fla_kernels_have_the_pinned_configs():
         tuner = T._autotuner(getattr(kernels, name))
         assert "NB" in tuner.keys
         assert any(c.kwargs.get("BD") == bd and c.num_warps == nw for c in tuner.configs)
+
+
+class _NormConfig:
+    def __init__(self, bt, nw):
+        self.kwargs, self.num_warps = {"BT": bt}, nw
+
+
+def _norm_tuner(bts, warps):
+    t = _Tuner()
+    t.configs = [_NormConfig(bt, nw) for bt in bts for nw in warps]
+    t.keys = ["D", "NB"]
+    return t
+
+
+def _norm_modules():
+    lng = types.SimpleNamespace(
+        layer_norm_gated_fwd_kernel=_Heuristics(_norm_tuner((16, 32, 64), (4, 8, 16))),
+        layer_norm_gated_bwd_kernel=_Heuristics(_norm_tuner((16, 32, 64), (4, 8, 16))),
+    )
+    l2 = types.SimpleNamespace(
+        l2norm_fwd_kernel=_norm_tuner((8, 16, 32, 64, 128), (1, 2, 4, 8, 16)),
+        l2norm_bwd_kernel=_norm_tuner((8, 16, 32, 64, 128), (1, 2, 4, 8, 16)),
+    )
+    return {"fla.modules.fused_norm_gate": lng, "fla.modules.l2norm": l2}
+
+
+def test_norm_pin_keeps_one_config_and_constant_nb():
+    mods = _norm_modules()
+    T.pin_fla_norm_autotune(mods)
+    assert len(T.PINNED_NORM) == 4
+    for (mod, name), (bt, nw) in T.PINNED_NORM.items():
+        k = getattr(mods[mod], name)
+        tuner = T._autotuner(k)
+        assert [(c.kwargs["BT"], c.num_warps) for c in tuner.configs] == [(bt, nw)]
+        # every local row count (every NB = cdiv(rows, 65536)) reaches the kernel as the same constexpr
+        for nb in (1, 3, 8, 22, 44):
+            assert k.run(x=1, NB=nb, D=128) == "ran"
+        assert [c["NB"] for c in tuner.calls] == [T.PINNED_NB] * 5
+    # idempotent
+    T.pin_fla_norm_autotune(mods)
+    assert len(T._autotuner(mods["fla.modules.l2norm"].l2norm_fwd_kernel).configs) == 1
+
+
+def test_norm_pin_refuses_when_nb_left_the_key():
+    mods = _norm_modules()
+    mods["fla.modules.l2norm"].l2norm_bwd_kernel.keys = ["D"]
+    with pytest.raises(RuntimeError, match="NB is no longer"):
+        T.pin_fla_norm_autotune(mods)
+
+
+def test_flag_pins_conv_and_norm(monkeypatch):
+    seen = []
+    monkeypatch.setattr(T, "pin_fla_conv_autotune", lambda: seen.append("conv"))
+    monkeypatch.setattr(T, "pin_fla_norm_autotune", lambda: seen.append("norm"))
+    T.pin_fla_autotune()
+    assert seen == ["conv", "norm"]
+
+
+def test_real_fla_norm_kernels_have_the_pinned_configs():
+    import importlib
+
+    pytest.importorskip("fla.modules.l2norm")
+    for (mod, name), (bt, nw) in T.PINNED_NORM.items():
+        tuner = T._autotuner(getattr(importlib.import_module(mod), name))
+        assert "NB" in tuner.keys
+        assert sum(c.kwargs.get("BT") == bt and c.num_warps == nw for c in tuner.configs) == 1
