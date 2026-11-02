@@ -6,7 +6,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from miles.utils.misc import should_run_periodic_action
+from miles.utils.misc import should_save
 
 if TYPE_CHECKING:
     from miles.utils.data import RolloutDataPack
@@ -22,7 +22,8 @@ def validate_prefetch_rollout_args(args) -> None:
     # rollout has trained (and published its weights) changes nothing but when it is fetched.
     assert args.debug_train_only, "--prefetch-rollout needs --debug-train-only: generated rollouts follow the weights"
     # A sentinel can appear while a later rollout is already fetched; that save would persist a cursor past the
-    # trained rollouts. Periodic saves are known in advance, so the prefetcher never fetches across them.
+    # trained rollouts. Periodic saves and --save-rollout-ids are known in advance, so the prefetcher never fetches
+    # across them: schedule a save there instead of triggering it.
     assert args.save_trigger_sentinel is None, "--prefetch-rollout cannot be combined with --save-trigger-sentinel"
 
 
@@ -63,9 +64,7 @@ class RolloutPrefetcher:
             fetch=rollout_executor.get,
             depth=args.prefetch_rollout,
             last_rollout_id=last_rollout_id,
-            save_due=lambda rollout_id: should_run_periodic_action(
-                rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
-            ),
+            save_due=lambda rollout_id: should_save(args, rollout_id, num_rollout_per_epoch),
         )
 
     async def get(self, rollout_id: int) -> "RolloutDataPack":

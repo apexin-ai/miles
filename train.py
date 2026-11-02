@@ -18,7 +18,7 @@ from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.lora.utils import lora_rollout_enabled
-from miles.utils.misc import should_run_periodic_action
+from miles.utils.misc import should_run_periodic_action, should_save
 from miles.utils.orchestration_utils import (
     OrchestratorStartupInfo,
     init_orchestration_script,
@@ -160,9 +160,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         await rollout_executor.release(rollout_id)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
-        save_due = external_save or should_run_periodic_action(
-            rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
-        )
+        save_due = external_save or should_save(args, rollout_id, num_rollout_per_epoch)
         if save_due:
             if not args.clear_memory_every_step:
                 # The save (and its HF export) allocates outside the cache the steps kept: start it from a clear one.

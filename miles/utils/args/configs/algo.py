@@ -27,6 +27,18 @@ class AlgoConfig(BaseConfig):
             )
         ),
     ] = None
+    save_rollout_ids: A[
+        list[int] | None,
+        Arg(
+            type_parser=int,
+            nargs="+",
+            help=(
+                "Also save a checkpoint at the end of these rollout ids, besides --save-interval. Unlike "
+                "--save-trigger-sentinel these saves are known before the run starts, so --prefetch-rollout never "
+                "fetches past one of them before it is saved."
+            ),
+        ),
+    ] = None
     save_trigger_sentinel: A[
         str | None,
         Arg(
