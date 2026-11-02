@@ -338,6 +338,10 @@ class Qwen38NextPLE(MegatronModule):
 
         for p in (self.norm_key, self.norm_query, self.norm_conv, self.conv1d_weight):
             p.sequence_parallel = config.sequence_parallel
+        # --qwen38-ple-deterministic-conv-grad: conv weight grad without fp32 atomics (bitwise reproducible)
+        self.deterministic_conv_grad = bool(
+            getattr(config, "qwen3_8_next_ple_deterministic_conv_grad", True)
+        )  # config-access-exempt: hand-built test configs may omit the knob
 
     @property
     def conv_lookback(self) -> int:
@@ -371,6 +375,7 @@ class Qwen38NextPLE(MegatronModule):
             self.norm_eps,
             self.conv_dilation,
             cu_seqlens,
+            deterministic_conv_grad=self.deterministic_conv_grad,
         )
 
     def forward(self, hc_state: Tensor, ngram_ids: Tensor, cu_seqlens: Tensor | None = None) -> Tensor:

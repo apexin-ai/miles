@@ -1,3 +1,4 @@
+import argparse
 from argparse import ArgumentParser
 
 from miles.utils.args.custom_function import CustomFunctionConfig
@@ -158,6 +159,19 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
             )
         ),
     ] = False
+    qwen38_ple_deterministic_conv_grad: A[
+        bool,
+        Arg(
+            action=argparse.BooleanOptionalAction,
+            help=(
+                "Compute the PLE causal conv's weight gradient from per-token-block fp32 partial sums and a "
+                "fixed-order reduction instead of fp32 atomics over all tokens, so it is bitwise reproducible from "
+                "run to run and closer to the fp64 sum (miles/kernels/embedding/ple_gate_conv.py). Also faster: "
+                "the atomics serialize on W * K addresses. Other gradients and the forward are unchanged; no "
+                "parameter or checkpoint change. --no-qwen38-ple-deterministic-conv-grad restores the atomics."
+            ),
+        ),
+    ] = True
 
 
 class DsaMegatronPluginsConfig(BaseConfig):

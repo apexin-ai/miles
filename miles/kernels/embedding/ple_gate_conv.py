@@ -184,6 +184,7 @@ def _ple_conv_bwd_kernel(
     K: tl.constexpr,
     DIL: tl.constexpr,
     BLOCK_W: tl.constexpr,
+    ATOMIC_DW: tl.constexpr = True,  # False: dconvw is not touched (``_ple_conv_dw_partial_kernel`` computes it)
 ):
     t = tl.program_id(0).to(tl.int64)
     wb = tl.program_id(1)
@@ -201,12 +202,14 @@ def _ple_conv_bwd_kernel(
     sig = tl.sigmoid(cv)
     dconv = do * sig * (1.0 + cv * (1.0 - sig))
 
-    for j in tl.static_range(K):
-        src = t - (K - 1 - j) * DIL
-        if src >= 0:
-            ok = src >= seg_lo
-            x = tl.load(normed_ptr + src * W + offs, mask=mask & ok, other=0.0)
-            tl.atomic_add(dconvw_ptr + offs * K + j, dconv * x, mask=mask & ok)
+    if ATOMIC_DW:
+        # fp32 atomics: the summation order over tokens changes from run to run (not bitwise reproducible)
+        for j in tl.static_range(K):
+            src = t - (K - 1 - j) * DIL
+            if src >= 0:
+                ok = src >= seg_lo
+                x = tl.load(normed_ptr + src * W + offs, mask=mask & ok, other=0.0)
+                tl.atomic_add(dconvw_ptr + offs * K + j, dconv * x, mask=mask & ok)
 
     acc = tl.zeros([BLOCK_W], dtype=tl.float32)
     for j in tl.static_range(K):
@@ -219,6 +222,92 @@ def _ple_conv_bwd_kernel(
             sig2 = tl.sigmoid(cv2)
             acc += wgt * do2 * sig2 * (1.0 + cv2 * (1.0 - sig2))
     tl.store(dnormed_ptr + t * W + offs, acc, mask=mask)
+
+
+@triton.jit(do_not_specialize=["T", "W", "TOK_PER_PROG"])
+def _ple_conv_dw_partial_kernel(
+    dout_ptr,  # incoming grad [T, W] (any float dtype)
+    conv_ptr,  # fp32 [T, W] pre-SiLU
+    normed_ptr,  # fp32 [T, W]
+    segstart_ptr,  # int32 [T]
+    part_ptr,  # fp32 out [num_token_blocks, W, KP]; each program owns one [BLOCK_W, KP] slot
+    T,
+    W,
+    TOK_PER_PROG,  # tokens per token block (a multiple of BLOCK_T)
+    K: tl.constexpr,
+    KP: tl.constexpr,  # next power of two >= K
+    DIL: tl.constexpr,
+    BLOCK_T: tl.constexpr,
+    BLOCK_W: tl.constexpr,
+):
+    """Conv weight grad without atomics: a partial sum per (token block, width block), fixed order.
+
+    The program walks its token block in ``BLOCK_T``-row tiles in a fixed order and reduces each tile with
+    ``tl.sum``, so the partial sums, and the host's ``sum(0)`` over token blocks, are the same on every run.
+    """
+    tb = tl.program_id(0).to(tl.int64)
+    wb = tl.program_id(1)
+    offs = wb * BLOCK_W + tl.arange(0, BLOCK_W)
+    wmask = offs < W
+    kk = tl.arange(0, KP)
+    acc = tl.zeros([BLOCK_W, KP], dtype=tl.float32)
+    t0 = tb * TOK_PER_PROG
+    for i in range(0, TOK_PER_PROG, BLOCK_T):
+        t = t0 + i + tl.arange(0, BLOCK_T).to(tl.int64)
+        tmask = t < T
+        seg_lo = tl.load(segstart_ptr + t, mask=tmask, other=0)
+        m2 = tmask[:, None] & wmask[None, :]
+        do = tl.load(dout_ptr + t[:, None] * W + offs[None, :], mask=m2, other=0.0).to(tl.float32)
+        cv = tl.load(conv_ptr + t[:, None] * W + offs[None, :], mask=m2, other=0.0)
+        sig = tl.sigmoid(cv)
+        dconv = do * sig * (1.0 + cv * (1.0 - sig))
+        for j in tl.static_range(K):
+            src = t - (K - 1 - j) * DIL
+            ok = tmask & (src >= 0) & (src >= seg_lo)
+            x = tl.load(normed_ptr + src[:, None] * W + offs[None, :], mask=ok[:, None] & wmask[None, :], other=0.0)
+            s = tl.sum(dconv * x, axis=0)
+            acc += tl.where(kk[None, :] == j, s[:, None], 0.0)
+    tl.store(
+        part_ptr + tb * W * KP + offs[:, None] * KP + kk[None, :],
+        acc,
+        mask=wmask[:, None] & (kk[None, :] < K),
+    )
+
+
+# Deterministic conv weight grad: tile sizes and the token-block size rule. The result depends on these and T only.
+_DW_BLOCK_T = 32
+_DW_BLOCK_W = 128
+_DW_MIN_TOK_PER_PROG = 256
+_DW_MAX_TOKEN_BLOCKS = 256
+
+
+def _ple_conv_dw_deterministic(dout, conv_pre, normed, seg_lo, T: int, W: int, Kk: int, dilation: int):
+    """``[W, K]`` fp32 conv weight grad, bitwise reproducible for a fixed T (no atomics).
+
+    Partial sums go to a ``[num_token_blocks, W, KP]`` fp32 buffer (at most 256 * W * KP * 4 bytes, 40 MiB at
+    W = 10240, K = 4), then ``sum(0)`` over the token blocks (a fixed-shape torch reduction, deterministic).
+    """
+    blocks = max(1, min(_DW_MAX_TOKEN_BLOCKS, triton.cdiv(T, _DW_MIN_TOK_PER_PROG)))
+    tok = triton.cdiv(triton.cdiv(T, blocks), _DW_BLOCK_T) * _DW_BLOCK_T
+    blocks = triton.cdiv(T, tok)
+    KP = triton.next_power_of_2(Kk)
+    part = torch.empty(blocks, W, KP, dtype=torch.float32, device=dout.device)
+    _ple_conv_dw_partial_kernel[(blocks, triton.cdiv(W, _DW_BLOCK_W))](
+        dout,
+        conv_pre,
+        normed,
+        seg_lo,
+        part,
+        T,
+        W,
+        tok,
+        K=Kk,
+        KP=KP,
+        DIL=dilation,
+        BLOCK_T=_DW_BLOCK_T,
+        BLOCK_W=_DW_BLOCK_W,
+    )
+    return part[:, :, :Kk].sum(dim=0)
 
 
 def _seg_bounds(T: int, cu_seqlens, device):
@@ -235,7 +324,7 @@ def _seg_bounds(T: int, cu_seqlens, device):
 
 class _PLEGateConv(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, hc_state, key, value, wk, wq, wc, conv_w, n, eps, dilation, cu_seqlens):
+    def forward(ctx, hc_state, key, value, wk, wq, wc, conv_w, n, eps, dilation, cu_seqlens, deterministic_dw=False):
         T, W = hc_state.shape
         C = W // n
         Kk = conv_w.shape[-1]
@@ -290,6 +379,7 @@ class _PLEGateConv(torch.autograd.Function):
             hc_state, key, value, wk, wq, wc, convw2d, gate, rstdk, rstdq, rstdc, seg_lo, seg_hi, conv_pre
         )
         ctx.dims = (n, eps, dilation, Kk, conv_w.dtype)
+        ctx.deterministic_dw = bool(deterministic_dw)
         return out
 
     @staticmethod
@@ -328,7 +418,11 @@ class _PLEGateConv(torch.autograd.Function):
         normed, _ = grouped_rmsnorm_fwd(gated, wc, n, eps)
 
         dnormed = torch.empty(T, W, dtype=torch.float32, device=dev)
-        dconvw = torch.zeros(W, Kk, dtype=torch.float32, device=dev)
+        deterministic_dw = ctx.deterministic_dw
+        if deterministic_dw and T > 0:
+            dconvw = _ple_conv_dw_deterministic(dout, conv_pre, normed, seg_lo, T, W, Kk, dilation)
+        else:
+            dconvw = torch.zeros(W, Kk, dtype=torch.float32, device=dev)
         dgated = torch.empty(T, W, dtype=torch.float32, device=dev)
         BW = 256
         if T > 0:
@@ -347,6 +441,7 @@ class _PLEGateConv(torch.autograd.Function):
                 K=Kk,
                 DIL=dilation,
                 BLOCK_W=BW,
+                ATOMIC_DW=not deterministic_dw,
             )
         # Each fp32 [T, W] buffer is 10 GiB at T = 262144, W = 10240: free each one after its last
         # read (results are unchanged), so at most 5 are alive at a time instead of 9.
@@ -400,7 +495,7 @@ class _PLEGateConv(torch.autograd.Function):
         del dwq_part
         dconv_w = dconvw.view(W, 1, Kk).to(conv_w_dtype)
 
-        return (dquery, dkey, dvalue, dwk, dwq, dwc, dconv_w, None, None, None, None)
+        return (dquery, dkey, dvalue, dwk, dwq, dwc, dconv_w, None, None, None, None, None)
 
 
 def ple_gate_conv(
@@ -415,8 +510,13 @@ def ple_gate_conv(
     eps: float,
     dilation: int,
     cu_seqlens,
+    deterministic_conv_grad: bool = False,
 ):
-    """Full PLE increment (gate chain + norm + causal conv + SiLU + residual)."""
+    """Full PLE increment (gate chain + norm + causal conv + SiLU + residual).
+
+    ``deterministic_conv_grad``: compute the conv weight grad from per-token-block partial sums and a fixed-order
+    reduction instead of fp32 atomics, so it is bitwise reproducible from run to run. Other grads are unchanged.
+    """
     return _PLEGateConv.apply(
         hc_state.contiguous(),
         key.contiguous(),
@@ -429,4 +529,5 @@ def ple_gate_conv(
         eps,
         dilation,
         cu_seqlens,
+        deterministic_conv_grad,
     )
