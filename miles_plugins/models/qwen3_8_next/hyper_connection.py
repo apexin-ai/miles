@@ -340,6 +340,11 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
             if cp
             else (get_tensor_model_parallel_group(),)
         )
+        if cp and shard_size == cp_world_size():
+            # Sequence parallelism off (or TP1): the TP ranks of a CP rank are replicas of one CP shard, not
+            # shards of it, so the tails are exchanged over the CP group only. Over TP too, the gathered tails
+            # would hold tp copies of each CP shard's tail and a CP rank >= 2 would read an earlier shard's.
+            groups = (get_context_parallel_group(),)
         if (
             shard_size > 1
             and self.ple_sp_local_slice
