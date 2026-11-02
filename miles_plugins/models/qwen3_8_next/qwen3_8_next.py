@@ -112,6 +112,10 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
     config.qwen3_8_next_hc_matmul_precision = getattr(
         args, "qwen38_hc_matmul_precision", "fp32"
     )  # config-access-exempt: hand-built test args may omit the knob
+    if getattr(args, "qwen38_fla_conv_pinned", False):  # config-access-exempt: hand-built test args may omit the knob
+        from miles_plugins.models.qwen3_8_next.ops.fla_conv_tuning import pin_fla_conv_autotune
+
+        pin_fla_conv_autotune()
 
     if getattr(
         config, "virtual_pipeline_model_parallel_size", None
@@ -141,7 +145,6 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
     # attention queries stay sharded. Set on every build, not only the CP ones, so a layer
     # built at CP=1 still carries an explicit answer rather than an absent attribute.
     config.qwen3_8_next_allgather_cp = allgather_cp
-
 
     if not args.backend.num_experts:
         config.moe_layer_freq = [0] * config.num_layers
