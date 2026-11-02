@@ -226,10 +226,14 @@ def _seg_bounds(T: int, cu_seqlens, device):
         lo = torch.zeros(T, dtype=torch.int32, device=device)
         hi = torch.full((T,), T, dtype=torch.int32, device=device)
         return lo, hi
-    cu = cu_seqlens.to(torch.long)
-    lens = (cu[1:] - cu[:-1]).clamp_min(0)
-    lo = torch.repeat_interleave(cu[:-1], lens).to(torch.int32)
-    hi = torch.repeat_interleave(cu[1:], lens).to(torch.int32)
+    # Row t of a pack whose segments cover T rows from cu[0] lies in the segment j with
+    # cu[j] <= cu[0] + t < cu[j + 1]; empty segments own no row. Found on the device: a
+    # repeat_interleave by the segment lengths would read them back (a host sync) to size its output.
+    cu = cu_seqlens.to(device=device, dtype=torch.long)
+    rows = torch.arange(T, device=device) + cu[:1]
+    seg = torch.searchsorted(cu[1:], rows, right=True).clamp_(max=max(cu.numel() - 2, 0))
+    lo = cu[:-1][seg].to(torch.int32)
+    hi = cu[1:][seg].to(torch.int32)
     return lo, hi
 
 

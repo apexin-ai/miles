@@ -171,6 +171,15 @@ def _prepare_loss_masks(
     return loss_mask.unsqueeze(0)
 
 
+def _to_device_non_blocking(host_tensor, device):
+    """A small host tensor on ``device`` without waiting for the device (pinned buffer, kept alive by the
+    caching host allocator until the copy has run); the same values as torch.tensor(..., device=device)."""
+    device = torch.device(device)
+    if device.type != "cuda":
+        return host_tensor.to(device)
+    return host_tensor.pin_memory().to(device, non_blocking=True)
+
+
 def get_batch(
     data_iterator: "DataIterator",
     keys: Sequence[str],
@@ -293,9 +302,14 @@ def get_batch(
 
             # thd requires the cu_seqlens to be of the origin length
             cu_seqlens_host = tuple(boundary * cp_size for boundary in cu_seqlens)
-            cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int, device=current_platform.current_device()) * cp_size
+            # pinned + non-blocking: a pageable copy would wait for the previous microbatch's backward
+            cu_seqlens = (
+                _to_device_non_blocking(torch.tensor(cu_seqlens, dtype=torch.int), current_platform.current_device())
+                * cp_size
+            )
 
-        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
+        # from the host copy: reading the device tensor back would wait for the previous microbatch's backward
+        max_seqlen = max(end - start for start, end in zip(cu_seqlens_host[:-1], cu_seqlens_host[1:], strict=True))
 
         tokens = tokens.unsqueeze(0)
 
