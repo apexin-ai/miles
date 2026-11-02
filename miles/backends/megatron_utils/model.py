@@ -234,6 +234,11 @@ def setup_model_and_optimizer(
     for model_chunk in model:
         model_chunk.lora_attached = lora_attached
 
+    if _uses_qwen38_vision(args):
+        from miles_plugins.models.qwen3_8_next.vision import check_overlap_bucket_layout
+
+        check_overlap_bucket_layout(model)  # with --overlap-grad-reduce only
+
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
             logger.warning(

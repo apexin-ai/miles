@@ -54,6 +54,38 @@ def _zero_grads_in_tower_backward_order(hidden, parameters):
     return hidden
 
 
+def check_overlap_bucket_layout(model_chunks):
+    """With --overlap-grad-reduce: refuse a DDP layout that splits one tower module's trainable parameters over two
+    buckets.
+
+    A text microbatch reports the tower's zero gradients in reverse registration order (the bucket order); the
+    tower's own backward on an image microbatch reports a module's parameters in autograd's order (a LayerNorm or
+    Conv3d reports its weight before its bias, a Linear its bias before its weight). Inside one bucket that makes no
+    difference. A bucket boundary between such two parameters can complete the two buckets in opposite orders on a
+    text and an image microbatch (e.g. the patch embedding's bias closes one bucket and its weight the next, which
+    also holds the language model's output layer), and the DP ranks deadlock. Another --ddp-bucket-size moves the
+    boundary.
+    """
+    for chunk in model_chunks:
+        ddp_config = getattr(chunk, "ddp_config", None)  # config-access-exempt: only Megatron DDP chunks have one
+        if ddp_config is None or not ddp_config.overlap_grad_reduce:
+            continue
+        bucket_of = {}
+        for index, buffer in enumerate(chunk.buffers):
+            for param, (_, _, bucket) in buffer.param_index_map.items():
+                bucket_of[param] = (index, bucket)
+        for name, module in chunk.named_modules():
+            if "vision_model" not in name.split("."):
+                continue
+            held = {bucket_of[p] for p in module.parameters(recurse=False) if p in bucket_of}
+            if len(held) > 1:
+                raise ValueError(
+                    f"--overlap-grad-reduce: the DDP buckets split the trainable parameters of {name} "
+                    f"(buffer, bucket) {sorted(held)}; text and image microbatches would issue the reduce-scatters "
+                    "in different orders and deadlock. Choose another --ddp-bucket-size."
+                )
+
+
 def set_visual_scope(visual, scope, *, sequence_parallel=False):
     if scope not in ("none", "projector", "full"):
         raise ValueError(f"Unknown Qwen visual scope: {scope}")
@@ -165,7 +197,10 @@ def _text_decoder_input(model, ids, kwargs):
     computes them."""
     if kwargs.get("padding_mask") is not None:
         raise ValueError("Qwen image SFT does not take a padding_mask: GPTModel skips it once decoder_input is given")
-    if model.config.sequence_parallel and not getattr(model.embedding, "scatter_to_sequence_parallel", True):
+    scatters = getattr(  # config-access-exempt: older Megatron embeddings have no switch and always scatter
+        model.embedding, "scatter_to_sequence_parallel", True
+    )
+    if model.config.sequence_parallel and not scatters:
         raise ValueError("Qwen image SFT needs the embedding to scatter its output to the sequence-parallel region")
     return model.embedding(input_ids=ids, position_ids=None)
 
