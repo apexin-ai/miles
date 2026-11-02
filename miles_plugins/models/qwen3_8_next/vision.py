@@ -7,6 +7,7 @@ import torch
 from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel
 
+from miles_plugins.models.qwen3_8_next.vision_host_lengths import install_host_cu_seqlens
 from miles_plugins.models.qwen3_8_next.vision_inputs import (
     image_span_starts,
     packed_rope_positions,
@@ -72,6 +73,7 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         set_visual_scope(visual, scope, sequence_parallel=model.config.sequence_parallel)
         if recompute and scope == "full":
             visual.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        install_host_cu_seqlens(visual)  # sdpa splits per image on host lengths: one sync per tower forward
         # The existing Qwen38NextBridge maps this exact prefix, including every frozen tensor.
         model.add_module("vision_model", visual)
     original_forward = model.forward
