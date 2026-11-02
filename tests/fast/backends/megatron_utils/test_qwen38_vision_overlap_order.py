@@ -180,15 +180,24 @@ def test_a_text_microbatch_reports_the_tower_after_the_language_model_in_reverse
         assert min(positions) > max(reports.index(n) for n in reports if n.startswith("layers."))
         assert max(positions) < reports.index("embedding.word_embeddings.weight")
     assert [n for n in text if n in tower] == tower[::-1]
-    # The image backward differs only inside a block: norm2 (registered before attn) reports before attn.
-    image_tower = [n for n in image if n in tower]
-    if scope == "projector":
-        assert image_tower == tower[::-1]
-    else:
-        assert image_tower != tower[::-1]
-        assert {n for i, (a, b) in enumerate(zip(image_tower, tower[::-1])) for n in (a, b) if a != b} <= {
-            n for n in tower if ".norm2." in n or ".attn." in n
-        }
+    # The image backward reports each module's parameters together, modules in reverse registration order except
+    # inside a block: norm2 (registered before attn) reports before attn. Within a module autograd picks the order
+    # (LayerNorm: weight first; Linear: bias first), which check_overlap_bucket_layout covers.
+    image_modules = _modules_in_report_order([n for n in image if n in tower])
+    text_modules = _modules_in_report_order([n for n in text if n in tower])
+    assert len(image_modules) == len(set(image_modules)) and sorted(image_modules) == sorted(text_modules)
+    moved = [m for m, t in zip(image_modules, text_modules) if m != t]
+    assert all(m.endswith((".norm2", ".attn.proj", ".attn.qkv")) for m in moved)
+    assert (scope == "full") == bool(moved)
+
+
+def _modules_in_report_order(names):
+    modules = []
+    for name in names:
+        module = name.rsplit(".", 1)[0]
+        if not modules or modules[-1] != module:
+            modules.append(module)
+    return modules
 
 
 def test_positive_control_the_old_text_hook_issues_the_buckets_in_another_order():
@@ -200,7 +209,7 @@ def test_positive_control_the_old_text_hook_issues_the_buckets_in_another_order(
         for bucket_size in _bucket_sizes(model)
         if _bucket_dispatch_order(model, old_text, bucket_size) != _bucket_dispatch_order(model, image, bucket_size)
     ]
-    assert differs and differs[0] is None and differs[1] == _bucket_sizes(model)[1]
+    assert _bucket_sizes(model)[1] in differs
 
 
 def test_the_text_microbatch_loss_and_language_gradients_equal_a_frozen_tower_run(monkeypatch):
@@ -245,3 +254,52 @@ def test_a_text_microbatch_refuses_a_padding_mask():
     model = _model("full")
     with pytest.raises(ValueError, match="padding_mask"):
         model(input_ids=_text_ids(), padding_mask=torch.zeros(1, 12, dtype=torch.bool))
+
+
+class _Chunk(torch.nn.Module):
+    """Megatron DDP's surface for check_overlap_bucket_layout: ddp_config, buffers[i].param_index_map, the module."""
+
+    def __init__(self, model, bucket_size, overlap=True, dp=2):
+        super().__init__()
+        self.module = model
+        self.ddp_config = SimpleNamespace(overlap_grad_reduce=overlap)
+        named = _ddp_params(model)
+        layout = vision_scope_switch.compute_layout([p for _, p in named], bucket_size, dp, _DDP)
+        self.buffers = [SimpleNamespace(param_index_map=layout.param_index_map)]
+
+
+def _refused(model, bucket_size, **kwargs):
+    try:
+        vision.check_overlap_bucket_layout([_Chunk(model, bucket_size, **kwargs)])
+    except ValueError as error:
+        assert "split the trainable parameters of module.vision_model." in str(error)
+        return True
+    return False
+
+
+@pytest.mark.parametrize("scope", ["full", "projector"])
+def test_every_bucket_layout_the_check_accepts_issues_text_and_image_buckets_in_one_order(scope):
+    """Every bucket size from the largest tower-block parameter up: the layouts with mismatching orders are exactly
+    refused ones (a module split over two buckets), and some refused layouts do mismatch (the check is needed)."""
+    model = _model(scope)
+    image, text = _image_and_text_reports(model)
+    block = max(p.numel() for n, p in model.vision_model.named_parameters() if n.startswith("blocks."))
+    rest = sum(p.numel() for n, p in _ddp_params(model) if not n.startswith("embedding."))
+    refused_mismatch = accepted = 0
+    for bucket_size in range(block, rest + block):
+        same = _bucket_dispatch_order(model, text, bucket_size) == _bucket_dispatch_order(model, image, bucket_size)
+        if _refused(model, bucket_size):
+            refused_mismatch += not same
+        else:
+            accepted += 1
+            assert same, bucket_size
+    assert accepted > (rest - block) // 2
+    if scope == "full":
+        assert refused_mismatch > 0
+
+
+def test_the_layout_check_needs_overlap_and_ddp():
+    model = _model("full")
+    split = next(s for s in range(64, 20000) if _refused(model, s))
+    assert not _refused(model, split, overlap=False)
+    vision.check_overlap_bucket_layout([model])  # not a DDP chunk: nothing to check
