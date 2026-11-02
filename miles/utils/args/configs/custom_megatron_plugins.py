@@ -185,6 +185,20 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
             ),
         ),
     ] = True
+    qwen38_hc_matmul_precision: A[
+        str,
+        Arg(
+            choices=["fp32", "tf32", "bf16"],
+            help=(
+                "Precision of the hyper-connection gate chain's matmuls (low-rank mix down/up projections, inject "
+                "gate, their input and weight gradients; miles/kernels/hyper_connection/hc.py). fp32: fp32 operands "
+                "and math (SIMT SGEMM on Blackwell), the reference. tf32: the same fp32 matmuls with TF32 tensor "
+                "cores allowed around these calls only. bf16: bf16 operands (the HC weights are bf16 already; the "
+                "normed activations are rounded) with fp32 accumulation and fp32 results, as sglang's fused hc_mix. "
+                "Elementwise math stays fp32. No parameter or checkpoint change."
+            ),
+        ),
+    ] = "fp32"
 
 
 class DsaMegatronPluginsConfig(BaseConfig):

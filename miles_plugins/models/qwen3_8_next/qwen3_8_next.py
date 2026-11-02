@@ -109,6 +109,9 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
     config.qwen3_8_next_ple_deterministic_conv_grad = bool(
         getattr(args, "qwen38_ple_deterministic_conv_grad", True)
     )  # config-access-exempt: hand-built test args may omit the knob
+    config.qwen3_8_next_hc_matmul_precision = getattr(
+        args, "qwen38_hc_matmul_precision", "fp32"
+    )  # config-access-exempt: hand-built test args may omit the knob
 
     if getattr(
         config, "virtual_pipeline_model_parallel_size", None

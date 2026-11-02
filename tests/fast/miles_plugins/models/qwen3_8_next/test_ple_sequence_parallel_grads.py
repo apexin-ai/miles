@@ -66,8 +66,9 @@ def _ple_gate_conv_reference(hc, key, value, wk, wq, wc, convw, n, eps, dil, cu,
     return gated + conv
 
 
-def _hc_mix_inject_reference(x, weight, w_down, w_up, w_inject, n, eps):
+def _hc_mix_inject_reference(x, weight, w_down, w_up, w_inject, n, eps, matmul_precision="fp32"):
     """``hc_mix`` + ``hc_inject_gate`` of tests/fast-gpu/test_qwen3_8_next_ops.py."""
+    assert matmul_precision == "fp32"
     normed = _grouped_rmsnorm(x, weight, n, eps)
     hidden = x.shape[-1] // n
     gate = torch.sigmoid(F.linear(F.silu(F.linear(normed, w_down) / n), w_up))

@@ -17,8 +17,15 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from miles.kernels.hyper_connection.hc import hc_combine, hc_mix_inject
+from miles.kernels.hyper_connection.hc import check_matmul_precision, hc_combine, hc_mix_inject
 from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE, current_ple_batch, window_cu_seqlens
+
+
+def _hc_matmul_precision(config) -> str:
+    """--qwen38-hc-matmul-precision (fp32 / tf32 / bf16) of the gate chain's matmuls; see hc.py."""
+    return check_matmul_precision(
+        getattr(config, "qwen3_8_next_hc_matmul_precision", "fp32")
+    )  # config-access-exempt: optional knob, absent from older configs
 
 
 class Qwen38NextHyperConnection(MegatronModule):
@@ -38,6 +45,7 @@ class Qwen38NextHyperConnection(MegatronModule):
         self.hidden_size = config.hidden_size
         self.norm_eps = config.layernorm_epsilon
         self.use_combine = use_combine
+        self.matmul_precision = _hc_matmul_precision(config)
 
         lowrank = config.qwen3_8_next_hc_lowrank
         wide = self.n * self.hidden_size
@@ -84,6 +92,7 @@ class Qwen38NextHyperConnection(MegatronModule):
             self.block_inject_weight,
             self.n,
             self.norm_eps,
+            matmul_precision=self.matmul_precision,
         )
         return aggregated, None, h_post, hidden_states
 
@@ -124,6 +133,7 @@ class Qwen38NextHCHeadContraction(MegatronModule):
         self.n = hc_count if hc_count is not None else config.num_residual_streams
         self.hidden_size = config.hidden_size
         self.norm_eps = config.layernorm_epsilon
+        self.matmul_precision = _hc_matmul_precision(config)
 
         lowrank = config.qwen3_8_next_hc_lowrank
         wide = self.n * self.hidden_size
@@ -148,6 +158,7 @@ class Qwen38NextHCHeadContraction(MegatronModule):
             None,
             self.n,
             self.norm_eps,
+            matmul_precision=self.matmul_precision,
         )
         return mixed
 
