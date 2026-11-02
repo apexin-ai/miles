@@ -133,6 +133,25 @@ class TestQwenVisionProvider:
             model_provider.get_model_provider_func(args)(pre_process=True, post_process=True)
         assert base_model == []
 
+    def test_cp_without_allgather_cp_is_refused(self, monkeypatch, tmp_path, base_model) -> None:
+        from miles_plugins.models.qwen3_8_next import vision
+
+        monkeypatch.setattr(vision, "wire_visual", lambda *a, **k: None)
+        args = self._args(tmp_path, context_parallel_size=2, allgather_cp=False)
+        with pytest.raises(ValueError, match="--allgather-cp"):
+            model_provider.get_model_provider_func(args)(pre_process=True, post_process=True)
+        assert base_model == []
+
+    def test_cp_with_allgather_cp_builds(self, monkeypatch, tmp_path, base_model) -> None:
+        """The CP layout the vision wrapper reads (vision.py): one contiguous slice per CP rank."""
+        from miles_plugins.models.qwen3_8_next import vision
+
+        wired = []
+        monkeypatch.setattr(vision, "wire_visual", lambda model, config, **kwargs: wired.append(kwargs))
+        args = self._args(tmp_path, context_parallel_size=2, allgather_cp=True)
+        model_provider.get_model_provider_func(args)(pre_process=True, post_process=True)
+        assert len(base_model) == 1 and len(wired) == 1
+
     def test_rope_fusion_is_allowed_with_mrope(self, monkeypatch, tmp_path, base_model) -> None:
         """Packed rows and fused raw mRoPE freqs are supported (the QSA indexer converts them to its table)."""
         from miles_plugins.models.qwen3_8_next import vision
