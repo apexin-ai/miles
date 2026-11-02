@@ -166,7 +166,9 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
                 # order as on an image microbatch: after the whole language model, before the word embeddings.
                 # With --overlap-grad-reduce every DP rank must issue its bucket reduce-scatters in one order; a DP
                 # rank on a text microbatch and one on an image microbatch otherwise deadlock (F8, 2026-11-02).
-                kwargs["decoder_input"] = _zero_grads_in_tower_backward_order(_text_decoder_input(model, ids, kwargs), trainable)
+                kwargs["decoder_input"] = _zero_grads_in_tower_backward_order(
+                    _text_decoder_input(model, ids, kwargs), trainable
+                )
             return original_forward(*args, **kwargs)
         if model.pre_process:
             from megatron.core import parallel_state
