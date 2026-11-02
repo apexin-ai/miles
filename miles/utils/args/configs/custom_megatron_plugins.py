@@ -199,6 +199,20 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
             ),
         ),
     ] = "fp32"
+    qwen38_fla_conv_pinned: A[
+        bool,
+        Arg(
+            action=argparse.BooleanOptionalAction,
+            help=(
+                "Run fla's causal_conv1d Triton kernels (the GDN short convolution) with one fixed config and a "
+                "constant NB instead of autotuning per cdiv(row tokens, 1024) "
+                "(miles_plugins/models/qwen3_8_next/ops/fla_conv_tuning.py). Without it every new row length "
+                "compiles and benchmarks 16 configs (~15 s forward, ~35 s backward), and CP2 has its own key. "
+                "The forward is unchanged; the backward's fp32 weight-gradient partials may differ in the last "
+                "bit from an autotuned config. No parameter or checkpoint change."
+            ),
+        ),
+    ] = False
 
 
 class DsaMegatronPluginsConfig(BaseConfig):
