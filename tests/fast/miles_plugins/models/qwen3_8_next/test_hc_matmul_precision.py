@@ -132,9 +132,7 @@ class _OldHCMixInject(torch.autograd.Function):
 
         dx = torch.empty_like(x2d)
         if T > 0:
-            hc.grouped_rmsnorm_bwd_kernel[(T * n,)](
-                x2d, weight, rstd, dnormed, dx, T, N=n, C=C, BLOCK_C=hc.block_c(C)
-            )
+            hc.grouped_rmsnorm_bwd_kernel[(T * n,)](x2d, weight, rstd, dnormed, dx, T, N=n, C=C, BLOCK_C=hc.block_c(C))
         return dx, dweight, dw_down.to(w_down.dtype), dw_up.to(w_up.dtype), dw_inject, None, None
 
 
