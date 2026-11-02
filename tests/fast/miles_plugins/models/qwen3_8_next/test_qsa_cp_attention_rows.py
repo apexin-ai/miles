@@ -26,7 +26,9 @@ from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_e
 from megatron.core.transformer.attention import SelfAttention
 from miles_plugins.models.qwen3_8_next.ops import attention
 from miles_plugins.models.qwen3_8_next.ops.attention import Qwen38NextAttention, Qwen38NextQSACoreAttention
-from miles_plugins.models.qwen3_8_next.ops.cp import cp_local_packed_seq_params, cp_local_rope
+
+# The layer and core-attention tests import only what d501b6be already had, so they fail there on the numbers (CX4
+# CP-1, CP-2), not on an import; the helper tests import the helpers themselves.
 
 register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["miles-plugin"])
 
@@ -93,7 +95,9 @@ def _rope(kind, cu):
     return mrope_freqs_to_rotary_emb(raw, list(MROPE), interleaved_mrope=False, rotary_interleaved=False)
 
 
-CUS = [(0, 32), (0, 13, 32), (0, 5, 20, 27, 32)]
+# packed boundaries before / at / after the CP splits (16 at CP2; 8, 16, 24 at CP4), several rows, and a last segment
+# as get_batch's pad segment
+CUS = [(0, 32), (0, 13, 32), (0, 16, 32), (0, 5, 20, 27, 32), (0, 8, 16, 24, 32), (0, 10, 25, 32)]
 
 
 def _apply(t, freqs, config, packed, group):
@@ -106,6 +110,8 @@ def _apply(t, freqs, config, packed, group):
 @pytest.mark.parametrize("cu", CUS, ids=str)
 @pytest.mark.parametrize("cp_size", [2, 4])
 def test_local_rope_rows_equal_the_cp1_rope_rows(kind, cu, cp_size):
+    from miles_plugins.models.qwen3_8_next.ops.cp import cp_local_packed_seq_params, cp_local_rope
+
     config = _config(mrope=kind != "text")
     total = cu[-1]
     freqs, packed = _rope(kind, cu), _packed(list(cu))
@@ -126,6 +132,8 @@ def test_local_rope_rows_equal_the_cp1_rope_rows(kind, cu, cp_size):
 
 
 def test_a_tuple_of_query_and_key_rope_is_sliced_per_element():
+    from miles_plugins.models.qwen3_8_next.ops.cp import cp_local_rope
+
     config = _config()
     freqs = _rope("materialized", (0, 16))
     positions = torch.arange(16)
@@ -134,6 +142,8 @@ def test_a_tuple_of_query_and_key_rope_is_sliced_per_element():
 
 
 def test_the_local_packing_is_one_segment_of_this_rank_s_rows():
+    from miles_plugins.models.qwen3_8_next.ops.cp import cp_local_packed_seq_params
+
     packed = _packed([0, 13, 32])
     local = cp_local_packed_seq_params(packed, 16)
     assert local.cu_seqlens_q.tolist() == [0, 16] and local.cu_seqlens_kv.tolist() == [0, 16]
@@ -156,14 +166,15 @@ def _attention_layer(config, cp_group):
 
 
 @pytest.mark.parametrize("kind", ["raw", "materialized", "text"])
+@pytest.mark.parametrize("cu", CUS, ids=str)
 @pytest.mark.parametrize("cp_size", [2, 4])
-def test_the_layer_applies_cp1_rope_to_its_rows(monkeypatch, kind, cp_size):
+def test_the_layer_applies_cp1_rope_to_its_rows(monkeypatch, kind, cu, cp_size):
     """SelfAttention.forward is replaced by what it does with RoPE (apply_rotary_pos_emb with the packing and
     pg_collection.cp it sees); the ranks' outputs concatenated equal the CP1 layer's, and pg_collection.cp is put
     back afterwards."""
     from megatron.core import parallel_state
 
-    cu = [0, 13, 32]
+    cu = list(cu)
     total = cu[-1]
     config = _config(mrope=kind != "text")
     freqs, packed = _rope(kind, cu), _packed(cu)
@@ -172,7 +183,8 @@ def test_the_layer_applies_cp1_rope_to_its_rows(monkeypatch, kind, cp_size):
 
     def self_attention_rope(self, hidden_states, *args, **kwargs):
         seen = kwargs["packed_seq_params"]
-        return _apply(hidden_states[:, 0], kwargs["rotary_pos_emb"], self.config, seen, self.pg_collection.cp)
+        # hidden_states [T, 1, head_dim] read as THD [tokens, heads, head_dim]
+        return _apply(hidden_states, kwargs["rotary_pos_emb"], self.config, seen, self.pg_collection.cp)
 
     monkeypatch.setattr(SelfAttention, "forward", self_attention_rope)
     monkeypatch.setattr(attention, "qsa_selected_blocks", lambda *a, **k: (None, packed.cu_seqlens_q))
@@ -206,7 +218,12 @@ def _first_blocks(cu, ratio):
 
 
 def _reference_index(blocks, cu_seqlens, *, compress_ratio, num_heads, num_kv_heads):
-    """``build_qsa_block_index``'s row contract: query row ``i`` is packed row ``i`` of ``cu_seqlens``."""
+    """``build_qsa_block_index``'s row contract: query row ``i`` is packed row ``i`` of ``cu_seqlens``; and its
+    capacity check (block_index.py: the grid holds the blocks that ``blocks``' rows can cut)."""
+    cu = [int(c) for c in cu_seqlens]
+    block_cap = (blocks.shape[0] + (compress_ratio - 1) * (len(cu) - 1)) // compress_ratio
+    if _first_blocks(cu, compress_ratio)[-1] > block_cap:
+        raise ValueError(f"cu_seqlens {cu} reaches past the {blocks.shape[0]} rows of blocks")
     return SimpleNamespace(blocks=blocks.clone(), cu=[int(c) for c in cu_seqlens], ratio=compress_ratio)
 
 
@@ -247,7 +264,7 @@ def _core(config, blocks, cu):
     return core
 
 
-@pytest.mark.parametrize("cu", [(0, 32), (0, 13, 32), (0, 5, 20, 27, 32), (0, 10, 25, 32)], ids=str)
+@pytest.mark.parametrize("cu", CUS, ids=str)
 @pytest.mark.parametrize("cp_size", [2, 4])
 def test_core_attention_rows_and_grads_equal_cp1(monkeypatch, cu, cp_size):
     from megatron.core import parallel_state

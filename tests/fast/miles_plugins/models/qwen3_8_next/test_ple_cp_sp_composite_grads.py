@@ -168,14 +168,14 @@ def _patch_for_cpu(hyper_connection, ple, groups, mutate=None):
         raise ValueError(f"unknown mutate={mutate!r}")
 
 
-def _config():
+def _config(sp=True):
     return SimpleNamespace(
         num_residual_streams=N_STREAMS,
         hidden_size=HIDDEN,
         layernorm_epsilon=EPS,
         qwen3_8_next_hc_lowrank=LOWRANK,
         params_dtype=torch.float64,
-        sequence_parallel=True,
+        sequence_parallel=sp,
         qk_layernorm=False,
         qwen3_8_next_ple_embed_dim=EMBED_DIM,
         qwen3_8_next_ngram_size=NGRAM_SIZE,
@@ -219,7 +219,7 @@ def _run(ple_module, layer, x, ngram_ids, cu, upstream):
     return x.grad
 
 
-def _worker(rank, world_size, port, tp_size, cp_size, cu_bounds, mutate):
+def _worker(rank, world_size, port, tp_size, cp_size, cu_bounds, mutate, sp=True):
     init_gloo(rank, world_size, port=port)
     try:
         from miles_plugins.models.qwen3_8_next import hyper_connection
@@ -252,7 +252,7 @@ def _worker(rank, world_size, port, tp_size, cp_size, cu_bounds, mutate):
         _patch_for_cpu(hyper_connection, ple, groups, mutate=mutate)
 
         x, ngram_ids, cu, upstream = _inputs(cu_bounds)
-        layer = hyper_connection.Qwen38NextPLEHyperConnection(_config(), layer_number=1)
+        layer = hyper_connection.Qwen38NextPLEHyperConnection(_config(sp), layer_number=1)
         layer.ddp_config = SimpleNamespace(use_megatron_fsdp=False)
         gen = torch.Generator().manual_seed(0)
         with torch.no_grad():
@@ -271,9 +271,11 @@ def _worker(rank, world_size, port, tp_size, cp_size, cu_bounds, mutate):
         ref_grads = {name: param.grad.clone() for name, param in layer.named_parameters()}
         layer.zero_grad(set_to_none=True)
 
-        total = tp_size * cp_size
+        # without SP the TP ranks of a CP rank hold the same rows (replicas), so the sequence has cp_size shards
+        sp_size = tp_size if sp else 1
+        total = sp_size * cp_size
         local = SEQ // total
-        shard_rank = cp_rank * tp_size + tp_rank
+        shard_rank = cp_rank * sp_size + (tp_rank if sp else 0)
 
         # positive control (still unsharded semantics -- tp forced to 1): zero the loss on
         # everything up to and including THIS rank's own shard start, so the only surviving
@@ -284,7 +286,8 @@ def _worker(rank, world_size, port, tp_size, cp_size, cu_bounds, mutate):
         # for the other three and makes the control pass for the wrong reason (nothing to find,
         # not "found and it's zero").
         own = slice(shard_rank * local, (shard_rank + 1) * local)
-        if own.start > 0:
+        # (a shard that starts a document has nothing to read across its boundary)
+        if own.start > 0 and (cu is None or own.start not in cu.tolist()):
             later_only = tuple(torch.cat([torch.zeros_like(u[: own.start]), u[own.start :]]) for u in upstream)
             cross = _run(ple, layer, x, ngram_ids, cu, later_only)[own.start - LOOKBACK : own.start]
             assert cross.abs().amax() > 1e3 * TOL, "the conv does not reach across the shard boundary"
@@ -296,8 +299,10 @@ def _worker(rank, world_size, port, tp_size, cp_size, cu_bounds, mutate):
         local_upstream = tuple(u[own] for u in upstream)
         local_dx = _run(ple, layer, x[own], ngram_ids, cu, local_upstream)
 
+        # the ranks that hold distinct shards: all of them with SP, one CP group (one TP replica each) without
+        shards = dist.group.WORLD if sp else cp_group
         dx = torch.empty_like(x)
-        dist.all_gather_into_tensor(dx.view(SEQ, -1), local_dx.contiguous().view(local, -1), group=dist.group.WORLD)
+        dist.all_gather_into_tensor(dx.view(SEQ, -1), local_dx.contiguous().view(local, -1), group=shards)
         token_err = (dx - ref_dx).abs().amax(dim=(1, 2))
         bad = [t for t in range(SEQ) if token_err[t] > TOL]
         assert not bad, f"rank {rank}: {len(bad)} tokens differ, worst {token_err.amax().item():.3e} at {bad[:6]}"
@@ -310,7 +315,8 @@ def _worker(rank, world_size, port, tp_size, cp_size, cu_bounds, mutate):
             # single-axis cases (there, WORLD already equals that one group) but silently
             # undercounts for tp2-cp2, where the param is replicated across both and only
             # one axis' worth of ranks' contributions got summed.
-            dist.all_reduce(param.grad, op=dist.ReduceOp.SUM, group=dist.group.WORLD)
+            # without SP each TP replica already holds its CP shard's whole contribution: sum over CP only
+            dist.all_reduce(param.grad, op=dist.ReduceOp.SUM, group=shards)
             err = (param.grad - ref_grads[name]).abs().amax().item()
             assert err <= TOL, f"rank {rank}: param {name} grad differs by {err:.3e}"
     finally:
@@ -325,6 +331,31 @@ def test_ple_composite_shard_grads_match_unsplit(tp_size, cp_size, cu_bounds) ->
     port = find_free_port()
     torch.multiprocessing.spawn(
         partial(_worker, world_size=world_size, port=port, tp_size=tp_size, cp_size=cp_size, cu_bounds=cu_bounds, mutate=None),
+        args=(),
+        nprocs=world_size,
+        join=True,
+    )
+
+
+@pytest.mark.parametrize("cu_bounds", [[0, SEQ], [0, 20, SEQ], [0, 16, 30, SEQ]], ids=["one-sequence", "packed", "boundaries"])
+@pytest.mark.parametrize("tp_size,cp_size", [(2, 2), (2, 3)], ids=["tp2-cp2", "tp2-cp3"])
+def test_ple_cp_without_sp_grads_match_unsplit(tp_size, cp_size, cu_bounds) -> None:
+    """TP > 1 with sequence parallelism off: the TP ranks of a CP rank are replicas of one CP shard. The halo must
+    come from the previous CP shard only; exchanged over TP as well, a CP rank >= 2 reads a TP copy of an earlier
+    shard's tail (CX4 CP-4)."""
+    world_size = tp_size * cp_size
+    port = find_free_port()
+    torch.multiprocessing.spawn(
+        partial(
+            _worker,
+            world_size=world_size,
+            port=port,
+            tp_size=tp_size,
+            cp_size=cp_size,
+            cu_bounds=cu_bounds,
+            mutate=None,
+            sp=False,
+        ),
         args=(),
         nprocs=world_size,
         join=True,

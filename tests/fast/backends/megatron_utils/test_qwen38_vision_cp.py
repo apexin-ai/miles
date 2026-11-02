@@ -301,3 +301,25 @@ def test_lazy_and_audit_hooks_see_the_whole_microbatch_on_every_cp_rank(cp_world
         piece = ids[rank * local : (rank + 1) * local]
         _run(model, piece, bounds, rows, grid, positions, pixels, torch.zeros(local, 1, _HIDDEN))
     assert seen == [2, 2]
+
+
+# ── the vision gradients are reduced over DP x CP ─────────────────────────────────────────────────────────
+
+
+def test_vision_parameters_are_dense_and_megatron_ddp_reduces_dense_grads_over_dp_x_cp():
+    """Each CP rank's tower gradient holds only its own image tokens' share; the CP1 gradient is their sum. Megatron
+    DDP gives a parameter without ``allreduce=False`` (not an expert) to the dense buffers, which it reduces over the
+    intra DP x CP group, as it does for the word embeddings. Pinned on Megatron's source: a change there must be
+    looked at again."""
+    import inspect
+
+    from megatron.core.distributed import param_and_grad_buffer
+    from megatron.core.distributed.distributed_data_parallel import DistributedDataParallel
+
+    model = _model(scope="full", data="mixed")
+    assert all(getattr(p, "allreduce", True) for p in model.vision_model.parameters())
+    grouping = inspect.getsource(param_and_grad_buffer.group_params_for_buffers)
+    assert "is_expert_parallel = not getattr(param, 'allreduce', True)" in grouping
+    ddp = inspect.getsource(DistributedDataParallel.__init__)
+    dense = ddp.index("data_parallel_group = self.intra_dp_cp_group")
+    assert ddp.rindex("if buffer_key.is_expert_parallel:", 0, dense) > 0
