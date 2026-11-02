@@ -355,6 +355,11 @@ def test_mutated_composition_is_detected(mutate) -> None:
     try:
         finished = ctx.join(timeout=30)
     except Exception as exc:  # noqa: BLE001 -- any rank's AssertionError surfaces as a spawn exception
+        exc_str = str(exc)
+        # An ImportError / ModuleNotFoundError / OSError means the subprocess never reached
+        # the mutation execution point -- the environment is broken, not the mutation detected.
+        if any(tag in exc_str for tag in ("ImportError", "ModuleNotFoundError", "OSError")):
+            pytest.skip(f"mutation test cannot run (environment error): {type(exc).__name__}: {exc_str[:200]}")
         print(f"mutate={mutate!r}: correctly detected -- {type(exc).__name__}: {exc}")
         return
     if not finished:
