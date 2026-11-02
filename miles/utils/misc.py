@@ -222,6 +222,15 @@ def should_run_periodic_action(
     return (step % interval == 0) or (num_rollout_per_epoch is not None and step % num_rollout_per_epoch == 0)
 
 
+def should_save(args, rollout_id: int, num_rollout_per_epoch: int | None = None) -> bool:
+    """Whether the driver saves a checkpoint at the end of ``rollout_id``: a periodic save (``--save-interval``, epoch
+    ends, the last rollout) or one listed in ``--save-rollout-ids``. Both are known before the run starts, which is
+    what lets ``--prefetch-rollout`` stop fetching at every save (an external ``--save-trigger-sentinel`` is not)."""
+    if args.save_rollout_ids is not None and rollout_id in args.save_rollout_ids:
+        return True
+    return should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout)
+
+
 async def as_completed_async(tasks):
     for coro in asyncio.as_completed(tasks):
         yield await coro

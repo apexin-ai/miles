@@ -1132,6 +1132,12 @@ def miles_validate_args(args):
     if args.save_trigger_sentinel is not None:
         assert args.save is not None, "'--save' is required when save_trigger_sentinel is set."
 
+    if args.save_rollout_ids is not None:
+        assert args.save is not None, "'--save' is required when save_rollout_ids is set."
+        assert all(rollout_id >= 0 for rollout_id in args.save_rollout_ids), (
+            f"--save-rollout-ids must be rollout ids >= 0, got {args.save_rollout_ids}"
+        )
+
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
@@ -1800,6 +1806,7 @@ def _maybe_apply_dumper_overrides(args: argparse.Namespace) -> None:
     args.eval_interval = None
     args.save = None
     args.save_interval = None
+    args.save_rollout_ids = None
     if args.train_backend == "megatron":
         args.save_retain_interval = None
 

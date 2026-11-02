@@ -13,6 +13,7 @@ from tests.fast.test_train import _install_driver_fakes, _make_args, _startup_in
 from miles.ray.rollout.rollout_prefetcher import RolloutPrefetcher, validate_prefetch_rollout_args
 from miles.utils.async_utils import with_disposer
 from miles.utils.data import RolloutDataPack
+from miles.utils.misc import should_save
 
 BATCH = 3
 # Events whose position moves with prefetching; every other event keeps its order.
@@ -29,10 +30,11 @@ def _install(
     get_errors: dict[int, BaseException] | None = None,
     get_gates: dict[int, asyncio.Event] | None = None,
     train_errors: dict[int, BaseException] | None = None,
+    num_rollout_per_epoch: int = 100,
 ) -> SimpleNamespace:
     """The driver fakes, with an executor whose gets hand out consecutive sample indices from a data cursor (like
     miles' RolloutDataSource) and whose save records that cursor; training yields to the loop like a real step."""
-    components = _install_driver_fakes(monkeypatch, args, events, num_rollout_per_epoch=100)
+    components = _install_driver_fakes(monkeypatch, args, events, num_rollout_per_epoch=num_rollout_per_epoch)
     state = SimpleNamespace(cursor=cursor, saved={}, trained={})
 
     async def get(rollout_id: int) -> RolloutDataPack:
@@ -80,7 +82,9 @@ def _install(
 
 async def _run(monkeypatch: pytest.MonkeyPatch, depth: int, **kwargs: Any) -> tuple[SimpleNamespace, list[str]]:
     install = {
-        k: kwargs.pop(k) for k in ("cursor", "get_delays", "get_errors", "get_gates", "train_errors") if k in kwargs
+        k: kwargs.pop(k)
+        for k in ("cursor", "get_delays", "get_errors", "get_gates", "train_errors", "num_rollout_per_epoch")
+        if k in kwargs
     }
     events: list[str] = []
     args = _make_args(prefetch_rollout=depth, **kwargs)
@@ -225,6 +229,87 @@ class TestResume:
         )
 
         assert {**{i: first.trained[i] for i in range(6)}, **resumed.trained} == reference.trained
+
+
+class TestScheduledSaves:
+    """--save-rollout-ids: a save at a rollout fixed before the run (qwen38: one early save at step 3, rollout 2) is a
+    save boundary like the periodic ones, so it can be combined with prefetching (a sentinel cannot)."""
+
+    # 4 rollouts per epoch, a save at each epoch end (3, 7, 11) and the last rollout (13), plus the early save at 2
+    RUN = dict(num_rollout=14, save_interval=4, save_rollout_ids=[2], num_rollout_per_epoch=4)
+
+    @staticmethod
+    def _rows_per_rollout(state: SimpleNamespace) -> dict[int, list[int]]:
+        return {rollout_id: list(rows) for rollout_id, rows in sorted(state.trained.items())}
+
+    @pytest.mark.parametrize("depth", [0, 1, 2])
+    async def test_the_listed_rollout_saves_and_nothing_past_it_is_fetched_first(
+        self, monkeypatch: pytest.MonkeyPatch, depth: int
+    ):
+        state, events = await _run(monkeypatch, depth, **self.RUN)
+
+        assert state.saved == {2: 3 * BATCH, 3: 4 * BATCH, 7: 8 * BATCH, 11: 12 * BATCH, 13: 14 * BATCH}
+        for rollout_id in state.saved:
+            assert max(_gets_started_before(events, f"executor_save:{rollout_id}")) == rollout_id
+        assert state.trained == {i: list(range(i * BATCH, (i + 1) * BATCH)) for i in range(14)}
+
+    @pytest.mark.parametrize("depth", [1, 2])
+    @pytest.mark.parametrize("resume_from", [2, 7], ids=["early-save", "epoch-save"])
+    async def test_resume_from_the_save_consumes_the_rows_of_an_uninterrupted_run(
+        self, monkeypatch: pytest.MonkeyPatch, depth: int, resume_from: int
+    ):
+        """Stop a prefetching run two rollouts after the save (so it had fetched past the save before it stopped),
+        resume from the save's data cursor: per rollout, the rows trained equal those of one uninterrupted run
+        without prefetching."""
+        reference, _ = await _run(monkeypatch, 0, **self.RUN)
+        first, events = await _run(monkeypatch, depth, debug_exit_after_rollout=resume_from + 3, **self.RUN)
+        assert f"generate_start:{resume_from + 1}" in events and resume_from in first.saved
+        resumed, _ = await _run(
+            monkeypatch, depth, start_rollout_id=resume_from + 1, cursor=first.saved[resume_from], **self.RUN
+        )
+
+        rows = {**{i: first.trained[i] for i in range(resume_from + 1)}, **resumed.trained}
+        assert self._rows_per_rollout(SimpleNamespace(trained=rows)) == self._rows_per_rollout(reference)
+        assert sorted(rows) == list(range(14))
+
+    @pytest.mark.parametrize("depth", [1, 2])
+    async def test_an_unscheduled_save_after_a_prefetch_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path, depth: int
+    ):
+        """What the validation keeps out (--save-trigger-sentinel with prefetching): a save the prefetcher did not
+        know of would persist a cursor past the trained rollouts; the driver refuses it rather than save it."""
+        sentinel = tmp_path / "save-now"
+        sentinel.write_text("")
+        events: list[str] = []
+        args = _make_args(
+            prefetch_rollout=depth, num_rollout=6, save=str(tmp_path), save_trigger_sentinel=str(sentinel)
+        )
+        state = _install(monkeypatch, args, events)
+
+        with pytest.raises(AssertionError, match="saved after a later rollout's get"):
+            await with_disposer(train_driver.train, _startup_info(args))
+        assert state.saved == {}
+
+    def test_the_prefetcher_knows_the_listed_saves(self):
+        args = _make_args(prefetch_rollout=2, num_rollout=20, save_interval=10, save_rollout_ids=[2, 5])
+        prefetcher = RolloutPrefetcher.from_args(args, SimpleNamespace(get=None), num_rollout_per_epoch=None)
+        assert [i for i in range(20) if prefetcher._save_due(i)] == [2, 5, 9, 19]
+
+
+class TestShouldSave:
+    @pytest.mark.parametrize(
+        "save_interval, save_rollout_ids, per_epoch, expected",
+        [
+            (None, None, None, []),
+            (None, [2], None, [2]),
+            (4, None, None, [3, 7, 9]),
+            (4, [2, 3], None, [2, 3, 7, 9]),
+            (100, [0], 5, [0, 4, 9]),
+        ],
+    )
+    def test_periodic_saves_and_listed_ids(self, save_interval, save_rollout_ids, per_epoch, expected):
+        args = SimpleNamespace(save_interval=save_interval, save_rollout_ids=save_rollout_ids, num_rollout=10)
+        assert [i for i in range(10) if should_save(args, i, per_epoch)] == expected
 
 
 class TestPrefetcherUnit:

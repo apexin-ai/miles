@@ -15,7 +15,7 @@ from miles.utils.arguments import validate_async_off_policy_correction
 from miles.utils.async_utils import Disposer, eager_create_task, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
-from miles.utils.misc import should_run_periodic_action
+from miles.utils.misc import should_run_periodic_action, should_save
 from miles.utils.orchestration_utils import (
     OrchestratorStartupInfo,
     init_orchestration_script,
@@ -136,9 +136,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         await rollout_executor.release(rollout_id)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
-        if external_save or should_run_periodic_action(
-            rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
-        ):
+        if external_save or should_save(args, rollout_id, num_rollout_per_epoch):
             force_sync = external_save or rollout_id == args.num_rollout - 1
             await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:

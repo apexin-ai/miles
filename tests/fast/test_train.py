@@ -43,6 +43,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         offload_train=False,
         prefetch_rollout=0,
         save_interval=None,
+        save_rollout_ids=None,
         save_trigger_sentinel=None,
         skip_eval_before_train=False,
         start_rollout_id=0,
