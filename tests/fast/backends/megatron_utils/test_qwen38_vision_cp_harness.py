@@ -26,7 +26,9 @@ Claims, per packed layout (``CASES``):
 * every trainable vision parameter gets a gradient on every CP rank (zero on a text microbatch), as on CP1:
   with --overlap-grad-reduce a parameter that never reports keeps its DDP bucket from being reduced;
 * the lazy-vision and audit image counters (the tower's forward pre-hooks) count on each CP rank the images CP1
-  counts: every CP rank runs the tower on all images of the microbatch.
+  counts: every CP rank runs the tower on all images of the microbatch;
+* the step totals the audit and lazy-vision take at optimizer.step (``_images_in_step`` / ``global_images``: one
+  all-reduce over all ranks) equal CP1's: the CP ranks must not count the same images twice.
 
 CP1 itself is checked against an oracle built from the embedding and the tower directly, so a CP change that moves
 the CP1 path shows up here too.
@@ -391,11 +393,28 @@ def _cp2_worker(rank, world_size, port, out_dir):
     for case in CASES:
         try:
             batch, packed = _get_batch(_rows(case), allgather_cp=True)
-            results[case] = _run(_model(cp_size=world_size), batch, packed)
+            model = _model(cp_size=world_size)
+            results[case] = _run(model, batch, packed)
+            results[case].update(_step_image_totals(model))
         except Exception as error:  # recorded per case; the tests report it
             results[case] = {"error": f"{type(error).__name__}: {error}\n" + traceback.format_exc(limit=6)}
     torch.save(results, os.path.join(out_dir, f"rank{rank}.pt"))
     dist.destroy_process_group()
+
+
+def _step_image_totals(model):
+    """What the audit and lazy-vision sum over all ranks at optimizer.step (one all-reduce each)."""
+    import megatron.core.parallel_state as mpu
+
+    from miles_plugins.models.qwen3_8_next import vision_audit, vision_lazy
+
+    towers, cpu = [model.vision_model], torch.device("cpu")
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(mpu, "model_parallel_is_initialized", lambda: True)  # as in training
+        return {
+            "step_audit_images": int(vision_audit._images_in_step(towers, cpu)),
+            "step_lazy_images": int(vision_lazy.global_images(towers, cpu)),
+        }
 
 
 def _cp2_results():
@@ -546,6 +565,16 @@ def test_cp2_image_counters_see_the_cp1_images_on_every_rank(results, case):
     for rank, result in enumerate(ranks):
         got = (result["lazy_images"], result["audit_images"])
         assert got == (cp1["lazy_images"], cp1["audit_images"]), f"rank {rank}: {got}"
+
+
+@_CP2
+@pytest.mark.parametrize("case", CASES)
+def test_cp2_step_image_totals_equal_cp1(results, case):
+    """DP1 here, so CP1's step total is its own count."""
+    cp1, ranks = _cp2(results, case)
+    for rank, result in enumerate(ranks):
+        got = (result["step_audit_images"], result["step_lazy_images"])
+        assert got == (cp1["audit_images"], cp1["lazy_images"]), f"rank {rank}: {got}"
 
 
 # ------------------------------------------------------------------------------------------- provider guard (CP)
