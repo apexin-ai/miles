@@ -12,7 +12,6 @@ on a GPU with ``torch.cuda.set_sync_debug_mode`` (not here: CPU tensors never sy
 import itertools
 import random
 import math
-import random
 from types import SimpleNamespace
 
 import pytest
