@@ -160,7 +160,8 @@ def packed_rope_positions(
             f"Rows without mRoPE positions in a microbatch that has them: positions cover {positions.shape[0]} "
             f"of the {end_of_rows} tokens of its {rows} rows (every row must carry them)"
         )
-    grids = torch.zeros((0, 3), dtype=torch.long) if grids is None else torch.as_tensor(grids)
+    # on the ids' device: the checks below read grids on the host when the caller passes host ids
+    grids = torch.zeros((0, 3), dtype=torch.long) if grids is None else torch.as_tensor(grids).to(ids.device)
     used = 0
     for start, end in zip(bounds[:rows], bounds[1 : rows + 1], strict=True):
         row = ids[start:end]
