@@ -7,6 +7,7 @@ import torch
 from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel
 
+from miles_plugins.models.qwen3_8_next.ops.cp import cp_enabled, gather_sequence_no_grad, local_rows
 from miles_plugins.models.qwen3_8_next.vision_host_lengths import install_host_cu_seqlens
 from miles_plugins.models.qwen3_8_next.vision_inputs import (
     image_span_starts,
@@ -132,9 +133,18 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
             raise ValueError("Qwen image SFT owns image injection and native mRoPE positions")
         if (pixel_values is None) != (image_grid_thw is None):
             raise ValueError("Qwen image SFT requires genuine image patches and grids together")
+        packed = kwargs.get("packed_seq_params")
+        # Under --allgather-cp ``ids`` is this CP rank's contiguous slice [lo, hi) of the packed stream, while
+        # cu_seqlens, the image patches, their grids and the rows' positions describe the whole microbatch. Every
+        # CP rank works on the whole stream's ids (one all-gather of the token ids, as the PLE hook does): all of
+        # them take the same text / image branch, run the tower on every image and build the whole positions.
+        cp = cp_enabled(model.config)
+        if cp and packed is None:
+            raise ValueError("Qwen image SFT under context parallelism needs the packed (thd) layout")
+        whole_ids = gather_sequence_no_grad(ids[0])[None] if cp else ids
         # every integer check below runs on one host copy of the token ids (one device sync per microbatch
         # instead of one per check); the results go back with a non-blocking copy, values unchanged
-        ids_host = ids[0].to("cpu")
+        ids_host = whole_ids[0].to("cpu")
         has_images = bool(image_span_starts(ids_host, hf_config["image_token_id"]))
         if data == "image" and not has_images:
             raise ValueError("Qwen image SFT requires genuine image patches, grids and mRoPE positions")
@@ -142,8 +152,8 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
             raise ValueError("Image inputs reached a model configured with --qwen38-vision-data text")
         if has_images != (pixel_values is not None):
             raise ValueError("Image tokens and image patches must come together in a microbatch")
-        packed = kwargs.get("packed_seq_params")
-        boundaries, rows = ((0, ids.shape[1]), 1) if packed is None else _host_boundaries(packed, ids.shape[1])
+        total = whole_ids.shape[1]
+        boundaries, rows = ((0, total), 1) if packed is None else _host_boundaries(packed, total, cp=cp)
         # One row, or THD rows back to back: each row restarts at 0 (text) or has its native image mRoPE.
         positions = packed_rope_positions(
             ids_host,
@@ -156,6 +166,9 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
             vision_end_token_id=hf_config["vision_end_token_id"],
             merge_size=hf_config["vision_config"]["spatial_merge_size"],
         )
+        # Under CP too these are the whole stream's positions: GPTModel keeps THD RoPE frequencies whole, the QSA
+        # indexer scores the gathered sequence by token index, and Qwen38NextAttention gives SelfAttention this
+        # rank's rows of them (ops/attention.py).
         kwargs["position_ids"] = _to_device(positions.T.unsqueeze(1).contiguous(), ids.device)
         if not has_images:
             # A text microbatch: the vision tower does not run.
@@ -182,12 +195,14 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
                 )
             # images in row order, rows in pack order: the tower's outputs line up with the pad tokens
             image_positions = _to_device((ids_host == hf_config["image_token_id"]).nonzero().flatten(), ids.device)
+            # under CP each rank keeps the image tokens of its own slice (positions are global)
             kwargs["decoder_input"] = scatter_image_embeddings(
                 decoder,
                 image_positions,
                 result.pooler_output,
                 tp_rank=parallel_state.get_tensor_model_parallel_rank(),
                 sequence_parallel=model.config.sequence_parallel,
+                **({"window_start": local_rows(total)[0]} if cp else {}),
             )
         return original_forward(*args, **kwargs)
 
@@ -217,13 +232,18 @@ def _to_device(host_tensor, device):
     return host_tensor.to(device)
 
 
-def _host_boundaries(packed_seq_params, total):
+def _host_boundaries(packed_seq_params, total, *, cp=False):
     """The pack's cu_seqlens (host copy miles keeps, no device sync) and how many of its segments are rows."""
     host = getattr(packed_seq_params, "cu_seqlens_host", None)
     if host is None:
         host = packed_seq_params.cu_seqlens_q.tolist()
     bounds = tuple(int(b) for b in host)
     if bounds[-1] != total:
+        if cp:
+            raise ValueError(
+                f"cu_seqlens end at {bounds[-1]}, the whole allgather-CP stream has {total} tokens "
+                "(get_batch keeps cu_seqlens global under --allgather-cp)"
+            )
         raise ValueError(f"cu_seqlens end at {bounds[-1]}, the microbatch has {total} tokens (CP must be 1)")
     # rows and get_batch's trailing pad cannot be told apart from token values (a real row may be all token 0)
     rows = getattr(packed_seq_params, "sample_count", None)
@@ -236,8 +256,13 @@ def get_qwen38_vision_model_provider(pre_process=True, post_process=True, vp_sta
     from miles.backends.megatron_utils.model_provider import get_model_provider_func
     from miles_plugins.models.qwen3_8_next.model_provider import _install_ple_context_hooks
 
-    if args.context_parallel_size != 1 or args.qkv_format != "thd":
-        raise ValueError("Qwen image SFT currently requires CP1, THD (rows are packed by cu_seqlens)")
+    if args.qkv_format != "thd" or (args.context_parallel_size != 1 and not args.allgather_cp):
+        # Under --allgather-cp every CP rank holds one contiguous slice of the packed stream (wire_visual places
+        # each rank's image tokens by that slice); the zigzag split has no such map.
+        raise ValueError(
+            "Qwen image SFT requires CP1, THD (rows are packed by cu_seqlens), or THD with context parallelism "
+            "under --allgather-cp"
+        )
     if args.tensor_model_parallel_size > 1 and not args.sequence_parallel:
         raise ValueError("Qwen image SFT requires sequence parallelism at TP>1")
     if args.use_rollout_routing_replay or args.enable_mtp_training or args.virtual_pipeline_model_parallel_size:

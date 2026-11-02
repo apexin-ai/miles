@@ -188,19 +188,28 @@ def packed_rope_positions(
     return out
 
 
-def scatter_image_embeddings(decoder_input, token_positions, image_embeddings, *, tp_rank=0, sequence_parallel=False):
-    """Replace only image tokens, retaining gradients on every visual TP replica."""
+def scatter_image_embeddings(
+    decoder_input, token_positions, image_embeddings, *, tp_rank=0, sequence_parallel=False, window_start=None
+):
+    """Replace only image tokens, retaining gradients on every visual TP replica.
+
+    ``window_start``: under allgather-CP the decoder input is this CP rank's contiguous slice of the packed stream,
+    which starts at that global token (``token_positions`` are global); an image token outside the slice belongs to
+    another CP rank, and an image across the slice boundary is split between the two.
+    """
     if decoder_input.ndim != 3 or decoder_input.shape[1] != 1:
         raise ValueError("Qwen image SFT requires micro-batch-size 1")
     if token_positions.numel() != image_embeddings.shape[0]:
         raise ValueError("Image embeddings and expanded placeholder counts differ")
     local = token_positions.to(decoder_input.device)
+    if window_start is not None:
+        local = local - window_start
     if sequence_parallel:
         local = local - tp_rank * decoder_input.shape[0]
     selected = (local >= 0) & (local < decoder_input.shape[0])
-    if not sequence_parallel and not selected.all():
+    if not sequence_parallel and window_start is None and not selected.all():
         raise ValueError("An image token lies outside the decoder input")
     output = decoder_input.clone()
     output[local[selected], 0] = image_embeddings[selected].to(output.dtype)
-    # Even a TP slice without image tokens must participate in visual gradient reduction.
+    # Even a TP or CP slice without image tokens must participate in visual gradient reduction.
     return output + image_embeddings.sum().to(output.dtype) * 0

@@ -127,7 +127,11 @@ def _counts_images_here():
     # TP ranks run the same microbatches; count them once per data-parallel replica.
     from megatron.core import parallel_state
 
-    return not parallel_state.model_parallel_is_initialized() or parallel_state.get_tensor_model_parallel_rank() == 0
+    if not parallel_state.model_parallel_is_initialized():
+        return True
+    # Every CP rank runs the tower on all images of the microbatch (vision.py): count them on CP rank 0 only.
+    cp_rank = parallel_state.get_context_parallel_rank() if parallel_state.get_context_parallel_world_size() > 1 else 0
+    return parallel_state.get_tensor_model_parallel_rank() == 0 and cp_rank == 0
 
 
 def _images_in_step(towers, device):
