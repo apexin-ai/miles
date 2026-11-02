@@ -86,7 +86,10 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
             raise ValueError("Qwen image SFT owns image injection and native mRoPE positions")
         if (pixel_values is None) != (image_grid_thw is None):
             raise ValueError("Qwen image SFT requires genuine image patches and grids together")
-        has_images = bool(image_span_starts(ids[0], hf_config["image_token_id"]))
+        # every integer check below runs on one host copy of the token ids (one device sync per microbatch
+        # instead of one per check); the results go back with a non-blocking copy, values unchanged
+        ids_host = ids[0].to("cpu")
+        has_images = bool(image_span_starts(ids_host, hf_config["image_token_id"]))
         if data == "image" and not has_images:
             raise ValueError("Qwen image SFT requires genuine image patches, grids and mRoPE positions")
         if has_images and data == "text":
@@ -97,7 +100,7 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         boundaries, rows = ((0, ids.shape[1]), 1) if packed is None else _host_boundaries(packed, ids.shape[1])
         # One row, or THD rows back to back: each row restarts at 0 (text) or has its native image mRoPE.
         positions = packed_rope_positions(
-            ids[0],
+            ids_host,
             boundaries,
             qwen38_position_ids,
             image_grid_thw,
@@ -107,7 +110,7 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
             vision_end_token_id=hf_config["vision_end_token_id"],
             merge_size=hf_config["vision_config"]["spatial_merge_size"],
         )
-        kwargs["position_ids"] = positions.T.unsqueeze(1).contiguous()
+        kwargs["position_ids"] = _to_device(positions.T.unsqueeze(1).contiguous(), ids.device)
         if not has_images:
             # A text microbatch: the vision tower does not run.
             output = original_forward(*args, **kwargs)
@@ -128,7 +131,7 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
                     return_dict=True,
                 )
             # images in row order, rows in pack order: the tower's outputs line up with the pad tokens
-            image_positions = (ids[0] == hf_config["image_token_id"]).nonzero().flatten()
+            image_positions = _to_device((ids_host == hf_config["image_token_id"]).nonzero().flatten(), ids.device)
             kwargs["decoder_input"] = scatter_image_embeddings(
                 decoder,
                 image_positions,
@@ -139,6 +142,16 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         return original_forward(*args, **kwargs)
 
     model.forward = forward
+
+
+def _to_device(host_tensor, device):
+    """A host tensor on ``device`` without waiting for the device: pinned memory, non-blocking copy (the caching
+    host allocator keeps the pinned buffer until the copy has run)."""
+    if host_tensor.device == device:
+        return host_tensor
+    if device.type == "cuda":
+        return host_tensor.pin_memory().to(device, non_blocking=True)
+    return host_tensor.to(device)
 
 
 def _host_boundaries(packed_seq_params, total):

@@ -244,7 +244,7 @@ def loss_function(
         {
             **({"per_datum": per_datum} if per_datum is not None else {}),
             "keys": list(log.keys()),
-            "values": torch.tensor(
+            "values": stack_log_values(
                 [num_samples if not args.backend.calculate_per_token_loss else num_tokens] + list(log.values()),
                 device=logits.device,
             ),
@@ -252,20 +252,19 @@ def loss_function(
     )
 
 
-def log_train_advantage_computation_event(rollout_data: RolloutBatch) -> None:
-    if not is_event_logger_initialized():
-        return
+def stack_log_values(items: list, device) -> torch.Tensor:
+    """``torch.tensor(items, device=device)`` without a device-to-host copy per 0-dim CUDA tensor.
 
-    advantages = rollout_data.get("advantages")
-    witness_ids = rollout_data.get("witness_ids")
-    if advantages is None or witness_ids is None:
-        return
-
-    get_event_logger().log(
-        TrainAdvantageComputationEvent,
-        dict(
-            advantages=[x.tolist() for x in advantages],
-            witness_ids=[x.tolist() for x in witness_ids],
-        ),
-        print_log=False,
-    )
+    torch.tensor() reads each tensor element through ``.item()`` (one host sync each, every microbatch). Here the
+    tensors stay on the device. The dtype is the one torch.tensor() infers, taken from the same call on host proxies
+    (a 0-dim tensor of each tensor's dtype, the Python values as they are); the values are the same, since a 0-dim
+    tensor cast to that dtype rounds as its Python value does (counts and losses here are exact in float64). Lists
+    without a tensor, or with a tensor torch.tensor() would treat differently (more than one element), keep it.
+    """
+    if not any(isinstance(v, torch.Tensor) for v in items) or any(
+        isinstance(v, torch.Tensor) and v.numel() != 1 for v in items
+    ):
+        return torch.tensor(items, device=device)
+    proxies = [torch.zeros((), dtype=v.dtype) if isinstance(v, torch.Tensor) else v for v in items]
+    dtype = torch.tensor(proxies).dtype
+    return torch.stack([torch.as_tensor(v, device=device).reshape(()).to(dtype) for v in items])
