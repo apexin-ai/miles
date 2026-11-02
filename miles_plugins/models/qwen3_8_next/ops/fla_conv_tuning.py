@@ -26,7 +26,9 @@ new one costs ~6 s (gated norm, fwd + bwd) / ~16 s (l2norm) of compiling and ben
 few minutes per node in all. Many configs time within noise of each other, so ranks and runs pick
 different ones (two cold runs did). On B300 the configs autotune picks give the same output bits as
 the pinned ones (6 of 9 gated-norm backward configs, 8 of 9 forward and 22 of 25 l2norm configs agree
-bitwise; the pinned configs are in those groups), so the pin changes no number, only the cold cost.
+bitwise; the pinned configs are in those groups), so on the shapes we tested the pinned path gives the
+same output bits as the autotuned one (bitwise identical on the tested shapes; other shapes are not
+proven) and removes the cold cost.
 """
 
 from __future__ import annotations

@@ -210,7 +210,8 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
                 "(miles_plugins/models/qwen3_8_next/ops/fla_conv_tuning.py). Without it every new row length "
                 "compiles and benchmarks 16 conv configs (~15 s forward, ~35 s backward; CP2 has its own key) "
                 "and every new norm bucket 9-25 configs, and near-tied configs can differ between ranks and runs. "
-                "The pinned configs are the ones autotune picks on B300; outputs equal that config's bit for bit. "
+                "The pinned configs are the ones autotune picks on B300; on the shapes tested the outputs are "
+                "bitwise identical to that config's (other shapes are not proven). "
                 "No parameter or checkpoint change."
             ),
         ),
