@@ -20,13 +20,12 @@ VISION_DATA_MODES = ("image", "text", "mixed")
 
 
 class _ZeroGradsFor(torch.autograd.Function):
-    """Passes the output through unchanged; its backward gives each parameter an exact zero gradient.
+    """Passes the input through unchanged; its backward gives each parameter an exact zero gradient.
 
     With --overlap-grad-reduce, Megatron DDP reduces a bucket only after every parameter in it reported a gradient in
     the last microbatch of the step. A trainable tower skipped on a text microbatch would never report.
 
-    The result is not a view: on a non-last pipeline stage Megatron frees the sent output tensor
-    (deallocate_output_tensor), which refuses a view of another tensor.
+    The result is not a view of the input (Megatron refuses views of tensors it frees, e.g. deallocate_output_tensor).
     """
 
     @staticmethod
@@ -38,6 +37,21 @@ class _ZeroGradsFor(torch.autograd.Function):
     def backward(ctx, grad_output):
         zeros = (torch.zeros((), dtype=dtype, device=device).expand(shape) for shape, dtype, device in ctx.shapes)
         return (grad_output, *zeros)
+
+
+def _zero_grads_in_tower_backward_order(hidden, parameters):
+    """``hidden`` unchanged; its backward reports a zero gradient for each parameter, last parameter first.
+
+    One autograd node per parameter, chained in registration order: autograd runs a node's gradient accumulation
+    (sequence number "max") before the chain's earlier node, so the reports come in reverse registration order. That
+    is the order of Megatron DDP's buckets (laid out over the reversed parameter list), and the tower's own backward
+    on an image microbatch completes its buckets in that order too: it runs the modules last to first, and only swaps
+    inside a block (a block's norm2 reports before its attention) reorder parameters, never a whole bucket. A single
+    node for every parameter would report them in the order of autograd's ready-queue heap instead.
+    """
+    for parameter in parameters:
+        hidden = _ZeroGradsFor.apply(hidden, parameter)
+    return hidden
 
 
 def set_visual_scope(visual, scope, *, sequence_parallel=False):
@@ -113,13 +127,15 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         kwargs["position_ids"] = _to_device(positions.T.unsqueeze(1).contiguous(), ids.device)
         if not has_images:
             # A text microbatch: the vision tower does not run.
-            output = original_forward(*args, **kwargs)
             trainable = [p for p in model.vision_model.parameters() if p.requires_grad] if model.pre_process else []
             if trainable and torch.is_grad_enabled():
-                if not isinstance(output, torch.Tensor):
-                    raise TypeError("A text microbatch with a trainable vision tower needs a tensor model output")
-                output = _ZeroGradsFor.apply(output, *trainable)
-            return output
+                # The tower's zero gradients are reported where an image microbatch merges the tower's output into
+                # the input embeddings, so they become ready at the same point of the backward and in the same
+                # order as on an image microbatch: after the whole language model, before the word embeddings.
+                # With --overlap-grad-reduce every DP rank must issue its bucket reduce-scatters in one order; a DP
+                # rank on a text microbatch and one on an image microbatch otherwise deadlock (F8, 2026-11-02).
+                kwargs["decoder_input"] = _zero_grads_in_tower_backward_order(_text_decoder_input(model, ids, kwargs), trainable)
+            return original_forward(*args, **kwargs)
         if model.pre_process:
             from megatron.core import parallel_state
 
@@ -142,6 +158,16 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
         return original_forward(*args, **kwargs)
 
     model.forward = forward
+
+
+def _text_decoder_input(model, ids, kwargs):
+    """The input embeddings GPTModel._preprocess computes for ``ids`` (no learned positions: mRoPE), as the image path
+    computes them."""
+    if kwargs.get("padding_mask") is not None:
+        raise ValueError("Qwen image SFT does not take a padding_mask: GPTModel skips it once decoder_input is given")
+    if model.config.sequence_parallel and not getattr(model.embedding, "scatter_to_sequence_parallel", True):
+        raise ValueError("Qwen image SFT needs the embedding to scatter its output to the sequence-parallel region")
+    return model.embedding(input_ids=ids, position_ids=None)
 
 
 def _to_device(host_tensor, device):

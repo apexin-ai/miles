@@ -153,7 +153,8 @@ def test_mixed_microbatches_train_the_tower_on_images_only(tp_rank_zero, monkeyp
     model(input_ids=_text_ids()).backward()
     for name, p in model.vision_model.named_parameters():
         assert torch.equal(p.grad, grads[name]), name  # the text microbatch adds nothing to the tower
-    assert model.calls[-1]["decoder_input"] is None
+    # its zero gradients are reported from the input embeddings, where an image microbatch merges the tower
+    assert torch.equal(model.calls[-1]["decoder_input"], model.embedding(_text_ids()))
 
 
 def _grad_reports(model):
