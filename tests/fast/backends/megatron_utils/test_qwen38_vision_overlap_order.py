@@ -1,4 +1,4 @@
-"""CPU contracts: with --overlap-grad-reduce, a text and an image microbatch complete Megatron DDP's buckets in one order.
+"""CPU contracts: a text microbatch reports the tower's zero gradients where an image microbatch merges the tower.
 
 Megatron DDP issues a bucket's reduce-scatter as soon as every parameter in it reported a gradient in the step's last
 microbatch (register_grad_ready, from a hook on each parameter's gradient accumulator). Every DP rank must issue them in
@@ -158,17 +158,6 @@ def _old_text_forward(model):
     return forward
 
 
-@pytest.mark.parametrize("scope, recompute", [("full", False), ("full", True), ("projector", False)])
-def test_text_and_image_microbatches_issue_the_buckets_in_one_order(scope, recompute):
-    model = _model(scope, recompute)
-    image, text = _image_and_text_reports(model)
-    assert sorted(image) == sorted(text) and len(set(text)) == len(text)
-    for bucket_size in _bucket_sizes(model):
-        assert _bucket_dispatch_order(model, text, bucket_size) == _bucket_dispatch_order(
-            model, image, bucket_size
-        ), bucket_size
-
-
 @pytest.mark.parametrize("scope", ["full", "projector"])
 def test_a_text_microbatch_reports_the_tower_after_the_language_model_in_reverse_registration_order(scope):
     model = _model(scope)
@@ -182,7 +171,8 @@ def test_a_text_microbatch_reports_the_tower_after_the_language_model_in_reverse
     assert [n for n in text if n in tower] == tower[::-1]
     # The image backward reports each module's parameters together, modules in reverse registration order except
     # inside a block: norm2 (registered before attn) reports before attn. Within a module autograd picks the order
-    # (LayerNorm: weight first; Linear: bias first), which check_overlap_bucket_layout covers.
+    # (LayerNorm: weight first; Linear: bias first). Neither matters for the reduce-scatter order: vision bucket groups
+    # are reduced at finish_grad_sync (vision_grad_sync, test_qwen38_vision_deferred_grad_sync.py).
     image_modules = _modules_in_report_order([n for n in image if n in tower])
     text_modules = _modules_in_report_order([n for n in text if n in tower])
     assert len(image_modules) == len(set(image_modules)) and sorted(image_modules) == sorted(text_modules)
@@ -254,52 +244,3 @@ def test_a_text_microbatch_refuses_a_padding_mask():
     model = _model("full")
     with pytest.raises(ValueError, match="padding_mask"):
         model(input_ids=_text_ids(), padding_mask=torch.zeros(1, 12, dtype=torch.bool))
-
-
-class _Chunk(torch.nn.Module):
-    """Megatron DDP's surface for check_overlap_bucket_layout: ddp_config, buffers[i].param_index_map, the module."""
-
-    def __init__(self, model, bucket_size, overlap=True, dp=2):
-        super().__init__()
-        self.module = model
-        self.ddp_config = SimpleNamespace(overlap_grad_reduce=overlap)
-        named = _ddp_params(model)
-        layout = vision_scope_switch.compute_layout([p for _, p in named], bucket_size, dp, _DDP)
-        self.buffers = [SimpleNamespace(param_index_map=layout.param_index_map)]
-
-
-def _refused(model, bucket_size, **kwargs):
-    try:
-        vision.check_overlap_bucket_layout([_Chunk(model, bucket_size, **kwargs)])
-    except ValueError as error:
-        assert "split the trainable parameters of module.vision_model." in str(error)
-        return True
-    return False
-
-
-@pytest.mark.parametrize("scope", ["full", "projector"])
-def test_every_bucket_layout_the_check_accepts_issues_text_and_image_buckets_in_one_order(scope):
-    """Every bucket size from the largest tower-block parameter up: the layouts with mismatching orders are exactly
-    refused ones (a module split over two buckets), and some refused layouts do mismatch (the check is needed)."""
-    model = _model(scope)
-    image, text = _image_and_text_reports(model)
-    block = max(p.numel() for n, p in model.vision_model.named_parameters() if n.startswith("blocks."))
-    rest = sum(p.numel() for n, p in _ddp_params(model) if not n.startswith("embedding."))
-    refused_mismatch = accepted = 0
-    for bucket_size in range(block, rest + block):
-        same = _bucket_dispatch_order(model, text, bucket_size) == _bucket_dispatch_order(model, image, bucket_size)
-        if _refused(model, bucket_size):
-            refused_mismatch += not same
-        else:
-            accepted += 1
-            assert same, bucket_size
-    assert accepted > (rest - block) // 2
-    if scope == "full":
-        assert refused_mismatch > 0
-
-
-def test_the_layout_check_needs_overlap_and_ddp():
-    model = _model("full")
-    split = next(s for s in range(64, 20000) if _refused(model, s))
-    assert not _refused(model, split, overlap=False)
-    vision.check_overlap_bucket_layout([model])  # not a DDP chunk: nothing to check
