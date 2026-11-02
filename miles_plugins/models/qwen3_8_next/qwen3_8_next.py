@@ -113,9 +113,9 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
         args, "qwen38_hc_matmul_precision", "fp32"
     )  # config-access-exempt: hand-built test args may omit the knob
     if getattr(args, "qwen38_fla_conv_pinned", False):  # config-access-exempt: hand-built test args may omit the knob
-        from miles_plugins.models.qwen3_8_next.ops.fla_conv_tuning import pin_fla_conv_autotune
+        from miles_plugins.models.qwen3_8_next.ops.fla_conv_tuning import pin_fla_autotune
 
-        pin_fla_conv_autotune()
+        pin_fla_autotune()
 
     if getattr(
         config, "virtual_pipeline_model_parallel_size", None
