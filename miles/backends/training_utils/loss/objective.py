@@ -267,4 +267,8 @@ def stack_log_values(items: list, device) -> torch.Tensor:
         return torch.tensor(items, device=device)
     proxies = [torch.zeros((), dtype=v.dtype) if isinstance(v, torch.Tensor) else v for v in items]
     dtype = torch.tensor(proxies).dtype
-    return torch.stack([torch.as_tensor(v, device=device).reshape(()).to(dtype) for v in items])
+    # Python values straight to the target dtype (through the default float dtype they would round twice)
+    return torch.stack(
+        [v.to(device=device, dtype=dtype).reshape(()) if isinstance(v, torch.Tensor)
+         else torch.tensor(v, dtype=dtype, device=device) for v in items]
+    )
