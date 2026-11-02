@@ -12,6 +12,7 @@ from miles.ray.placement_group import (
     update_weights,
 )
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
+from miles.ray.rollout.rollout_prefetcher import RolloutPrefetcher
 from miles.ray.specs.train import compute_trainer_configs
 from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
@@ -104,6 +105,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
                 await model.offload()
 
         # Persist data progress before model saving publishes the latest checkpoint.
+        assert not prefetcher.fetched_beyond(rollout_id), f"rollout {rollout_id} saved after a later rollout's get"
         await rollout_executor.save(rollout_id)
         if (not args.use_critic) or (rollout_id >= args.num_critic_only_steps):
             await save_training_model(actor_model)
@@ -117,11 +119,14 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         else:
             await eval_dispatcher.dispatch(args.start_rollout_id - 1)
 
+    prefetcher = RolloutPrefetcher.from_args(args, rollout_executor, num_rollout_per_epoch)
+    disposer.add(prefetcher)
+
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         await inference_controller.prepare_rollout(rollout_id)
-        rollout_data_pack = await rollout_executor.get(rollout_id)
+        rollout_data_pack = await prefetcher.get(rollout_id)
 
         if args.offload_rollout:
             if args.colocate_memory_peak_device == "gpu":
