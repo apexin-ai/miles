@@ -53,12 +53,22 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                 )
             blocks, cu_seqlens = selected
             ratio = self._owner.compress_ratio
+            window = None
             if cp_enabled(self.config):
                 # The block ids address the whole sequence, so the keys have to be the whole
-                # sequence too; the queries stay this rank's rows and the kernel takes the query
-                # and key extents separately. The gather's backward reduce-scatters, summing what
-                # every rank's queries read from each piece.
+                # sequence too. The gather's backward reduce-scatters, summing what every rank's
+                # queries read from each piece.
                 key, value = gather_sequence(key), gather_sequence(value)
+                # build_qsa_block_index takes query row i to be packed row i of cu_seqlens (its causal
+                # tail, its last key, its sequence); this rank's rows start at lo. Pad the queries and
+                # their block ids to the whole sequence: a row outside the window selects no block and
+                # has a zero query, its output is dropped, and its gradient to q, k and v is zero
+                # (dO = 0). The extra rows attend only their own tail block.
+                total = key.shape[0]
+                window = local_rows(total)
+                lo, hi = window
+                query = torch.nn.functional.pad(query, (0, 0, 0, 0, lo, total - hi))
+                blocks = torch.nn.functional.pad(blocks, (0, 0, lo, total - hi), value=-1)
             monitor = get_monitor()
             # the recompute pass would measure the same rows twice
             if monitor.enabled and not (is_checkpointing() and torch.is_grad_enabled()):
@@ -79,7 +89,10 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                 num_heads=query.shape[1],
                 num_kv_heads=key.shape[1],
             )
-            return qsa_block_attention(query, key, value, index, self.softmax_scale).reshape(query.shape[0], -1)
+            out = qsa_block_attention(query, key, value, index, self.softmax_scale)
+            if window is not None:
+                out = out[window[0] : window[1]]
+            return out.reshape(out.shape[0], -1)
 
         if query.dim() != 4:
             raise RuntimeError(f"QSA core attention expected a 3D (thd) or 4D (sbhd) query, got {tuple(query.shape)}")
