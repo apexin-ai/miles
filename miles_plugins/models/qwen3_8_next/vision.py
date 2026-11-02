@@ -44,47 +44,14 @@ def _zero_grads_in_tower_backward_order(hidden, parameters):
     """``hidden`` unchanged; its backward reports a zero gradient for each parameter, last parameter first.
 
     One autograd node per parameter, chained in registration order: autograd runs a node's gradient accumulation
-    (sequence number "max") before the chain's earlier node, so the reports come in reverse registration order. That
-    is the order of Megatron DDP's buckets (laid out over the reversed parameter list), and the tower's own backward
-    on an image microbatch completes its buckets in that order too: it runs the modules last to first, and only swaps
-    inside a block (a block's norm2 reports before its attention) reorder parameters, never a whole bucket. A single
-    node for every parameter would report them in the order of autograd's ready-queue heap instead.
+    (sequence number "max") before the chain's earlier node, so the reports come in reverse registration order, the
+    order of Megatron DDP's buckets. The order within the tower is not load-bearing: with --overlap-grad-reduce every
+    bucket group holding a vision parameter is reduced at finish_grad_sync, in a fixed order
+    (vision_grad_sync.defer_vision_bucket_groups); an image microbatch's tower backward reports in its own order.
     """
     for parameter in parameters:
         hidden = _ZeroGradsFor.apply(hidden, parameter)
     return hidden
-
-
-def check_overlap_bucket_layout(model_chunks):
-    """With --overlap-grad-reduce: refuse a DDP layout that splits one tower module's trainable parameters over two
-    buckets.
-
-    A text microbatch reports the tower's zero gradients in reverse registration order (the bucket order); the
-    tower's own backward on an image microbatch reports a module's parameters in autograd's order (a LayerNorm or
-    Conv3d reports its weight before its bias, a Linear its bias before its weight). Inside one bucket that makes no
-    difference. A bucket boundary between such two parameters can complete the two buckets in opposite orders on a
-    text and an image microbatch (e.g. the patch embedding's bias closes one bucket and its weight the next, which
-    also holds the language model's output layer), and the DP ranks deadlock. Another --ddp-bucket-size moves the
-    boundary.
-    """
-    for chunk in model_chunks:
-        ddp_config = getattr(chunk, "ddp_config", None)  # config-access-exempt: only Megatron DDP chunks have one
-        if ddp_config is None or not ddp_config.overlap_grad_reduce:
-            continue
-        bucket_of = {}
-        for index, buffer in enumerate(chunk.buffers):
-            for param, (_, _, bucket) in buffer.param_index_map.items():
-                bucket_of[param] = (index, bucket)
-        for name, module in chunk.named_modules():
-            if "vision_model" not in name.split("."):
-                continue
-            held = {bucket_of[p] for p in module.parameters(recurse=False) if p in bucket_of}
-            if len(held) > 1:
-                raise ValueError(
-                    f"--overlap-grad-reduce: the DDP buckets split the trainable parameters of {name} "
-                    f"(buffer, bucket) {sorted(held)}; text and image microbatches would issue the reduce-scatters "
-                    "in different orders and deadlock. Choose another --ddp-bucket-size."
-                )
 
 
 def set_visual_scope(visual, scope, *, sequence_parallel=False):
@@ -177,8 +144,9 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
                 # The tower's zero gradients are reported where an image microbatch merges the tower's output into
                 # the input embeddings, so they become ready at the same point of the backward and in the same
                 # order as on an image microbatch: after the whole language model, before the word embeddings.
-                # With --overlap-grad-reduce every DP rank must issue its bucket reduce-scatters in one order; a DP
-                # rank on a text microbatch and one on an image microbatch otherwise deadlock (F8, 2026-11-02).
+                # With --overlap-grad-reduce the language model's buckets are then ready in one order on text and
+                # image microbatches (F8, 2026-11-02: a DP rank on each deadlocked); the vision buckets are reduced
+                # at finish_grad_sync in a fixed order (vision_grad_sync).
                 kwargs["decoder_input"] = _zero_grads_in_tower_backward_order(
                     _text_decoder_input(model, ids, kwargs), trainable
                 )

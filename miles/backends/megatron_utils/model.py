@@ -235,9 +235,9 @@ def setup_model_and_optimizer(
         model_chunk.lora_attached = lora_attached
 
     if _uses_qwen38_vision(args):
-        from miles_plugins.models.qwen3_8_next.vision import check_overlap_bucket_layout
+        from miles_plugins.models.qwen3_8_next.vision_grad_sync import defer_vision_bucket_groups
 
-        check_overlap_bucket_layout(model)  # with --overlap-grad-reduce only
+        defer_vision_bucket_groups(model)  # with --overlap-grad-reduce: vision bucket groups at finish_grad_sync
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
