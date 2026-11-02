@@ -7,6 +7,7 @@ gate with a MEAN over streams, and identity residual mixing (h_res is None).
 import torch
 import torch.nn.functional as F
 from megatron.core.parallel_state import (
+    get_context_parallel_group,
     get_tensor_model_parallel_group,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
@@ -18,6 +19,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
 from miles.kernels.hyper_connection.hc import check_matmul_precision, hc_combine, hc_mix_inject
+from miles_plugins.models.qwen3_8_next.ops.cp import cp_enabled, cp_rank_of, cp_world_size
 from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE, current_ple_batch, window_cu_seqlens
 
 
@@ -232,7 +234,30 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         hidden_states = hidden_states + increment.view_as(hidden_states)
         return hidden_states
 
-    def _apply_ple_local_window(self, hidden_states, ngram_ids, cu_seqlens, sp_rank, sp_size):
+    def _ple_shard(self, hidden_states):
+        """``(rank, size)`` of the sequence shard this rank holds, over SP and CP together.
+
+        The two shardings nest: CP slices the global packed stream into contiguous pieces, then SP
+        slices the piece a CP rank holds. A rank's position in the global sequence is therefore
+        ``cp_rank * sp_size + sp_rank`` out of ``cp_size * sp_size`` equal shards, which is exactly
+        what the local-window path needs -- it only ever asks "which shard am I of how many" to find
+        its halo. Returning the composed pair lets one code path serve SP, CP, and both.
+
+        Returns ``(0, 1)`` when neither is on, i.e. this rank holds the whole sequence.
+        """
+        sp_size = 1
+        sp_rank = 0
+        if getattr(
+            self.config, "sequence_parallel", False
+        ):  # config-access-exempt: model configs may omit sequence_parallel
+            sp_size = get_tensor_model_parallel_world_size()
+            if sp_size > 1:
+                sp_rank = get_tensor_model_parallel_rank()
+        if not cp_enabled(self.config):
+            return sp_rank, sp_size
+        return cp_rank_of() * sp_size + sp_rank, cp_world_size() * sp_size
+
+    def _apply_ple_local_window(self, hidden_states, ngram_ids, cu_seqlens, sp_rank, sp_size, groups=None):
         """The PLE update of this rank's SP slice ``[S/sp, 1, n*C]``, computed on its slice only.
 
         The window is ``[start, start + local + lookback)`` with ``start = rank * local - lookback``:
@@ -247,13 +272,20 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         Gradient order matches the full-sequence path bitwise: the residual is added on the window,
         so this rank's own (residual + PLE) gradient is summed first and the next rank's halo
         gradient is added to it afterwards, as the reduce-scatter there adds it.
+
+        ``sp_rank`` / ``sp_size`` are the shard's index and count over whatever is sharding the
+        sequence: SP alone, or SP and CP composed (``_ple_shard``). ``groups`` is the process group
+        the tails are exchanged over, one entry per sharding, outermost first; it defaults to the TP
+        group. With CP the halo may come from a rank of the CP group rather than the TP group, so
+        the exchange runs over both and the tails are indexed in the composed order.
         """
         local, batch, width = hidden_states.shape
         lookback = self.ple.conv_lookback
         total = local * sp_size
         start = sp_rank * local - lookback
         length = local + lookback
-        group = get_tensor_model_parallel_group()
+        if groups is None:
+            groups = (get_tensor_model_parallel_group(),)
 
         flat_ids = self._flat_ple_ids(ngram_ids, total, batch)
         if flat_ids.shape[0] != total:
@@ -262,9 +294,7 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
             )
         flat_state = hidden_states.reshape(local, width)
 
-        tails = gather_from_sequence_parallel_region(
-            flat_state[local - lookback :], tensor_parallel_output_grad=True, group=group
-        )
+        tails = self._gather_tails(flat_state[local - lookback :], groups)
         prev = (sp_rank - 1) % sp_size
         halo = tails[prev * lookback : (prev + 1) * lookback]
         window_state = torch.cat([halo, flat_state])
@@ -280,6 +310,20 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         updated = window_state + increment
         return updated[lookback:].view_as(hidden_states)
 
+    @staticmethod
+    def _gather_tails(tail, groups):
+        """Every shard's tail rows, ordered by composed shard index (outermost group first).
+
+        One gather per sharding, innermost first: gathering over TP gives this CP rank's
+        ``sp_size`` tails, and gathering that over CP gives all ``cp_size * sp_size`` of them in
+        ``cp_rank * sp_size + sp_rank`` order -- the order ``_ple_shard`` numbers shards in. Every
+        gather takes ``tensor_parallel_output_grad=True``, so each backward reduce-scatters (SUM)
+        and a halo's gradient reaches the rank that owns those tokens.
+        """
+        for group in reversed(groups):
+            tail = gather_from_sequence_parallel_region(tail, tensor_parallel_output_grad=True, group=group)
+        return tail
+
     def forward(
         self,
         hidden_states: Tensor,
@@ -288,21 +332,32 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
     ) -> tuple[Tensor, Tensor | None, Tensor, Tensor]:
         ngram_ids, cu_seqlens = self._resolve_ple_batch()
 
-        sp_size = 1
-        if getattr(
-            self.config, "sequence_parallel", False
-        ):  # config-access-exempt: model configs may omit sequence_parallel
-            sp_size = get_tensor_model_parallel_world_size()
+        # shard index / count over SP and CP composed; (0, 1) when this rank holds everything
+        shard_rank, shard_size = self._ple_shard(hidden_states)
+        cp = cp_enabled(self.config)
+        groups = (
+            (get_context_parallel_group(), get_tensor_model_parallel_group())
+            if cp
+            else (get_tensor_model_parallel_group(),)
+        )
         if (
-            sp_size > 1
+            shard_size > 1
             and self.ple_sp_local_slice
             and hidden_states.shape[1] == 1
             and hidden_states.shape[0] >= self.ple.conv_lookback
         ):
             hidden_states = self._apply_ple_local_window(
-                hidden_states, ngram_ids, cu_seqlens, get_tensor_model_parallel_rank(), sp_size
+                hidden_states, ngram_ids, cu_seqlens, shard_rank, shard_size, groups=groups
             )
-        elif sp_size > 1:
+        elif shard_size > 1:
+            if cp:
+                raise NotImplementedError(
+                    "Qwen3.8-Next PLE under context parallelism needs the local-window path "
+                    "(--qwen38-ple-sp-local-slice): the full-sequence fallback gathers over the TP "
+                    "group only, which under CP is a fraction of the sequence the n-gram conv reads. "
+                    f"ple_sp_local_slice={self.ple_sp_local_slice}, rows={hidden_states.shape[0]}, "
+                    f"lookback={self.ple.conv_lookback}, batch={hidden_states.shape[1]}"
+                )
             sp_rank = get_tensor_model_parallel_rank()
             local_seq = hidden_states.shape[0]
             # The causal conv reads (kernel - 1) * dilation tokens back, so this rank's loss also

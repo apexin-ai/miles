@@ -124,14 +124,24 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
         )
 
     cp_size = getattr(config, "context_parallel_size", 1) or 1  # config-access-exempt: test configs may omit CP
-    if cp_size > 1:
+    allgather_cp = bool(
+        getattr(args, "allgather_cp", False)
+    )  # config-access-exempt: test configs build a spec without the training-arg view
+    if cp_size > 1 and not allgather_cp:
         raise NotImplementedError(
-            f"Qwen3.8-Next has no context parallel path (context_parallel_size={cp_size}). "
-            "The QSA indexer and sparse attention treat the local CP shard as the whole "
-            "sequence (wrong positions, local K/V only), and PLE hashes local input ids "
-            "against the global cu_seqlens; both are silently wrong or index out of range, "
-            "with or without --allgather-cp. Run with --context-parallel-size 1."
+            f"Qwen3.8-Next supports context parallelism only under --allgather-cp "
+            f"(context_parallel_size={cp_size}). Under the default zigzag layout each rank "
+            "holds two disjoint ranges per sequence, so no affine map from a local token to "
+            "its global position exists: the QSA indexer would place positions wrong and "
+            "select over local keys only, and PLE would hash a shard against the global "
+            "cu_seqlens -- both silently, without a shape change. Pass --allgather-cp, "
+            "which gives each rank one contiguous global range, or --context-parallel-size 1."
         )
+    # The QSA indexer and PLE gather over the CP group under this flag (ops/cp.py); the
+    # attention queries stay sharded. Set on every build, not only the CP ones, so a layer
+    # built at CP=1 still carries an explicit answer rather than an absent attribute.
+    config.qwen3_8_next_allgather_cp = allgather_cp
+
 
     if not args.backend.num_experts:
         config.moe_layer_freq = [0] * config.num_layers

@@ -230,10 +230,16 @@ class _RowView:
             raise IndexError(i)
         return self._fn(i)
 
-    def strided(self, start: int, step: int) -> "_RowView":
-        """Rows ``start, start + step, ...`` (the ``row_shard`` of ``iter_selected_blocks``)."""
+    def strided(self, start: int, step: int, stop: int | None = None) -> "_RowView":
+        """Rows ``start, start + step, ...`` (the ``row_shard`` of ``iter_selected_blocks``).
+
+        ``stop`` bounds the stride, as the slice ``start:stop:step`` does: under context
+        parallelism a rank owns only a contiguous window of the sequence, so its stride has
+        to end at the window, not at the sequence.
+        """
         fn = self._fn
-        return _RowView(lambda i: fn(start + i * step), len(range(start, self._n, step)))
+        end = self._n if stop is None else min(stop, self._n)
+        return _RowView(lambda i: fn(start + i * step), len(range(start, end, step)))
 
 
 def compress_keys_by_mean_packed(token_k: Tensor, layout: PackedBlockLayout) -> Tensor:
@@ -435,12 +441,17 @@ class Qwen38NextQSAIndexer(MegatronModule):
         row_bytes: int = 0,
         materialized_rope: bool = False,
         row_shard: tuple[int, int] | None = None,
+        row_stop: int | None = None,
         cu_seqlens_host: tuple[int, ...] | None = None,
     ):
         """Yield ``(start, end, block_idx)`` per query tile; ``block_idx`` is ``[end - start, k]``.
 
         ``row_shard = (r, n)`` scores only the query rows ``r, r + n, r + 2n, ...`` (the TP-sharded indexer);
         ``start`` / ``end`` then count those rows (row ``i`` of the shard is query ``r + i * n``).
+        ``row_stop`` ends that stride early, as ``r:row_stop:n`` does: under context parallelism a rank
+        holds queries for one contiguous window of the sequence, so its rows are the stride restricted to
+        the window (``ops/cp.py:compose_row_shard`` builds the pair). Every block stays a candidate either
+        way -- only the scored rows are restricted, never the keys.
 
         Block ids index the packed block grid (``PackedBlockLayout``), ``-1`` where unused,
         ordered by score then block id. Each tile scores only the blocks its rows can see
@@ -472,13 +483,14 @@ class Qwen38NextQSAIndexer(MegatronModule):
         row_hi = row_lo + (positions + 1) // self.compress_ratio
         if row_shard is not None:
             rank, n_shards = row_shard
-            q, row_lo, row_hi = q[rank::n_shards], row_lo[rank::n_shards], row_hi[rank::n_shards]
+            stop = positions.shape[0] if row_stop is None else row_stop
+            q, row_lo, row_hi = q[rank:stop:n_shards], row_lo[rank:stop:n_shards], row_hi[rank:stop:n_shards]
         if host is None:
             lo_list, hi_list = row_lo.tolist(), row_hi.tolist()
         elif row_shard is None:
             lo_list, hi_list = host.lo, host.hi
         else:
-            lo_list, hi_list = host.lo.strided(*row_shard), host.hi.strided(*row_shard)
+            lo_list, hi_list = host.lo.strided(*row_shard, stop=row_stop), host.hi.strided(*row_shard, stop=row_stop)
         scale = math.sqrt(self.head_dim)
         # per row: the fp32 query copy; the top-k scores and ids, their sort and mask
         # temporaries and the yielded ids

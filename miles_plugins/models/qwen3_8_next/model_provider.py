@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from megatron.core.models.gpt import GPTModel
 
+from miles_plugins.models.qwen3_8_next.ops.cp import cp_enabled, gather_sequence_no_grad
 from miles_plugins.models.qwen3_8_next.ops.ple import (
     Qwen38NextFrozenNGramEmbedding,
     build_ngram_contexts_packed,
@@ -46,6 +47,12 @@ def _install_ple_context_hooks(model: GPTModel) -> None:
             getattr(packed, "cu_seqlens_host", None) if packed is not None else None
         )  # config-access-exempt: only miles' PackedSeqParamsWithHostCuSeqlens carries the host copy
         flat = input_ids.reshape(-1)
+        if cp_enabled(ple_embedding.config):
+            # cu_seqlens is global under allgather-CP, so the contexts have to be too. An n-gram
+            # also reads ngram_size-1 tokens back, which at a piece boundary live on the previous
+            # rank; building on the whole sequence covers that boundary instead of padding over
+            # it. The PLE layer slices the rows of its own shard back out.
+            flat = gather_sequence_no_grad(flat)
         contexts = build_ngram_contexts_packed(
             flat, cu_seqlens, ple_embedding.ngram_size, ple_embedding.eos_token_id, cu_seqlens_host=cu_seqlens_host
         )

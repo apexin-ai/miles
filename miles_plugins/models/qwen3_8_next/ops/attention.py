@@ -13,6 +13,13 @@ from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
 from miles.kernels.attention.qsa import build_qsa_block_index, qsa_block_attention, qsa_sparse_attention
+from miles_plugins.models.qwen3_8_next.ops.cp import (
+    compose_row_shard,
+    cp_enabled,
+    gather_sequence,
+    gather_sequence_no_grad,
+    local_rows,
+)
 from miles_plugins.models.qwen3_8_next.ops.indexer_monitor import get_monitor
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import Qwen38NextQSAIndexer, indexer_rope_table
 
@@ -43,6 +50,12 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                 )
             blocks, cu_seqlens = selected
             ratio = self._owner.compress_ratio
+            if cp_enabled(self.config):
+                # The block ids address the whole sequence, so the keys have to be the whole
+                # sequence too; the queries stay this rank's rows and the kernel takes the query
+                # and key extents separately. The gather's backward reduce-scatters, summing what
+                # every rank's queries read from each piece.
+                key, value = gather_sequence(key), gather_sequence(value)
             monitor = get_monitor()
             # the recompute pass would measure the same rows twice
             if monitor.enabled and not (is_checkpointing() and torch.is_grad_enabled()):
@@ -84,6 +97,14 @@ class Qwen38NextQSACoreAttention(MegatronModule):
 class Qwen38NextAttention(SelfAttention):
     """Megatron self-attention whose key set is chosen by a QSA indexer."""
 
+    # ``verify_allgather_cp_support`` rejects --allgather-cp for every CP attention layer that
+    # does not opt in, because stock Megatron attention reads the zigzag layout and would
+    # compute silently wrong results on a contiguous slice. This layer reads the contiguous
+    # one: it gathers the whole sequence for the indexer and for the keys, and restricts only
+    # the query rows to this rank's window (``ops/cp.py``). Zigzag is refused earlier, in
+    # ``get_qwen3_8_next_spec``, so opting in here cannot enable the wrong layout.
+    supports_allgather_cp = True
+
     def __init__(self, config, submodules, layer_number=1, *args, **kwargs):
         super().__init__(config, submodules, layer_number, *args, **kwargs)
         if self.checkpoint_core_attention:
@@ -99,6 +120,7 @@ class Qwen38NextAttention(SelfAttention):
         self.core_attention = Qwen38NextQSACoreAttention(config, layer_number, owner=self)
         self._qsa_selection = None
         self._qsa_blocks = None
+        self._qsa_cp_rows = None
 
     @staticmethod
     def _packed_positions(cu_seqlens: Tensor, total: int) -> Tensor:
@@ -125,6 +147,22 @@ class Qwen38NextAttention(SelfAttention):
                         group=get_tensor_model_parallel_group(),
                     )
         seq = indexer_states.shape[0]
+        cp = cp_enabled(self.config)
+        if cp:
+            if packed is None:
+                raise NotImplementedError(
+                    "Qwen3.8-Next QSA under context parallelism needs the packed (thd) layout: "
+                    "the indexer has to know the global document boundaries to place a gathered "
+                    "key set. Run with --qkv-format thd."
+                )
+            # The indexer runs under no_grad and selects over whole-sequence natural order, so it
+            # needs every rank's tokens; the rows it scores stay this rank's own (cp_rows below).
+            with torch.no_grad():
+                indexer_states = gather_sequence_no_grad(indexer_states)
+            self._qsa_cp_rows = local_rows(indexer_states.shape[0])
+            seq = indexer_states.shape[0]
+        else:
+            self._qsa_cp_rows = None
         if packed is not None:
             cu = getattr(
                 packed, "cu_seqlens_q", None
@@ -166,6 +204,7 @@ class Qwen38NextAttention(SelfAttention):
                     materialized_rope=materialized_rope,
                     tp_group=self._indexer_tp_group(),
                     cu_seqlens_host=cu_host,
+                    cp_rows=self._qsa_cp_rows,
                 )
             else:
                 self._qsa_selection = self._token_selection(
@@ -178,6 +217,7 @@ class Qwen38NextAttention(SelfAttention):
             self._qsa_selection = None
             self._qsa_cu_seqlens = None
             self._qsa_blocks = None
+            self._qsa_cp_rows = None
 
     def _indexer_tp_group(self):
         """The TP group the indexer splits its query rows over, or None (every rank scores every row).
@@ -233,6 +273,7 @@ def qsa_selected_blocks(
     materialized_rope: bool = False,
     tp_group=None,
     cu_seqlens_host: tuple[int, ...] | None = None,
+    cp_rows: tuple[int, int] | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Indexer selection -> ``(blocks, cu_seqlens)``, the input of ``build_qsa_block_index``.
 
@@ -248,18 +289,27 @@ def qsa_selected_blocks(
     With ``tp_group`` each of its ``n`` ranks scores the rows ``rank, rank + n, ...`` and the shards are
     all-gathered and interleaved back; a row's selection does not depend on the other rows, so the result is the
     replicated one.
+
+    ``cp_rows = (lo, hi)`` is the contiguous window of the whole sequence this context-parallel rank
+    holds queries for; ``indexer_states`` and ``positions`` still cover the whole sequence, so every
+    block stays a candidate and the selection equals the unsharded one for those rows. The returned
+    ``blocks`` then has ``hi - lo`` rows, matching this rank's queries. Composed with ``tp_group``,
+    the two shardings become one strided-within-the-window row set (``ops/cp.py``).
     """
     seq = positions.shape[0]
     device = positions.device
     cu = cu_seqlens
     if cu is None or cu.numel() <= 2:
         cu = torch.tensor([0, seq], dtype=torch.int32, device=device)
-    row_shard = None
-    rows = seq
+    tp_shard = None
     if tp_group is not None:
         n_shards = torch.distributed.get_world_size(tp_group)
-        row_shard = (torch.distributed.get_rank(tp_group), n_shards)
-        rows = -(-seq // n_shards)  # every shard padded to the longest (rank 0's)
+        tp_shard = (torch.distributed.get_rank(tp_group), n_shards)
+    row_shard, _ = compose_row_shard(cp_rows, tp_shard, seq)
+    cp_lo, cp_hi = (0, seq) if cp_rows is None else cp_rows
+    row_stop = None if cp_rows is None else cp_hi
+    # every shard padded to the longest (the one whose first row is the window's first)
+    rows = cp_hi - cp_lo if tp_shard is None else -(-(cp_hi - cp_lo) // tp_shard[1])
     width = indexer_block_width(indexer, positions, cu_seqlens, cu_seqlens_host)
     blocks = torch.full((rows, width), -1, dtype=torch.int32, device=device)
     for start, end, block_idx in indexer.iter_selected_blocks(
@@ -269,15 +319,16 @@ def qsa_selected_blocks(
         cu_seqlens,
         materialized_rope=materialized_rope,
         row_shard=row_shard,
+        row_stop=row_stop,
         cu_seqlens_host=cu_seqlens_host,
     ):
         blocks[start:end] = block_idx
-    if row_shard is not None:
-        n_shards = row_shard[1]
+    if tp_shard is not None:
+        n_shards = tp_shard[1]
         gathered = torch.empty((n_shards * rows, width), dtype=torch.int32, device=device)
         torch.distributed.all_gather_into_tensor(gathered, blocks, group=tp_group)
-        # [shard, i] holds query shard + i * n_shards
-        blocks = gathered.view(n_shards, rows, width).transpose(0, 1).reshape(n_shards * rows, width)[:seq]
+        # [shard, i] holds query shard + i * n_shards, counted from the window's first row
+        blocks = gathered.view(n_shards, rows, width).transpose(0, 1).reshape(n_shards * rows, width)[: cp_hi - cp_lo]
     return blocks, cu
 
 
