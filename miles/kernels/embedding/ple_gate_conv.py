@@ -228,8 +228,10 @@ def _seg_bounds(T: int, cu_seqlens, device):
         return lo, hi
     cu = cu_seqlens.to(torch.long)
     lens = (cu[1:] - cu[:-1]).clamp_min(0)
-    lo = torch.repeat_interleave(cu[:-1], lens).to(torch.int32)
-    hi = torch.repeat_interleave(cu[1:], lens).to(torch.int32)
+    # cu_seqlens spans the T tokens (0 .. T: Qwen3.8-Next has no CP, the PLE layer checks T against the ids), so the
+    # lengths sum to T; output_size spares repeat_interleave its device sync reading that sum
+    lo = torch.repeat_interleave(cu[:-1], lens, output_size=T).to(torch.int32)
+    hi = torch.repeat_interleave(cu[1:], lens, output_size=T).to(torch.int32)
     return lo, hi
 
 
