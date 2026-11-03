@@ -704,6 +704,7 @@ def train_one_step(
     losses_reduced = run_forward_backward_pass(
         args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts
     )
+    issue_order_check.verify_step()  # with --overlap-grad-reduce: every rank issued its bucket groups in one order
     ddp_trace.end_step(rollout_id)  # Q38_DDP_TRACE only: the step's reductions, after finalize_model_grads
     if args.enable_sample_ownership_checker:
         local_consumed_identities = SampleIdentityExtractor.get_consumed_sample_identities(
