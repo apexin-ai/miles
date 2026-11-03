@@ -175,10 +175,26 @@ def test_without_the_deferral_text_and_image_record_different_sequences(monkeypa
     assert h(recorded[1]["dense"]) != h(recorded[2]["dense"])
 
 
-def test_only_overlap_chunks():
+def test_without_overlap_it_is_a_no_op_with_no_all_reduce(monkeypatch):
+    """Overlap off (the launch config): nothing is wrapped and no collective runs, so the code can sit in a launch."""
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("no all-reduce without --overlap-grad-reduce")
+
+    monkeypatch.setattr(dist, "all_reduce", forbidden)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)  # as in a real run: only overlap may trigger it
     chunk = _ddp()
     chunk.ddp_config.overlap_grad_reduce = False
+    groups = chunk.bucket_groups + chunk.expert_parallel_bucket_groups
+    before = [(g.start_grad_sync, g.finish_grad_sync) for g in groups]
     assert issue_order_check.install([chunk]) == [] and issue_order_check.install([torch.nn.Linear(2, 2)]) == []
+    assert [(g.start_grad_sync, g.finish_grad_sync) for g in groups] == before
+    assert "finish_grad_sync" not in vars(chunk)  # the DDP method itself, not a wrapper
+    assert not any(getattr(g, issue_order_check.MARKER, False) for g in groups)
+    for _ in range(3):
+        for g in groups[:2]:
+            g.start_grad_sync()
+        chunk.finish_grad_sync()
 
 
 def test_cpu_cost_of_one_verify_with_400_groups(capsys):
