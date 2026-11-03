@@ -139,6 +139,10 @@ class PackedBlockLayout:
         self.token_block = seq_block_start[seg] + positions // compress_ratio
         self.token_block_start = seq_block_start[seg]
         self.token_start = seq_token_start[seg]
+        # row of the [num_blocks * r] slot grid: block token_block, offset positions % r. A sequence of n
+        # tokens owns ceil(n / r) * r slots and its positions are 0..n-1, so no two tokens share a slot
+        self.token_slot = self.token_block_start * compress_ratio + positions.long()
+        self.compress_ratio = compress_ratio
         # per block
         # output_size: the count is known, so repeat_interleave need not read the repeats back
         self.block_seq = torch.repeat_interleave(
@@ -243,13 +247,23 @@ class _RowView:
 
 
 def compress_keys_by_mean_packed(token_k: Tensor, layout: PackedBlockLayout) -> Tensor:
-    """``[T, head_dim] -> [layout.num_blocks, head_dim]``, averaging inside each sequence."""
+    """``[T, head_dim] -> [layout.num_blocks, head_dim]``, averaging inside each sequence.
+
+    Run to run bitwise: every token is copied to its own slot of a zero ``[num_blocks * r, dim]``
+    grid (``layout.token_slot``, no two tokens share one), then each block sums its ``r`` slots in a
+    fixed order, as ``compress_keys_by_mean`` does for one sequence. ``index_add_`` (atomic adds on
+    CUDA) summed a block's tokens in a different order on each run.
+    """
     acc = _indexer_acc_dtype(token_k)
     dim = token_k.shape[-1]
-    summed = torch.zeros(layout.num_blocks, dim, dtype=acc, device=token_k.device)
-    summed.index_add_(0, layout.token_block, token_k.to(acc))
-    counts = torch.zeros(layout.num_blocks, 1, dtype=acc, device=token_k.device)
-    counts.index_add_(0, layout.token_block, torch.ones(token_k.shape[0], 1, dtype=acc, device=token_k.device))
+    r = layout.compress_ratio
+    device = token_k.device
+    slots = torch.zeros(layout.num_blocks * r, dim, dtype=acc, device=device)
+    slots.index_copy_(0, layout.token_slot, token_k.to(acc))
+    summed = slots.view(layout.num_blocks, r, dim).sum(1)
+    filled = torch.zeros(layout.num_blocks * r, 1, dtype=acc, device=device)
+    filled.index_fill_(0, layout.token_slot, 1)
+    counts = filled.view(layout.num_blocks, r, 1).sum(1)
     return (summed / counts.clamp_min(1)).to(token_k.dtype)
 
 
