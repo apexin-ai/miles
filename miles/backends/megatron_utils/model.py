@@ -23,7 +23,7 @@ from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.utils import get_model_config
 from megatron.training.training import get_model
 
-from miles.backends.megatron_utils import ddp_trace, f8_guard, grad_ready_check, ple_provenance
+from miles.backends.megatron_utils import ddp_trace, f8_guard, grad_ready_check, issue_order_check, ple_provenance
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
@@ -239,6 +239,7 @@ def setup_model_and_optimizer(
 
         defer_vision_bucket_groups(model)  # with --overlap-grad-reduce: vision bucket groups at finish_grad_sync
     grad_ready_check.install(model)  # with --overlap-grad-reduce: fail closed on reports after issue / count drift
+    issue_order_check.install(model)  # with --overlap-grad-reduce: fail closed when ranks issue groups in other orders
     f8_guard.install(model)  # with --overlap-grad-reduce: per-bucket norms, written-after-issue check, alerts
     ddp_trace.install(model)  # Q38_DDP_TRACE=<dir> only; after the bucket groups' final wrapping
 
