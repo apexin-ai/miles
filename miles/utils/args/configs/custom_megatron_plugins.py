@@ -199,6 +199,18 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
             ),
         ),
     ] = "fp32"
+    qwen38_hc_fused: A[
+        bool,
+        Arg(
+            help=(
+                "Run the hyper-connection mix / inject elementwise chains (rmsnorm, inject projection, sigmoid gate, "
+                "gated mean and their backward) as a few fused per-token Triton kernels instead of ~25 separate fp32 "
+                "kernels per call (miles/kernels/hyper_connection/hc.py, _HCMixInjectFused). The GEMMs are unchanged "
+                "and follow --qwen38-hc-matmul-precision, except the n-column inject projection, which becomes an "
+                "fp32 dot product. Numerics of the fp32 rounding order only; no parameter or checkpoint change."
+            )
+        ),
+    ] = False
     qwen38_fla_conv_pinned: A[
         bool,
         Arg(

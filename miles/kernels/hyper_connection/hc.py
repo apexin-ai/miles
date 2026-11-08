@@ -13,6 +13,9 @@ gradients) take ``matmul_precision`` (``--qwen38-hc-matmul-precision``):
   accumulation and fp32 results, as sglang's fused ``hc_mix`` kernel.
 
 Elementwise math (rmsnorm, silu, sigmoid, the gated mean) stays fp32 in every mode.
+
+``fused`` (``--qwen38-hc-fused``, default off) selects ``_HCMixInjectFused``: the same math with the elementwise
+chains fused into fewer kernels (see the comment above it).
 """
 
 import contextlib
@@ -273,6 +276,383 @@ class _HCMixInject(torch.autograd.Function):
         )
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Fused path (``--qwen38-hc-fused``, default off): the same math with the elementwise chains fused into 4 per-token
+# Triton kernels and 2 small [T, R] kernels. The GEMMs are the same ``_linear`` / ``_mm`` calls with the same
+# precision. Differences from the default path (numerics only, no parameter or checkpoint change):
+#
+# - the inject projection ``u = normed @ w_inject^T`` (n columns) is an fp32 dot product inside the norm kernel
+#   (the operand rounded to bf16 first in bf16 mode) instead of an fp32 / TF32 GEMM: TF32 mode gets the fp32 value;
+# - ``du @ w_inject`` (K = n) is n fp32 FMAs inside the norm-backward kernel instead of a GEMM;
+# - dweight is a sum of per-token-block partial sums (fixed order for a given T) instead of torch's column sum;
+# - sigmoid / silu use Triton's exp, and some multiply-adds may contract into FMAs.
+#
+# The gate (sigmoid of the up projection), its derivative chain, the gated mean and the rmsnorm backward are
+# recomputed from x, rstd and the pre-sigmoid up projection instead of being materialized in fp32: the backward
+# reads and writes about 56 [T, n*C] fp32-equivalents instead of about 160, the forward about 20 instead of 34.
+# ---------------------------------------------------------------------------------------------------------------
+
+_FUSED_NUM_WARPS = 8
+_FUSED_SMALL_BLOCK = 1024
+
+
+@triton.jit(do_not_specialize=["T"])
+def _fused_norm_inject_kernel(
+    x_ptr,  # x dtype [T, n*C]
+    w_ptr,  # norm weight [n*C]
+    winj_ptr,  # inject weight [n, n*C] (HAS_INJECT)
+    mm_ptr,  # out, matmul operand dtype [T, n*C]: the normed activations
+    rstd_ptr,  # fp32 [T, n]: written (LOAD_RSTD False) or read (LOAD_RSTD True)
+    hpost_ptr,  # fp32 out [T, n] (HAS_INJECT)
+    T,
+    N: tl.constexpr,
+    C: tl.constexpr,
+    EPS: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    HAS_INJECT: tl.constexpr,
+    ROUND_BF16: tl.constexpr,
+    LOAD_RSTD: tl.constexpr,
+):
+    t = tl.program_id(0).to(tl.int64)
+    if t >= T:
+        return
+    offs = tl.arange(0, BLOCK_C)
+    mask = offs < C
+    js = tl.arange(0, BLOCK_N)
+    jmask = js < N
+    u = tl.zeros([BLOCK_N], dtype=tl.float32)
+    for c in tl.static_range(N):
+        base = t * (N * C) + c * C
+        x = tl.load(x_ptr + base + offs, mask=mask, other=0.0).to(tl.float32)
+        if LOAD_RSTD:
+            rstd = tl.load(rstd_ptr + t * N + c)
+        else:
+            var = tl.sum(x * x, axis=0) / C
+            rstd = 1.0 / tl.sqrt(var + EPS)
+            tl.store(rstd_ptr + t * N + c, rstd)
+        w = tl.load(w_ptr + c * C + offs, mask=mask, other=0.0).to(tl.float32)
+        normed = x * rstd * (1.0 + w)
+        tl.store(mm_ptr + base + offs, normed.to(mm_ptr.dtype.element_ty), mask=mask)
+        if HAS_INJECT:
+            if ROUND_BF16:
+                normed = normed.to(tl.bfloat16).to(tl.float32)
+            wj = tl.load(
+                winj_ptr + js[:, None] * (N * C) + c * C + offs[None, :],
+                mask=jmask[:, None] & mask[None, :],
+                other=0.0,
+            )
+            if ROUND_BF16:
+                wj = wj.to(tl.bfloat16)  # bf16 operands, as _bf16_mm (a no-op for the bf16 HC weights)
+            u += tl.sum(wj.to(tl.float32) * normed[None, :], axis=1)
+    if HAS_INJECT:
+        tl.store(hpost_ptr + t * N + js, 2.0 * tl.sigmoid(u / N), mask=jmask)
+
+
+@triton.jit(do_not_specialize=["numel"])
+def _fused_silu_kernel(
+    a_ptr,  # fp32 [T, R]: normed @ w_down^T (before the 1/n)
+    s_ptr,  # out, matmul operand dtype [T, R]: silu(a / n)
+    numel,
+    N: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < numel
+    z = tl.load(a_ptr + offs, mask=mask, other=0.0) / N
+    tl.store(s_ptr + offs, (z / (1.0 + tl.exp(-z))).to(s_ptr.dtype.element_ty), mask=mask)
+
+
+@triton.jit(do_not_specialize=["numel"])
+def _fused_silu_bwd_kernel(
+    ds_ptr,  # fp32 [T, R]: d silu
+    a_ptr,  # fp32 [T, R]: normed @ w_down^T (before the 1/n)
+    dz_ptr,  # out, matmul operand dtype [T, R]: d a (the 1/n applied)
+    numel,
+    N: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < numel
+    ds = tl.load(ds_ptr + offs, mask=mask, other=0.0)
+    z = tl.load(a_ptr + offs, mask=mask, other=0.0) / N
+    sig = 1.0 / (1.0 + tl.exp(-z))
+    dz = ds * sig * (1.0 + z * (1.0 - sig))
+    dz = dz / N
+    tl.store(dz_ptr + offs, dz.to(dz_ptr.dtype.element_ty), mask=mask)
+
+
+@triton.jit(do_not_specialize=["T"])
+def _fused_gate_mean_kernel(
+    z2_ptr,  # fp32 [T, n*C]: the up projection before the sigmoid
+    x_ptr,
+    w_ptr,
+    rstd_ptr,  # fp32 [T, n]
+    out_ptr,  # x dtype [T, C]
+    T,
+    N: tl.constexpr,
+    C: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+):
+    t = tl.program_id(0).to(tl.int64)
+    if t >= T:
+        return
+    offs = tl.arange(0, BLOCK_C)
+    mask = offs < C
+    acc = tl.zeros([BLOCK_C], dtype=tl.float32)
+    for c in tl.static_range(N):
+        base = t * (N * C) + c * C
+        x = tl.load(x_ptr + base + offs, mask=mask, other=0.0).to(tl.float32)
+        rstd = tl.load(rstd_ptr + t * N + c)
+        w = tl.load(w_ptr + c * C + offs, mask=mask, other=0.0).to(tl.float32)
+        normed = x * rstd * (1.0 + w)
+        g = tl.sigmoid(tl.load(z2_ptr + base + offs, mask=mask, other=0.0))
+        acc += g * normed
+    acc = acc / N
+    tl.store(out_ptr + t * C + offs, acc.to(out_ptr.dtype.element_ty), mask=mask)
+
+
+@triton.jit(do_not_specialize=["T"])
+def _fused_mix_bwd_kernel(
+    z2_ptr,  # fp32 [T, n*C]: the up projection before the sigmoid
+    x_ptr,
+    w_ptr,
+    rstd_ptr,  # fp32 [T, n]
+    dmixed_ptr,  # [T, C] (cast on load)
+    winj_ptr,  # [n, n*C] (HAS_INJECT)
+    dhpost_ptr,  # fp32 [T, n] (HAS_INJECT)
+    dz2_ptr,  # out, matmul operand dtype [T, n*C]: d of the up projection
+    du_ptr,  # fp32 out [T, n] (HAS_INJECT): d of the inject projection (the 1/n applied)
+    T,
+    N: tl.constexpr,
+    C: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    HAS_INJECT: tl.constexpr,
+    ROUND_BF16: tl.constexpr,
+):
+    t = tl.program_id(0).to(tl.int64)
+    if t >= T:
+        return
+    offs = tl.arange(0, BLOCK_C)
+    mask = offs < C
+    js = tl.arange(0, BLOCK_N)
+    jmask = js < N
+    dm = tl.load(dmixed_ptr + t * C + offs, mask=mask, other=0.0).to(tl.float32) / N
+    u = tl.zeros([BLOCK_N], dtype=tl.float32)
+    for c in tl.static_range(N):
+        base = t * (N * C) + c * C
+        x = tl.load(x_ptr + base + offs, mask=mask, other=0.0).to(tl.float32)
+        rstd = tl.load(rstd_ptr + t * N + c)
+        w = tl.load(w_ptr + c * C + offs, mask=mask, other=0.0).to(tl.float32)
+        normed = x * rstd * (1.0 + w)
+        g = tl.sigmoid(tl.load(z2_ptr + base + offs, mask=mask, other=0.0))
+        dgate = dm * normed
+        dz2 = dgate * g * (1.0 - g)
+        tl.store(dz2_ptr + base + offs, dz2.to(dz2_ptr.dtype.element_ty), mask=mask)
+        if HAS_INJECT:
+            if ROUND_BF16:
+                normed = normed.to(tl.bfloat16).to(tl.float32)
+            wj = tl.load(
+                winj_ptr + js[:, None] * (N * C) + c * C + offs[None, :],
+                mask=jmask[:, None] & mask[None, :],
+                other=0.0,
+            )
+            if ROUND_BF16:
+                wj = wj.to(tl.bfloat16)  # bf16 operands, as _bf16_mm (a no-op for the bf16 HC weights)
+            u += tl.sum(wj.to(tl.float32) * normed[None, :], axis=1)
+    if HAS_INJECT:
+        sig_u = tl.sigmoid(u / N)
+        dhp = tl.load(dhpost_ptr + t * N + js, mask=jmask, other=0.0)
+        du = dhp * 2.0 * sig_u * (1.0 - sig_u)
+        du = du / N
+        tl.store(du_ptr + t * N + js, du, mask=jmask)
+
+
+@triton.jit(do_not_specialize=["T"])
+def _fused_norm_bwd_kernel(
+    z2_ptr,  # fp32 [T, n*C]: the up projection before the sigmoid
+    p_ptr,  # fp32 [T, n*C]: dz1 @ w_down (the low-rank path's d normed)
+    x_ptr,
+    w_ptr,
+    rstd_ptr,  # fp32 [T, n]
+    dmixed_ptr,  # [T, C] (cast on load)
+    winj_ptr,  # [n, n*C] (HAS_INJECT)
+    du_ptr,  # fp32 [T, n] (HAS_INJECT)
+    dx_ptr,  # out, x dtype [T, n*C]
+    dw_part_ptr,  # fp32 out [cdiv(T, BLOCK_T), n*C]: per-token-block partial sums of the norm weight grad
+    T,
+    N: tl.constexpr,
+    C: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_T: tl.constexpr,
+    HAS_INJECT: tl.constexpr,
+    ROUND_BF16: tl.constexpr,
+):
+    tb = tl.program_id(0).to(tl.int64)
+    c = tl.program_id(1)
+    offs = tl.arange(0, BLOCK_C)
+    mask = offs < C
+    w = tl.load(w_ptr + c * C + offs, mask=mask, other=0.0).to(tl.float32)
+    if HAS_INJECT:
+        js = tl.arange(0, BLOCK_N)
+        jmask = js < N
+        wj = tl.load(
+            winj_ptr + js[:, None] * (N * C) + c * C + offs[None, :],
+            mask=jmask[:, None] & mask[None, :],
+            other=0.0,
+        )
+        if ROUND_BF16:
+            wj = wj.to(tl.bfloat16)  # bf16 operands, as _bf16_mm (a no-op for the bf16 HC weights)
+        # kept in the weight dtype across the token loop (bf16 in training: half the registers), cast per use
+    acc = tl.zeros([BLOCK_C], dtype=tl.float32)
+    for i in range(BLOCK_T):
+        t = tb * BLOCK_T + i
+        if t < T:
+            base = t * (N * C) + c * C
+            x = tl.load(x_ptr + base + offs, mask=mask, other=0.0).to(tl.float32)
+            rstd = tl.load(rstd_ptr + t * N + c)
+            dm = tl.load(dmixed_ptr + t * C + offs, mask=mask, other=0.0).to(tl.float32) / N
+            g = tl.sigmoid(tl.load(z2_ptr + base + offs, mask=mask, other=0.0))
+            dn = dm * g
+            dn = dn + tl.load(p_ptr + base + offs, mask=mask, other=0.0)
+            if HAS_INJECT:
+                du = tl.load(du_ptr + t * N + js, mask=jmask, other=0.0)
+                if ROUND_BF16:
+                    du = du.to(tl.bfloat16).to(tl.float32)
+                dn = dn + tl.sum(du[:, None] * wj.to(tl.float32), axis=0)
+            acc += dn * (x * rstd)
+            gg = dn * (1.0 + w)
+            dot = tl.sum(gg * x, axis=0)
+            dx = rstd * gg - x * (rstd * rstd * rstd) * (dot / C)
+            tl.store(dx_ptr + base + offs, dx.to(dx_ptr.dtype.element_ty), mask=mask)
+    tl.store(dw_part_ptr + tb * (N * C) + c * C + offs, acc, mask=mask)
+
+
+def _bwd_block_t(T: int, n: int) -> int:
+    """Tokens per norm-backward program: the largest of 32..1 that still gives >= 1024 programs (a function of T and
+    n only, so dweight's summation order is the same on every device and run)."""
+    for bt in (32, 16, 8, 4, 2):
+        if triton.cdiv(T, bt) * n >= 1024:
+            return bt
+    return 1
+
+
+def _small_grid(numel):
+    return (triton.cdiv(numel, _FUSED_SMALL_BLOCK),)
+
+
+class _HCMixInjectFused(torch.autograd.Function):
+    """``_HCMixInject`` with the elementwise chains fused (``--qwen38-hc-fused``); see the block comment above."""
+
+    @staticmethod
+    def forward(ctx, x2d, weight, w_down, w_up, w_inject, n, eps, precision="fp32"):
+        T, W = x2d.shape
+        C = W // n
+        dev = x2d.device
+        bf16 = precision == "bf16"
+        has_inject = w_inject is not None
+        mm_in = torch.empty(T, W, dtype=torch.bfloat16 if bf16 else torch.float32, device=dev)
+        rstd = torch.empty(T, n, dtype=torch.float32, device=dev)
+        h_post = torch.empty(T, n, dtype=torch.float32, device=dev) if has_inject else None
+        if T > 0:
+            _fused_norm_inject_kernel[(T,)](
+                x2d, weight, w_inject if has_inject else weight, mm_in, rstd, h_post if has_inject else rstd, T,
+                N=n, C=C, EPS=eps, BLOCK_C=block_c(C), BLOCK_N=triton.next_power_of_2(n),
+                HAS_INJECT=has_inject, ROUND_BF16=bf16, LOAD_RSTD=False, num_warps=_FUSED_NUM_WARPS,
+            )  # fmt: skip
+        with _tf32_scope(precision):
+            a = _linear(mm_in, w_down, precision)
+            del mm_in
+            s1 = torch.empty(a.shape, dtype=torch.bfloat16 if bf16 else torch.float32, device=dev)
+            if a.numel() > 0:
+                _fused_silu_kernel[_small_grid(a.numel())](a, s1, a.numel(), N=n, BLOCK=_FUSED_SMALL_BLOCK)
+            del a
+            z2 = _linear(s1, w_up, precision)
+        del s1
+        mixed = torch.empty(T, C, dtype=x2d.dtype, device=dev)
+        if T > 0:
+            _fused_gate_mean_kernel[(T,)](
+                z2, x2d, weight, rstd, mixed, T, N=n, C=C, BLOCK_C=block_c(C), num_warps=_FUSED_NUM_WARPS
+            )
+        if h_post is None:
+            h_post = x2d.new_empty(0, dtype=torch.float32)
+        ctx.save_for_backward(x2d, weight, w_down, w_up, w_inject, rstd)
+        ctx.n, ctx.eps, ctx.precision = n, eps, precision
+        return mixed, h_post
+
+    @staticmethod
+    def backward(ctx, dmixed, dh_post):
+        x2d, weight, w_down, w_up, w_inject, rstd = ctx.saved_tensors
+        n, eps, precision = ctx.n, ctx.eps, ctx.precision
+        T, W = x2d.shape
+        C = W // n
+        dev = x2d.device
+        bf16 = precision == "bf16"
+        mm_dtype = torch.bfloat16 if bf16 else torch.float32
+        has_inject = w_inject is not None and dh_post is not None and dh_post.numel() > 0
+        bn = triton.next_power_of_2(n)
+        dmixed = dmixed.contiguous()
+        dh_post = dh_post.float().contiguous() if has_inject else None
+
+        mm_in = torch.empty(T, W, dtype=mm_dtype, device=dev)
+        if T > 0:
+            _fused_norm_inject_kernel[(T,)](
+                x2d, weight, weight, mm_in, rstd, rstd, T, N=n, C=C, EPS=eps, BLOCK_C=block_c(C), BLOCK_N=bn,
+                HAS_INJECT=False, ROUND_BF16=bf16, LOAD_RSTD=True, num_warps=_FUSED_NUM_WARPS,
+            )  # fmt: skip
+        with _tf32_scope(precision):
+            a = _linear(mm_in, w_down, precision)
+            s1 = torch.empty(a.shape, dtype=mm_dtype, device=dev)
+            if a.numel() > 0:
+                _fused_silu_kernel[_small_grid(a.numel())](a, s1, a.numel(), N=n, BLOCK=_FUSED_SMALL_BLOCK)
+            z2 = _linear(s1, w_up, precision)
+
+            dz2 = torch.empty(T, W, dtype=mm_dtype, device=dev)
+            du = torch.empty(T, n, dtype=torch.float32, device=dev) if has_inject else None
+            if T > 0:
+                _fused_mix_bwd_kernel[(T,)](
+                    z2, x2d, weight, rstd, dmixed, w_inject if has_inject else weight,
+                    dh_post if has_inject else rstd, dz2, du if has_inject else rstd, T,
+                    N=n, C=C, BLOCK_C=block_c(C), BLOCK_N=bn, HAS_INJECT=has_inject, ROUND_BF16=bf16,
+                    num_warps=_FUSED_NUM_WARPS,
+                )  # fmt: skip
+            dw_up = _mm(dz2.t(), s1, precision)
+            ds1 = _mm(dz2, w_up, precision)
+            del dz2, s1
+            dz1 = torch.empty(a.shape, dtype=mm_dtype, device=dev)
+            if a.numel() > 0:
+                _fused_silu_bwd_kernel[_small_grid(a.numel())](ds1, a, dz1, a.numel(), N=n, BLOCK=_FUSED_SMALL_BLOCK)
+            del ds1, a
+            dw_down = _mm(dz1.t(), mm_in, precision)
+            p = _mm(dz1, w_down, precision)
+            del dz1
+            dw_inject = _mm(du.t(), mm_in, precision).to(w_inject.dtype) if has_inject else None
+        del mm_in
+
+        dx = torch.empty_like(x2d)
+        bt = _bwd_block_t(T, n)
+        dw_part = torch.empty(triton.cdiv(T, bt), W, dtype=torch.float32, device=dev)
+        if T > 0:
+            _fused_norm_bwd_kernel[(triton.cdiv(T, bt), n)](
+                z2, p, x2d, weight, rstd, dmixed, w_inject if has_inject else weight, du if has_inject else rstd,
+                dx, dw_part, T, N=n, C=C, BLOCK_C=block_c(C), BLOCK_N=bn, BLOCK_T=bt, HAS_INJECT=has_inject,
+                ROUND_BF16=bf16, num_warps=_FUSED_NUM_WARPS,
+            )  # fmt: skip
+        dweight = dw_part.sum(dim=0).to(weight.dtype)
+        return (
+            dx,
+            dweight,
+            dw_down.to(w_down.dtype),
+            dw_up.to(w_up.dtype),
+            dw_inject,
+            None,
+            None,
+            None,
+        )
+
+
 class _HCCombine(torch.autograd.Function):
     """out = residual + h_post[:, c, None] * y  (flattened [T, n*C])."""
 
@@ -303,12 +683,18 @@ class _HCCombine(torch.autograd.Function):
         return dout, dy, dh_post.to(ctx.h_post_dtype), None
 
 
-def hc_mix_inject(x, weight, w_down, w_up, w_inject, n: int, eps: float, matmul_precision: str = "fp32"):
-    """Fused (grouped_gemma_rmsnorm -> hc_mix, hc_inject_gate); ``matmul_precision``: see the module doc."""
+def hc_mix_inject(
+    x, weight, w_down, w_up, w_inject, n: int, eps: float, matmul_precision: str = "fp32", fused: bool = False
+):
+    """Fused (grouped_gemma_rmsnorm -> hc_mix, hc_inject_gate); ``matmul_precision``: see the module doc.
+
+    ``fused`` (``--qwen38-hc-fused``): the elementwise chains in fewer kernels (``_HCMixInjectFused``); same math,
+    different fp32 rounding order; the default path is unchanged."""
     check_matmul_precision(matmul_precision)
     lead = x.shape[:-1]
     x2d = x.reshape(-1, x.shape[-1]).contiguous()
-    mixed, h_post = _HCMixInject.apply(x2d, weight, w_down, w_up, w_inject, n, eps, matmul_precision)
+    fn = _HCMixInjectFused if fused else _HCMixInject
+    mixed, h_post = fn.apply(x2d, weight, w_down, w_up, w_inject, n, eps, matmul_precision)
     mixed = mixed.reshape(*lead, -1)
     if w_inject is not None:
         h_post = h_post.reshape(*lead, n)
