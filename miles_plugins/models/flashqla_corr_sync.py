@@ -6,20 +6,28 @@ correction ``cp_context.correct_terminal_states`` runs ``blackwell.cp_fwd.tilela
 On B300 with concurrent NCCL traffic it sometimes returns a different ``dht`` for the first CP
 segments of the reverse scan (one 8-column V group of one head). The error then reaches dk/dv/dbeta/dg
 of that segment (dq never changes). Measured on node 127 with frozen inputs: 20/48000 calls differed;
-with ``num_stages=1``: 0/48000 (one run; an upper bound, not a proof that the race is gone). The fault
-is in this kernel; ``fused_gdr_dh`` and ``fused_gdr_bwd`` only consume or propagate it.
+with ``num_stages=1``: 0/48000 in one run, but 2/48000 in a second run (v11 shipping arm), so
+``num_stages=1`` only lowers the rate. All captured events (31) are in the copy of ``ht`` through
+``h_shared`` (the consumer reads ``h_shared`` and releases it for the next TMA into the same buffer); no
+event started on an iteration that applied a nonzero correction. The fault is in this kernel;
+``fused_gdr_dh`` and ``fused_gdr_bwd`` only consume or propagate it.
 
 ``MILES_FLASHQLA_CORR_SYNC`` selects a replacement for the backward correction only (default: off).
 
-* ``stages1``: the same TileLang kernel compiled with ``num_stages=1``. Same arithmetic per element;
-  the next segment's loads are not prefetched into a second buffer.
+* ``hdirect`` (candidate primary): the same TileLang kernel with ``num_stages=1`` and ``h`` read
+  straight from ``ht_buffer`` in global memory into registers (no ``h_shared``, no TMA and no mbarrier
+  for ``h``; out-of-range segments read 0, as the TMA zero fill does). ``M`` still arrives by TMA. Same
+  arithmetic per element (FP32 copy, TF32 MMA), so it is expected to equal the original kernel bit for bit
+  whenever the original is correct (to be shown on GPU by the equiv arm).
+* ``stages1`` (kept for comparison, not recommended): the same TileLang kernel compiled with
+  ``num_stages=1``. Same arithmetic per element; lowers but does not remove the race.
 * ``torch``: a PyTorch reverse scan. Deterministic. Non-fallback segments are exact copies; fallback
   segments compute ``M^T @ h`` in FP64 (independent of the global matmul precision setting) instead of
   the kernel's TF32 MMA, so they differ from the kernel by roughly the TF32 error.
 
 Rules:
 
-* Both modes refuse to apply unless the installed ``cp_fwd.py`` and ``cp_context.py`` match the
+* All modes refuse to apply unless the installed ``cp_fwd.py`` and ``cp_context.py`` match the
   reviewed sha256 values, and ``cp_context.correct_terminal_states`` is still the original function.
 * Once applied, the mode cannot change or be switched off in the same process (an off/unset value after
   applying raises), because callers may already hold the replaced function.
@@ -50,7 +58,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 ENV = "MILES_FLASHQLA_CORR_SYNC"
-MODES = ("stages1", "torch")
+MODES = ("stages1", "hdirect", "torch")
 # sha256 of the FlashQLA sources this patch was reviewed against (flash_qla 0.1.2+7c7dfe1).
 REVIEWED_CP_FWD_SHA256 = {"8cfc9059acffd08c968cfcf9622e0527eb961d77de5c57b91ffb08b02fe7ff27": "0.1.2+7c7dfe1"}
 REVIEWED_CP_CONTEXT_SHA256 = {"4272d8d983b0af64aeb9a9fb47032a8a46a899376e2c032719b634c18510e2b8": "0.1.2+7c7dfe1"}
@@ -58,6 +66,29 @@ CP_CONTEXT_MODULE = "flash_qla.ops.gated_delta_rule.chunk.cp_context"
 FLA_FLASHQLA_BACKEND_MODULE = "fla.ops.gated_delta_rule.backends.flash_qla"
 _ANCHOR = "        for i_s in T.Pipelined(num_iters - 1, num_stages=2):\n"
 _REPLACEMENT = "        for i_s in T.Pipelined(num_iters - 1, num_stages=1):  # miles flashqla_corr_sync\n"
+# hdirect: the h_shared load (both layouts) is removed and the h_shared -> h_fragment copy becomes a direct
+# global -> h_fragment copy of the same slice.
+_H_LOAD_ANCHOR = (
+    "            if state_v_first:\n"
+    "                T.copy(\n"
+    "                    ht_buffer[idx, bh, DV_start:DV_end, 0:DK],\n"
+    "                    h_shared,\n"
+    "                )\n"
+    "            else:\n"
+    "                T.copy(\n"
+    "                    ht_buffer[idx, bh, 0:DK, DV_start:DV_end],\n"
+    "                    h_shared,\n"
+    "                )\n"
+)
+_H_LOAD_REPLACEMENT = "            pass  # miles flashqla_corr_sync hdirect: h is read from global below, not via h_shared\n"
+_H_USE_ANCHOR = "            T.copy(h_shared, h_fragment)\n"
+_H_USE_REPLACEMENT = (
+    "            if state_v_first:  # miles flashqla_corr_sync hdirect\n"
+    "                T.copy(ht_buffer[idx, bh, DV_start:DV_end, 0:DK], h_fragment)\n"
+    "            else:\n"
+    "                T.copy(ht_buffer[idx, bh, 0:DK, DV_start:DV_end], h_fragment)\n"
+)
+KERNEL_MODES = ("stages1", "hdirect")
 
 _lock = threading.Lock()
 _applied: str | None = None
@@ -85,14 +116,23 @@ def _sha256_file(path: str | os.PathLike) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def patch_cp_fwd_source(text: str) -> str:
-    """Return cp_fwd.py source with tilelang_correct_h0's segment loop at num_stages=1."""
+def patch_cp_fwd_source(text: str, mode: str = "stages1") -> str:
+    """Return cp_fwd.py source with tilelang_correct_h0's segment loop at num_stages=1 and, for
+    ``mode="hdirect"``, with h read from global memory instead of through h_shared."""
+    if mode not in KERNEL_MODES:
+        raise ValueError(f"no source patch for mode {mode!r}")
     sha = hashlib.sha256(text.encode()).hexdigest()
     if sha not in REVIEWED_CP_FWD_SHA256:
         raise RuntimeError(f"flash_qla cp_fwd.py sha256 {sha} was not reviewed for {ENV}")
-    if text.count(_ANCHOR) != 1:
-        raise RuntimeError("tilelang_correct_h0 pipeline anchor not found exactly once")
-    return text.replace(_ANCHOR, _REPLACEMENT)
+    anchors = [(_ANCHOR, _REPLACEMENT)]
+    if mode == "hdirect":
+        anchors += [(_H_LOAD_ANCHOR, _H_LOAD_REPLACEMENT), (_H_USE_ANCHOR, _H_USE_REPLACEMENT)]
+    for anchor, _ in anchors:
+        if text.count(anchor) != 1:
+            raise RuntimeError(f"tilelang_correct_h0 anchor not found exactly once: {anchor.strip()[:60]!r}")
+    for anchor, replacement in anchors:
+        text = text.replace(anchor, replacement)
+    return text
 
 
 def verify_sources(cp_context, cp_fwd) -> None:
@@ -142,17 +182,21 @@ def correct_terminal_states_torch(raw_dht, dht_buffer, mt_buffer, fallback_mask,
 
 
 def _load_stages1_module(cp_fwd_module):
+    return _load_patched_module(cp_fwd_module, "stages1")
+
+
+def _load_patched_module(cp_fwd_module, mode: str):
     text = Path(cp_fwd_module.__file__).read_text()
-    patched = patch_cp_fwd_source(text)
+    patched = patch_cp_fwd_source(text, mode)
     digest = hashlib.sha256(patched.encode()).hexdigest()[:16]
     cache = Path(os.environ.get("MILES_FLASHQLA_PATCH_DIR", tempfile.gettempdir())) / "miles_flashqla_corr_sync"
     cache.mkdir(parents=True, exist_ok=True)
-    path = cache / f"cp_fwd_stages1_{digest}.py"
+    path = cache / f"cp_fwd_{mode}_{digest}.py"
     if not path.exists() or path.read_text() != patched:
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(patched)
         os.replace(tmp, path)  # atomic; every rank writes the same bytes
-    name = f"miles_flashqla_cp_fwd_stages1_{digest}"
+    name = f"miles_flashqla_cp_fwd_{mode}_{digest}"
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -192,8 +236,8 @@ def maybe_apply(strict_arch: bool = True) -> str | None:
             return None
         cp_fwd = importlib.import_module(original.__module__)
         verify_sources(cp_context, cp_fwd)
-        if mode == "stages1":
-            replacement = _load_stages1_module(cp_fwd).correct_terminal_states
+        if mode in KERNEL_MODES:
+            replacement = _load_patched_module(cp_fwd, mode).correct_terminal_states
         else:
             replacement = correct_terminal_states_torch
         cp_context.correct_terminal_states = replacement

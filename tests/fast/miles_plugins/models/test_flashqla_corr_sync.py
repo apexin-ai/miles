@@ -147,8 +147,8 @@ class TestApplyState:
             fcs.apply_for_backend("flashqla")
         assert cpx.correct_terminal_states is fcs.correct_terminal_states_torch
 
-    @pytest.mark.parametrize("mode", ["torch", "stages1"])
-    def test_unreviewed_sources_rejected_in_both_modes(self, env, tmp_path, mode):
+    @pytest.mark.parametrize("mode", ["torch", "stages1", "hdirect"])
+    def test_unreviewed_sources_rejected_in_every_mode(self, env, tmp_path, mode):
         cpx, _, original, _ = install_fake_flashqla(env, tmp_path, review=False)
         env.setenv(fcs.ENV, mode)
         with pytest.raises(RuntimeError, match="not reviewed"):
@@ -208,21 +208,41 @@ class TestRealLoader:
         assert cpx.correct_initial_states is original_fwd  # forward untouched
         assert fcs.maybe_apply() == "stages1" and cpx.correct_terminal_states is new  # no reinstall
 
+    def test_hdirect_installs_patched_module_from_real_source(self, env, tmp_path):
+        cp_fwd_file = _installed("ops/gated_delta_rule/chunk/blackwell/cp_fwd.py")
+        cp_context_file = _installed("ops/gated_delta_rule/chunk/cp_context.py")
+        if cp_fwd_file is None or cp_context_file is None or importlib.util.find_spec("tilelang") is None:
+            pytest.skip("flash_qla sources and tilelang required")
+        cpx, cp_fwd, original, original_fwd = install_fake_flashqla(
+            env, tmp_path, review=False, cp_fwd_file=cp_fwd_file, cp_context_file=cp_context_file)
+        env.setenv(fcs.ENV, "hdirect")
+        env.setenv("MILES_FLASHQLA_PATCH_DIR", str(tmp_path / "cache"))
+        assert fcs.maybe_apply() == "hdirect"
+        new = cpx.correct_terminal_states
+        assert new is not original and new.__module__.startswith("miles_flashqla_cp_fwd_hdirect_")
+        text = Path(new.__globals__["__file__"]).read_text()
+        assert text == fcs.patch_cp_fwd_source(cp_fwd_file.read_text(), "hdirect")
+        assert cpx.correct_initial_states is original_fwd  # forward untouched
+        env.setenv(fcs.ENV, "stages1")
+        with pytest.raises(RuntimeError, match="applied as 'hdirect'"):
+            fcs.maybe_apply()
+
 
 class TestLoaderContentCheck:
-    def test_stale_cache_file_is_rejected(self, env, tmp_path):
+    @pytest.mark.parametrize("mode", ["stages1", "hdirect"])
+    def test_stale_cache_file_is_rejected(self, env, tmp_path, mode):
         cp_fwd_file = _installed("ops/gated_delta_rule/chunk/blackwell/cp_fwd.py")
         if cp_fwd_file is None:
             pytest.skip("flash_qla sources required")
-        patched = fcs.patch_cp_fwd_source(cp_fwd_file.read_text())
+        patched = fcs.patch_cp_fwd_source(cp_fwd_file.read_text(), mode)
         digest = hashlib.sha256(patched.encode()).hexdigest()[:16]
         cache = tmp_path / "cache" / "miles_flashqla_corr_sync"
         cache.mkdir(parents=True)
-        (cache / f"cp_fwd_stages1_{digest}.py").write_text("x = 1\n")   # stale / foreign content
+        (cache / f"cp_fwd_{mode}_{digest}.py").write_text("x = 1\n")   # stale / foreign content
         env.setenv("MILES_FLASHQLA_PATCH_DIR", str(tmp_path / "cache"))
         env.setattr(fcs.os, "replace", lambda a, b: None)              # publish step fails silently
         with pytest.raises(RuntimeError, match="does not hold the patched source"):
-            fcs._load_stages1_module(types.SimpleNamespace(__file__=str(cp_fwd_file)))
+            fcs._load_patched_module(types.SimpleNamespace(__file__=str(cp_fwd_file)), mode)
 
 
 class TestTorchScan:
@@ -274,6 +294,39 @@ class TestPatchSource:
         assert patched.count("num_stages=1):  # miles flashqla_corr_sync") == 1
         assert "T.Pipelined(num_iters - 1, num_stages=2)" not in patched
         assert len(patched.splitlines()) == len(text.splitlines())
+        assert patched == fcs.patch_cp_fwd_source(text, "stages1")
+
+    def test_installed_source_hdirect(self):
+        path = _installed("ops/gated_delta_rule/chunk/blackwell/cp_fwd.py")
+        if path is None:
+            pytest.skip("flash_qla not installed")
+        text = path.read_text()
+        patched = fcs.patch_cp_fwd_source(text, "hdirect")
+        assert patched.count("num_stages=1):  # miles flashqla_corr_sync") == 1
+        assert "T.copy(h_shared, h_fragment)" not in patched
+        assert "                    h_shared,\n" not in patched          # no copy into h_shared left
+        assert patched.count("T.copy(ht_buffer[idx, bh, 0:DK, DV_start:DV_end], h_fragment)") == 1
+        assert patched.count("T.copy(ht_buffer[idx, bh, DV_start:DV_end, 0:DK], h_fragment)") == 1
+        # everything outside the three anchors is unchanged
+        rest = text.replace(fcs._ANCHOR, "").replace(fcs._H_LOAD_ANCHOR, "").replace(fcs._H_USE_ANCHOR, "")
+        rest_p = (patched.replace(fcs._REPLACEMENT, "").replace(fcs._H_LOAD_REPLACEMENT, "")
+                  .replace(fcs._H_USE_REPLACEMENT, ""))
+        assert rest == rest_p
+
+    @pytest.mark.parametrize("anchor", ["_ANCHOR", "_H_LOAD_ANCHOR", "_H_USE_ANCHOR"])
+    def test_hdirect_refuses_when_an_anchor_is_missing_or_doubled(self, monkeypatch, anchor):
+        path = _installed("ops/gated_delta_rule/chunk/blackwell/cp_fwd.py")
+        if path is None:
+            pytest.skip("flash_qla not installed")
+        a = getattr(fcs, anchor)
+        for text in (path.read_text().replace(a, ""), path.read_text().replace(a, a + a)):
+            monkeypatch.setitem(fcs.REVIEWED_CP_FWD_SHA256, hashlib.sha256(text.encode()).hexdigest(), "t")
+            with pytest.raises(RuntimeError, match="exactly once"):
+                fcs.patch_cp_fwd_source(text, "hdirect")
+
+    def test_unknown_patch_mode(self):
+        with pytest.raises(ValueError):
+            fcs.patch_cp_fwd_source("x = 1\n", "torch")
 
 
 def _linear_attn():
@@ -468,3 +521,58 @@ def test_stages1_lowers_without_double_buffering(tmp_path):
     assert "(i_s & 1) * 4096" in cu["orig"]
     assert "(i_s & 1) * 4096" not in cu["s1"]
     assert "mbarrier_mem[4]" in cu["s1"]
+
+
+@pytest.mark.skipif(os.environ.get("MILES_TEST_TILELANG_LOWERING") != "1",
+                    reason="set MILES_TEST_TILELANG_LOWERING=1 (needs tilelang + flash_qla source, ~1 min CPU)")
+def test_hdirect_lowers_without_tma_or_mbarrier_for_h(tmp_path):
+    """Lower the hdirect backward correction to CUDA on CPU: h is read from global memory with a bounds
+    guard (out of range -> 0, like the TMA zero fill); only M is loaded by TMA and only M has mbarriers."""
+    import re as _re
+    path = _installed("ops/gated_delta_rule/chunk/blackwell/cp_fwd.py")
+    if path is None:
+        pytest.skip("flash_qla not installed")
+    script = tmp_path / "lower.py"
+    script.write_text(
+        "import importlib.util, re, sys\n"
+        "import tilelang, tvm\n"
+        "src, out = sys.argv[1], sys.argv[2]\n"
+        "t = open(src).read()\n"
+        "m = re.search(r'@tilelang\\.jit\\((.*?)\\)\\ndef tilelang_correct_h0\\(', t, re.S)\n"
+        "t = t[:m.start()] + 'def tilelang_correct_h0(' + t[m.end():]\n"
+        "p = out + '.py'; open(p, 'w').write(t)\n"
+        "s = importlib.util.spec_from_file_location('k', p); k = importlib.util.module_from_spec(s); s.loader.exec_module(k)\n"
+        "f = k.tilelang_correct_h0(H=12, DK=128, DV=128, res_dtype='float32', accum_dtype='float32',"
+        " buffer_dtype='float32', seqlen_dtype='int32', mask_dtype='bool', use_raw_h0=False,"
+        " state_v_first=False, reverse=True, transpose_m=True)\n"
+        "tg = tvm.target.Target({'kind': 'cuda', 'arch': 'sm_103a'})\n"
+        "with tvm.transform.PassContext(opt_level=3), tg:\n"
+        "    open(out, 'w').write(tilelang.lower(f, target=tg).kernel_source)\n"
+    )
+    cu = {}
+    for name, text in (("orig", path.read_text()), ("hdirect", fcs.patch_cp_fwd_source(path.read_text(), "hdirect"))):
+        src = tmp_path / f"cp_fwd_{name}.py"
+        src.write_text(text)
+        out = tmp_path / f"{name}.cu"
+        subprocess.run([sys.executable, "-B", str(script), str(src), str(out)], check=True,
+                       env={**os.environ, "CUDA_VISIBLE_DEVICES": ""}, capture_output=True)
+        cu[name] = out.read_text()
+    o, h = cu["orig"], cu["hdirect"]
+    # original: h and M both through TMA, 2 stages x (full, empty) x (h, M) mbarriers
+    assert "ht_buffer_desc" in o and "h_shared" in o
+    # hdirect: no tensor map, no shared buffer, no TMA for h; h is a plain pointer argument
+    assert "ht_buffer_desc" not in h and "h_shared" not in h
+    assert "const float* __restrict__ ht_buffer" in h
+    tma = _re.findall(r"tl::tma_load\((\w+)", h)
+    assert tma and set(tma) == {"mt_buffer_desc"}
+    assert "mbarrier_mem[2]" in h                      # only M's full/empty pair is left
+    assert h.count(".init(") == 2
+    # h load: guarded global read; the else branch writes zeros (TMA out-of-bounds fill is zero)
+    loads = [m.start() for m in _re.finditer(r"= \*\(float2\*\)\(ht_buffer \+", h)]
+    assert len(loads) == 1
+    window = h[max(0, loads[0] - 600): loads[0] + 1200]
+    assert "<= cp_batch_size" in window and "make_float2(" in window and "0x0p+0f" in window
+    # the read lands in h_fragment before M's full barrier is waited on (no ordering against TMA needed)
+    assert h.index("ht_buffer +", loads[0]) < h.index(".wait(", loads[0])
+    # same MMA (TF32 m16n8k8) as the original
+    assert h.count("kTensorFloat32") == o.count("kTensorFloat32")
