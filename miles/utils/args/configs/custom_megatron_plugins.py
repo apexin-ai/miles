@@ -172,6 +172,17 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
             )
         ),
     ] = False
+    qwen38_indexer_fast_topk: A[
+        bool,
+        Arg(
+            help=(
+                "Select the QSA indexer's top-k blocks per query tile with one Triton radix-select kernel "
+                "(miles_plugins/models/qwen3_8_next/ops/qsa_topk.py) instead of torch.topk + the tie fix-up + two "
+                "sorts. Same rule (higher score, then lower block id) and the same block ids for finite scores; no "
+                "per-tile host sync. Selection only; no parameter or checkpoint change."
+            )
+        ),
+    ] = False
     qwen38_ple_deterministic_conv_grad: A[
         bool,
         Arg(

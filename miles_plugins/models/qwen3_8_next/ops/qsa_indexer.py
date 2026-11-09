@@ -16,6 +16,7 @@ from torch import Tensor
 
 from miles_plugins.models.indexer import freeze_indexer_parameters
 from miles_plugins.models.qwen3_8_next.ops.qsa_score import SCORE_DTYPES, score_blocks
+from miles_plugins.models.qwen3_8_next.ops.qsa_topk import fast_topk_supported, select_topk_block_ids
 
 
 def _indexer_acc_dtype(x):
@@ -370,6 +371,10 @@ class Qwen38NextQSAIndexer(MegatronModule):
             raise ValueError(
                 f"qwen3_8_next_indexer_score_dtype must be one of {SCORE_DTYPES}, got {self.score_dtype!r}"
             )
+        # --qwen38-indexer-fast-topk: one Triton kernel per tile for select_topk_blocks' rule, no host sync
+        self.fast_topk = bool(
+            getattr(config, "qwen3_8_next_indexer_fast_topk", False)
+        )  # config-access-exempt: optional knob, absent from older configs
 
         self.index_qk_proj = TELinear(
             config.hidden_size,
@@ -511,9 +516,14 @@ class Qwen38NextQSAIndexer(MegatronModule):
                     self.score_dtype,
                 )
                 kk = min(k, width)
-                values, idx = select_topk_blocks(logits, kk)
-                del logits
-                block_idx[:, :kk] = torch.where(values == float("-inf"), -1, idx + col_lo)
+                if self.fast_topk and fast_topk_supported(logits):
+                    # the same ids, written straight into block_idx (ops/qsa_topk.py)
+                    select_topk_block_ids(logits, kk, col_lo, out=block_idx)
+                    del logits
+                else:
+                    values, idx = select_topk_blocks(logits, kk)
+                    del logits
+                    block_idx[:, :kk] = torch.where(values == float("-inf"), -1, idx + col_lo)
             yield start, end, block_idx
 
     def num_blocks(

@@ -106,6 +106,9 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
     config.qwen3_8_next_indexer_tp_shard = bool(
         getattr(args, "qwen38_indexer_tp_shard", False)
     )  # config-access-exempt: hand-built test args may omit the knob
+    config.qwen3_8_next_indexer_fast_topk = bool(
+        getattr(args, "qwen38_indexer_fast_topk", False)
+    )  # config-access-exempt: hand-built test args may omit the knob
     config.qwen3_8_next_ple_deterministic_conv_grad = bool(
         getattr(args, "qwen38_ple_deterministic_conv_grad", True)
     )  # config-access-exempt: hand-built test args may omit the knob
