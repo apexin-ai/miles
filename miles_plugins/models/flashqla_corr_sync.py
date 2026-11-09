@@ -25,19 +25,22 @@ Rules:
   applying raises), because callers may already hold the replaced function.
 * The forward correction (``correct_initial_states``) is not touched.
 * ``gdn_kernel`` calls :func:`apply_for_backend`. ``backend="flashqla"`` always uses FlashQLA, so the
-  patch is applied there (non-Blackwell is an error). ``backend="fla"`` is patched only when fla would
-  dispatch to FlashQLA (dispatch not disabled, ``FLA_FLASH_QLA`` not ``"0"``, ``flash_qla`` installed);
-  a non-Blackwell FlashQLA path is skipped with a warning, because the defect is Blackwell-specific.
+  patch is applied there; a device that is not Blackwell (compute capability 10.x) is an error, checked
+  before FlashQLA is imported. ``backend="fla"`` decides per call, exactly as fla does: the hook wraps
+  fla's ``FlashQLABackend.chunk_gated_delta_rule``, which fla's dispatcher calls only after its own
+  checks pass (dispatch state fixed at fla import, ``FLA_FLASH_QLA``, package present, and the verifier:
+  architecture, dtype, K=V=128, gate options, ``cp_context is None``). The patch is applied on the first
+  such call; a non-Blackwell device is skipped with a warning (the defect is Blackwell-specific).
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import importlib
 import importlib.util
 import logging
 import os
-import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -52,11 +55,21 @@ MODES = ("stages1", "torch")
 REVIEWED_CP_FWD_SHA256 = {"8cfc9059acffd08c968cfcf9622e0527eb961d77de5c57b91ffb08b02fe7ff27": "0.1.2+7c7dfe1"}
 REVIEWED_CP_CONTEXT_SHA256 = {"4272d8d983b0af64aeb9a9fb47032a8a46a899376e2c032719b634c18510e2b8": "0.1.2+7c7dfe1"}
 CP_CONTEXT_MODULE = "flash_qla.ops.gated_delta_rule.chunk.cp_context"
+FLA_FLASHQLA_BACKEND_MODULE = "fla.ops.gated_delta_rule.backends.flash_qla"
 _ANCHOR = "        for i_s in T.Pipelined(num_iters - 1, num_stages=2):\n"
 _REPLACEMENT = "        for i_s in T.Pipelined(num_iters - 1, num_stages=1):  # miles flashqla_corr_sync\n"
 
 _lock = threading.Lock()
 _applied: str | None = None
+_fla_hooked = False
+
+
+def _blackwell_device() -> bool:
+    """True on a CUDA device with compute capability 10.x (sm100 / sm103). Never imports FlashQLA."""
+    try:
+        return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 10
+    except Exception:
+        return False
 
 
 def requested_mode() -> str | None:
@@ -163,6 +176,12 @@ def maybe_apply(strict_arch: bool = True) -> str | None:
             return mode
         if mode is None:
             return None
+        if not _blackwell_device():  # before importing FlashQLA: its import raises on e.g. sm80
+            msg = f"{ENV} covers Blackwell (compute capability 10.x) devices only"
+            if strict_arch:
+                raise RuntimeError(msg)
+            logger.warning("%s; not applied", msg)
+            return None
         cp_context = importlib.import_module(CP_CONTEXT_MODULE)
         original = cp_context.correct_terminal_states
         if not original.__module__.endswith("blackwell.cp_fwd"):
@@ -183,34 +202,43 @@ def maybe_apply(strict_arch: bool = True) -> str | None:
         return mode
 
 
-def _flash_qla_installed() -> bool:
-    if "flash_qla" in sys.modules:
-        return sys.modules["flash_qla"] is not None
-    try:
-        return importlib.util.find_spec("flash_qla") is not None
-    except (ImportError, ValueError):
-        return False
+def _install_fla_backend_hook() -> bool:
+    """Wrap fla's FlashQLABackend.chunk_gated_delta_rule so the patch is applied exactly when fla's
+    dispatcher actually selects FlashQLA for a call. Imports fla's backend module, never FlashQLA."""
+    global _fla_hooked
+    with _lock:
+        if _fla_hooked:
+            return True
+        try:
+            module = importlib.import_module(FLA_FLASHQLA_BACKEND_MODULE)
+        except ImportError as exc:
+            logger.warning("%s: fla has no FlashQLA backend (%r); nothing to patch on the fla path", ENV, exc)
+            return False
+        cls = module.FlashQLABackend
+        original = cls.chunk_gated_delta_rule
+        if not getattr(original, "_miles_flashqla_corr_sync", False):
+            @functools.wraps(original)
+            def chunk_gated_delta_rule(self, *args, **kwargs):
+                maybe_apply(strict_arch=False)
+                return original(self, *args, **kwargs)
 
-
-def fla_dispatches_to_flashqla() -> bool:
-    """Mirror fla's backend switch: dispatch on unless FLA_DISABLE_BACKEND_DISPATCH=1, FlashQLA on unless
-    FLA_FLASH_QLA=0, and FlashQLA must be installed."""
-    if os.environ.get("FLA_DISABLE_BACKEND_DISPATCH") == "1":
-        return False
-    if os.environ.get("FLA_FLASH_QLA", "1") == "0":
-        return False
-    return _flash_qla_installed()
+            chunk_gated_delta_rule._miles_flashqla_corr_sync = True
+            cls.chunk_gated_delta_rule = chunk_gated_delta_rule
+        _fla_hooked = True
+        return True
 
 
 def apply_for_backend(backend: str) -> str | None:
-    """Hook for ``gdn_kernel``: apply only on paths that actually run FlashQLA."""
+    """Hook for ``gdn_kernel``. Returns the applied mode (None when nothing is applied yet)."""
+    mode = requested_mode()
+    with _lock:
+        if _applied is not None and mode != _applied:
+            raise RuntimeError(f"{ENV} was applied as {_applied!r}; it cannot be changed or switched off")
+    if mode is None:
+        return None
     if backend == "flashqla":
         return maybe_apply(strict_arch=True)
     if backend == "fla":
-        if requested_mode() is None or not fla_dispatches_to_flashqla():
-            with _lock:
-                if _applied is not None and requested_mode() != _applied:
-                    raise RuntimeError(f"{ENV} was applied as {_applied!r}; it cannot be changed or switched off")
-            return _applied
-        return maybe_apply(strict_arch=False)
+        _install_fla_backend_hook()  # applied lazily on the first call fla dispatches to FlashQLA
+        return _applied
     return None
