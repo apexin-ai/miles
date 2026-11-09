@@ -10,6 +10,7 @@ that checks which (query, key) pairs each program sums, not tensor-core rounding
 """
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -176,6 +177,9 @@ def _cases():
             past = all(not t[sum(lens) :].any() for t in got)
             results[f"{shape_name}/{launch_name}"] = {
                 "errs": errs,
+                "finite": {
+                    n: bool(torch.isfinite(t).all()) for n, t in zip(("out", "dq", "dk", "dv"), got, strict=True)
+                },
                 "order_ok": order_ok,
                 "past_rows_zero": past,
                 "query_tile": index.query_tile,
@@ -202,7 +206,10 @@ def test_every_launch_matches_fp64(results, shape, launch):
     r = results[f"{shape}/{launch}"]
     assert r["order_ok"], r
     assert r["past_rows_zero"], r
-    assert max(r["errs"].values()) < TOL, r
+    # per tensor: a NaN error must fail (max() over a dict with a NaN in it can skip the NaN)
+    assert set(r["errs"]) == {"out", "dq", "dk", "dv"}, r
+    assert all(math.isfinite(e) and 0 <= e < TOL for e in r["errs"].values()), r
+    assert all(r["finite"].values()), r
 
 
 @pytest.mark.parametrize("launch", LAUNCHES)

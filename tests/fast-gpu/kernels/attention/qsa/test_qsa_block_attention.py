@@ -77,6 +77,13 @@ def _reference(q, k, v, keys, scale):
     return torch.einsum("hts,hsd->htd", p, vh).transpose(0, 1)
 
 
+def _same_bits(a, b):
+    """Bit-for-bit equality (torch.equal treats +0 and -0, and NaN payloads, by value)."""
+    if a.shape != b.shape or a.dtype != b.dtype:
+        return False
+    return torch.equal(a.contiguous().view(torch.uint8), b.contiguous().view(torch.uint8))
+
+
 def _rel(a, b):
     return ((a.double() - b.double()).norm() / b.double().norm().clamp_min(1e-30)).item()
 
@@ -148,7 +155,7 @@ def test_deterministic():
     first = _run(attend, q, k, v, gout)
     second = _run(attend, q, k, v, gout)
     for a, b in zip(first, second, strict=True):
-        assert torch.equal(a, b)
+        assert _same_bits(a, b)
 
 
 # launch shapes a B300 sweep may pick; each must stay within TOL of fp64 and be deterministic
@@ -190,7 +197,8 @@ def test_launch_variant_matches_reference_and_is_deterministic(variant, lens, he
     again = _run(attend, q, k, v, gout)
     want = _run(lambda a, b, c: _reference(a, b, c, _keys(blocks, lens), scale), q, k, v, gout)
     for name, a, b, c in zip(("out", "dq", "dk", "dv"), got, again, want, strict=True):
-        assert torch.equal(a, b), (name, "not deterministic")
+        assert _same_bits(a, b), (name, "not deterministic")
+        assert torch.isfinite(a).all(), (name, "not finite")
         assert _rel(a, c) < TOL, (name, _rel(a, c))
 
 
@@ -202,7 +210,7 @@ def test_key_order_does_not_change_any_bit():
     by_position = _run(_attend_with(blocks, lens, heads, 1, 256**-0.5, {}), q, k, v, gout)
     busiest = _run(_attend_with(blocks, lens, heads, 1, 256**-0.5, {"key_order": "busiest"}), q, k, v, gout)
     for a, b in zip(by_position, busiest, strict=True):
-        assert torch.equal(a, b)
+        assert _same_bits(a, b)
 
 
 # ---- index ----
