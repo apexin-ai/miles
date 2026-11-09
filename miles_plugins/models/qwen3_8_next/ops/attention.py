@@ -110,7 +110,7 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                     index = entry.index
                 elif phase == "forward" and reuse.keeps_index():
                     entry.index = index
-            if phase == "forward" and reuse.keeps_output():
+            if phase == "forward" and entry.keep_output:
                 out, lse = qsa_block_attention_forward(query, key, value, index, self.softmax_scale)
                 entry.out, entry.lse = out, lse
             elif phase == "replay" and entry.out is not None:
@@ -318,6 +318,7 @@ class Qwen38NextAttention(SelfAttention):
         if phase == "forward":
             keep = reuse.wants_entry(seq)
             entry = reuse.Entry(cu=packed.cu_seqlens_q, seq=seq, hs_shape=tuple(hidden_states.shape), keep=keep)
+            entry.keep_output = keep and reuse.wants_output(seq)
             if keep and reuse.keeps_blocks():
                 entry.blocks, entry.blocks_cu = self._qsa_blocks
             elif keep:

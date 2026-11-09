@@ -438,6 +438,33 @@ def test_max_tokens_keeps_markers_above_the_limit(env):
     assert reuse.stats()["hits"] == 2
 
 
+@pytest.mark.parametrize("mode, fallback", [("output", "index"), ("blocks_output", "blocks")])
+def test_output_max_tokens_keeps_the_cheaper_part_of_longer_microbatches(env, mode, fallback):
+    peaks, counts, grads = {}, {}, {}
+    for m, cap in (("off", None), (fallback, None), (mode, CU[-1] - 1), (mode, CU[-1])):
+        for key in COUNTS:
+            COUNTS[key] = 0
+        reuse.reset_stats()
+        env.setattr(attention, "qsa_selected_blocks", Indexer())
+        reuse.configure(m, output_max_tokens=cap)
+        layers = [QSALayer.build(10 + i, 4 * i + 4, _config()) for i in range(2)]
+        packed, rope = _packed(), _rope(CU[-1])
+        x = torch.randn(CU[-1], 1, HIDDEN, generator=torch.Generator().manual_seed(7), requires_grad=True)
+        weight = torch.randn(CU[-1], 1, HIDDEN, generator=torch.Generator().manual_seed(8))
+        h = x
+        for layer in layers:
+            h = mrandom.checkpoint(
+                lambda inp, layer=layer: layer(inp, packed_seq_params=packed, rotary_pos_emb=rope)[0] + inp, False, h
+            )
+        (h * weight).sum().backward()
+        peaks[(m, cap)], counts[(m, cap)], grads[(m, cap)] = reuse.stats()["peak_held_bytes"], dict(COUNTS), x.grad
+    below, above = (mode, CU[-1]), (mode, CU[-1] - 1)
+    assert peaks[above] == peaks[(fallback, None)] < peaks[below]  # over the cap: the fallback mode's bytes
+    assert counts[above] == counts[(fallback, None)] and counts[below]["attn_fwd"] == 2
+    assert all(reuse.bitwise_equal(g, grads[("off", None)]) for g in grads.values())
+    assert reuse.settings()["output_max_tokens"] == CU[-1]
+
+
 def test_a_forward_without_backward_leaves_a_stale_entry_that_the_next_forward_drops(env):
     env.setattr(attention, "qsa_selected_blocks", Indexer())
     reuse.configure("output")
@@ -536,7 +563,9 @@ def test_configure_validates_and_clears_kept_entries(env):
     assert layer._qsa_reuse_stash.entries
     reuse.configure("index")  # other settings: cleared
     assert not layer._qsa_reuse_stash.entries and reuse.stats()["held_entries"] == 0
-    assert reuse.settings() == {"mode": "index", "max_tokens": None, "audit": False}
+    assert reuse.settings() == {"mode": "index", "max_tokens": None, "audit": False, "output_max_tokens": None}
+    with pytest.raises(ValueError, match="output_max_tokens"):
+        reuse.configure("output", output_max_tokens=0)
 
 
 def test_bitwise_equal_tells_nan_payloads_and_signed_zeros_apart():

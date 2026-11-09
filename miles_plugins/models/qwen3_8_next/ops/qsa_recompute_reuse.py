@@ -34,6 +34,11 @@ heads x 256 per rank):
 ``max_tokens``: only microbatches whose QSA sequence (the indexer's rows = the whole microbatch) is at most this many
 tokens keep entries (the kept bytes grow with T); ``None`` = every recomputed microbatch.
 
+``output_max_tokens``: the output modes keep the output / lse only for microbatches of at most this many tokens; a
+longer one keeps what the mode keeps besides (output -> the index, as mode index; blocks_output -> the block ids, as
+mode blocks). The output is the largest part (3 KiB per token per layer), so a long row can keep the cheap part
+under a memory budget. ``None`` = no such limit.
+
 ``audit`` (tests): the replay recomputes everything it reuses as well and compares bitwise (counts in
 :func:`stats`); the reused values are still the ones the replay uses.
 
@@ -85,6 +90,7 @@ class _Settings:
     mode: str = "off"
     max_tokens: int | None = None
     audit: bool = False
+    output_max_tokens: int | None = None
 
 
 _SETTINGS = _Settings()
@@ -93,18 +99,27 @@ _HELD = {"bytes": 0, "peak_bytes": 0, "entries": 0}
 _STASHES: "weakref.WeakSet[LayerStash]" = weakref.WeakSet()
 
 
-def configure(mode: str = "off", max_tokens: int | None = None, audit: bool = False) -> dict:
+def _limit(name: str, value) -> None:
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+        raise ValueError(f"qsa recompute reuse {name} must be None or a positive int, got {value!r}")
+
+
+def configure(
+    mode: str = "off", max_tokens: int | None = None, audit: bool = False, output_max_tokens: int | None = None
+) -> dict:
     """Set this process's reuse mode (see the module doc). Returns :func:`settings`."""
     if mode not in MODES:
         raise ValueError(f"qsa recompute reuse mode must be one of {MODES}, got {mode!r}")
-    if max_tokens is not None and (isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1):
-        raise ValueError(f"qsa recompute reuse max_tokens must be None or a positive int, got {max_tokens!r}")
+    _limit("max_tokens", max_tokens)
+    _limit("output_max_tokens", output_max_tokens)
     if not isinstance(audit, bool):
         raise ValueError(f"qsa recompute reuse audit must be true or false, got {audit!r}")
-    if (mode, max_tokens, audit) != (_SETTINGS.mode, _SETTINGS.max_tokens, _SETTINGS.audit):
+    new = _Settings(mode, max_tokens, audit, output_max_tokens)
+    if new != _SETTINGS:
         for stash in list(_STASHES):  # entries kept under the old settings are not replayed under the new ones
             stash.clear()
-    _SETTINGS.mode, _SETTINGS.max_tokens, _SETTINGS.audit = mode, max_tokens, audit
+    for f in dataclasses.fields(_Settings):
+        setattr(_SETTINGS, f.name, getattr(new, f.name))
     return settings()
 
 
@@ -195,6 +210,7 @@ class Entry:
     seq: int  # the indexer's rows (whole microbatch)
     hs_shape: tuple  # the layer input's shape, checked at the replay
     keep: bool  # False: a marker (over max_tokens), the replay recomputes
+    keep_output: bool = False  # an output mode and seq <= output_max_tokens: the forward keeps out / lse
     blocks: Tensor | None = None  # [rows, K] int32 (mode blocks; any mode with audit)
     blocks_cu: Tensor | None = None  # the cu_seqlens qsa_selected_blocks returned next to them
     index: object | None = None  # QSABlockIndex (modes index, output)
@@ -292,3 +308,8 @@ def check_config(config) -> None:
 
 def wants_entry(seq: int) -> bool:
     return _SETTINGS.max_tokens is None or seq <= _SETTINGS.max_tokens
+
+
+def wants_output(seq: int) -> bool:
+    """An output mode keeps the output of a microbatch of ``seq`` tokens (output_max_tokens)."""
+    return keeps_output() and (_SETTINGS.output_max_tokens is None or seq <= _SETTINGS.output_max_tokens)
