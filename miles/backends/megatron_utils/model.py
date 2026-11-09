@@ -392,6 +392,19 @@ def keep_param_gather_hooks(args) -> bool:
         problems.append("needs --debug-train-only (a weight update would read parameters with a pending gather)")
     if getattr(args, "save_local_weight_checksum", False) or getattr(args, "enable_witness", False):
         problems.append("not with --save-local-weight-checksum / --enable-witness (they read the parameters)")
+    if getattr(args, "ci_save_model_hash", False):  # config-access-exempt: save() hashes before its sync
+        problems.append("not with --ci-save-model-hash (save() hashes the parameters before it syncs them)")
+    if getattr(args, "custom_megatron_before_train_step_hook_path", None) and not getattr(
+        args, "qwen38_before_step_hook_drains_param_gather", False
+    ):  # config-access-exempt: the hook runs before the forward pre-hooks
+        problems.append(
+            "a --custom-megatron-before-train-step-hook-path runs before the forward pre-hooks and would read "
+            "parameters with a pending gather: the hook must call finish_pending_param_gather itself and say so "
+            "with --qwen38-before-step-hook-drains-param-gather"
+        )
+    for key in ("keep_old_actor", "colocate", "offload_train"):  # weight backup / model switch read or overwrite
+        if getattr(args, key, False):  # config-access-exempt: optional actor fields
+            problems.append(f"not with --{key.replace('_', '-')} (weight backup / model switch)")
     if problems:
         raise ValueError("--qwen38-overlap-param-gather-across-steps: " + "; ".join(problems))
     return True
@@ -402,14 +415,38 @@ def forward_pre_hooks_enabled(model_chunks: Sequence[DDP]) -> bool:
     return all(len(getattr(c, "remove_forward_pre_hook_handles", None) or {}) > 0 for c in model_chunks)
 
 
+def param_gather_pending(model_chunks: Sequence[DDP]) -> bool:
+    """True from the end of a train() that left its optimizer step's all-gather to the next forward, until that
+    forward ran (the next train()) or finish_pending_param_gather / save() synced it."""
+    return bool(getattr(model_chunks[0], "_qwen38_param_gather_pending", False))  # config-access-exempt: ours
+
+
+def _set_param_gather_pending(model_chunks: Sequence[DDP], value: bool) -> None:
+    model_chunks[0]._qwen38_param_gather_pending = value
+
+
 def finish_pending_param_gather(args, model_chunks: Sequence[DDP]) -> bool:
-    """With keep_param_gather_hooks: finish the gather an earlier optimizer step left pending (synchronous all-gather
-    of every bucket, then the pre-hooks back on). Call before reading parameters outside a training step. Returns
-    whether it synchronized."""
-    if not keep_param_gather_hooks(args) or not forward_pre_hooks_enabled(model_chunks):
+    """With keep_param_gather_hooks and a pending gather: synchronous all-gather of every bucket, then the pre-hooks
+    back on. A no-op when nothing is pending (e.g. right after save(), which syncs). Call before reading parameters
+    outside a training step. Returns whether it synchronized."""
+    if not keep_param_gather_hooks(args):
         return False
-    disable_forward_pre_hook(model_chunks)  # param_sync=True
-    enable_forward_pre_hook(model_chunks)
+    return drain_pending_param_gather(model_chunks)
+
+
+def drain_pending_param_gather(model_chunks: Sequence[DDP]) -> bool:
+    """finish_pending_param_gather without the flag check, for hooks that only get the model (e.g. a state digest
+    behind --qwen38-before-step-hook-drains-param-gather). A no-op when nothing is pending."""
+    if not param_gather_pending(model_chunks):
+        return False
+    if forward_pre_hooks_enabled(model_chunks):
+        disable_forward_pre_hook(model_chunks)  # param_sync=True
+        enable_forward_pre_hook(model_chunks)
+    else:  # hooks off with a gather pending: sync without touching the hook state
+        for c in model_chunks:
+            with torch.no_grad():
+                c.start_param_sync(force_sync=True)
+    _set_param_gather_pending(model_chunks, False)
     return True
 
 
@@ -1051,6 +1088,10 @@ def train(
                 enable_forward_pre_hook(model)
                 config.param_sync_func = param_sync_func
                 pre_hook_enabled = True
+            if keep_hooks:
+                # the step ran: its forward pre-hooks finished the gather an earlier step left pending (a
+                # before-train-step hook that reads parameters drained it first, see keep_param_gather_hooks)
+                _set_param_gather_pending(model, False)
 
         mtp_losses = None
         if args.enable_mtp_training:
@@ -1123,6 +1164,7 @@ def train(
             # leave the all-gather pending: the next train()'s forward pre-hooks (or a save / forward-only pass /
             # HF export, through finish_pending_param_gather) finish it
             model[0]._qwen38_param_gather_warm = True
+            _set_param_gather_pending(model, True)
         else:
             disable_forward_pre_hook(model)
 
@@ -1162,6 +1204,8 @@ def save(
     if should_disable_forward_pre_hook(args):
         # also finishes the param all-gather an overlapped optimizer step left pending
         disable_forward_pre_hook(model)
+        if keep_param_gather_hooks(args):
+            _set_param_gather_pending(model, False)
     try:
         # every step so far may have been skipped as unsupervised: Megatron's save reads state the first step builds
         if materialize_unstepped_optimizer_states(optimizer) and is_first_replica_megatron_main_rank():

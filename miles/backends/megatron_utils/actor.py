@@ -11,7 +11,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.hf_export import save_hf_model
-from miles.backends.megatron_utils.model import finish_pending_param_gather
+from miles.backends.megatron_utils.model import finish_pending_param_gather, keep_param_gather_hooks
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.megatron_config import has_megatron_checkpoint
 from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
@@ -846,6 +846,12 @@ class MegatronTrainRayActor(TrainRayActor):
             self._set_replay_stage("replay_backward")
             with timer("actor_train"):
                 self._log_first_train_config()
+                if keep_param_gather_hooks(self.args) and self._enable_weight_backup:
+                    raise ValueError(
+                        "--qwen38-overlap-param-gather-across-steps with weight backup / model switching (ref, "
+                        "teacher, old actor, colocate, offload_train): a switch would overwrite or read parameters "
+                        "with a pending gather"
+                    )
                 train_step_outcome = train(
                     self.args,
                     rollout_id,

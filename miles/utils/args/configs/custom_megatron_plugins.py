@@ -219,11 +219,21 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
                 "between train() calls (one SFT step per rollout), so the parameter all-gather of an optimizer "
                 "step is finished bucket by bucket in the next step's forward pre-hooks instead of synchronously "
                 "at the end of train(). Before anything reads the parameters outside a training step (forward-only "
-                "passes, HF export) the pending gather is finished synchronously; save() already "
+                "passes, HF export) a pending gather is finished synchronously (a no-op when none is pending); save() already "
                 "does that. Refused with trainable vision parameters (a text micro-batch never runs their "
                 "pre-hooks), --align-param-gather, overlap with the optimizer step, a run that is not "
                 "--debug-train-only, --save-local-weight-checksum and --enable-witness. No numeric change: an "
                 "all-gather only copies. Off: train() as before (PERF-F F8 tier B, 2026-11-09)."
+            )
+        ),
+    ] = False
+    qwen38_before_step_hook_drains_param_gather: A[
+        bool,
+        Arg(
+            help=(
+                "With --qwen38-overlap-param-gather-across-steps: the --custom-megatron-before-train-step-hook-path "
+                "calls miles.backends.megatron_utils.model.finish_pending_param_gather before it reads parameters "
+                "(e.g. the training repo's state digest). Without it such a hook is refused. Default off."
             )
         ),
     ] = False

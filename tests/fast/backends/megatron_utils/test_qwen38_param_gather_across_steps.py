@@ -33,6 +33,9 @@ class FakeDDP:
     def train(self):
         pass
 
+    def start_param_sync(self, force_sync=False):
+        self.events.append(f"sync(force={force_sync})")
+
     def named_parameters(self):
         return iter(self._params)
 
@@ -43,8 +46,10 @@ def _args(flag=True, **backend):
     b.update(backend)
     return SimpleNamespace(debug_disable_optimizer=True, reset_optimizer_states=False, backend=SimpleNamespace(**b),
                            enable_mtp_training=False, ci_test=False, debug_train_only=True,
-                           save_local_weight_checksum=False, enable_witness=False,
-                           qwen38_overlap_param_gather_across_steps=flag)
+                           save_local_weight_checksum=False, enable_witness=False, ci_save_model_hash=False,
+                           custom_megatron_before_train_step_hook_path=None,
+                           qwen38_before_step_hook_drains_param_gather=False, keep_old_actor=False, colocate=False,
+                           offload_train=False, qwen38_overlap_param_gather_across_steps=flag)
 
 
 @pytest.fixture
@@ -102,12 +107,51 @@ def test_finish_pending_gathers_once_and_rearms(env):
     model = [FakeDDP(env)]
     args = _args()
     _train(args, model)
+    assert mm.param_gather_pending(model)
     env.clear()
     assert mm.finish_pending_param_gather(args, model) is True
-    assert env == ["disable(sync=True)", "enable"]
+    assert env == ["disable(sync=True)", "enable"] and not mm.param_gather_pending(model)
     env.clear()
+    assert mm.finish_pending_param_gather(args, model) is False   # nothing pending: no second gather (PERFFREV F7)
+    assert env == []
     _train(args, model, 1)
-    assert env == ["step"]
+    assert env == ["step"] and mm.param_gather_pending(model)
+
+
+def test_pending_cleared_by_the_next_train(env):
+    model = [FakeDDP(env)]
+    args = _args()
+    _train(args, model)
+    _train(args, model, 1)            # its forward pre-hooks finished the gather; its own step left a new one
+    assert mm.param_gather_pending(model)
+    env.clear()
+    assert mm.finish_pending_param_gather(args, model) is True and env == ["disable(sync=True)", "enable"]
+
+
+def test_before_step_hook_sees_the_pending_gather(env, monkeypatch):
+    seen = []
+
+    def step(*a, **k):
+        seen.append(mm.param_gather_pending(a[4]))   # what a before-train-step hook inside the step would see
+        mm.drain_pending_param_gather(a[4])            # a draining hook (state digest)
+        return {}, 1.0, mm.TrainStepOutcome.NORMAL
+    monkeypatch.setattr(mm, "train_one_step", step)
+    model = [FakeDDP(env)]
+    args = _args()
+    for r in range(3):
+        _train(args, model, r)
+    assert seen == [False, True, True]
+    assert env.count("disable(sync=True)") == 2 and mm.param_gather_pending(model)
+
+
+def test_pending_with_hooks_off_syncs_without_hooks(env):
+    model = [FakeDDP(env)]
+    args = _args()
+    _train(args, model)
+    model[0].remove_forward_pre_hook_handles = {}
+    env.clear()
+    assert mm.finish_pending_param_gather(args, model) is True
+    assert env == ["sync(force=True)"] and not mm.forward_pre_hooks_enabled(model)
 
 
 def test_finish_pending_is_a_no_op_when_off(env):
@@ -131,6 +175,8 @@ def test_warm_with_hooks_switched_off_rearms(env):
     ({"use_distributed_optimizer": False}, {}), ({"align_param_gather": True}, {}),
     ({"overlap_param_gather_with_optimizer_step": True}, {}),
     ({}, {"debug_train_only": False}), ({}, {"save_local_weight_checksum": True}), ({}, {"enable_witness": True}),
+    ({}, {"ci_save_model_hash": True}), ({}, {"custom_megatron_before_train_step_hook_path": "x.hook"}),
+    ({}, {"keep_old_actor": True}), ({}, {"colocate": True}), ({}, {"offload_train": True}),
 ])
 def test_refused_combinations(backend, flag_args):
     args = _args(**backend)
@@ -138,6 +184,26 @@ def test_refused_combinations(backend, flag_args):
         setattr(args, k, v)
     with pytest.raises(ValueError, match="across-steps"):
         mm.keep_param_gather_hooks(args)
+
+
+def test_draining_before_step_hook_allowed():
+    args = _args()
+    args.custom_megatron_before_train_step_hook_path = "state_digest.before_train_step"
+    args.qwen38_before_step_hook_drains_param_gather = True
+    assert mm.keep_param_gather_hooks(args) is True
+
+
+def test_save_syncs_before_reading_and_clears_pending():
+    src = inspect.getsource(mm.save)
+    i_dis = src.index("disable_forward_pre_hook(model)")
+    assert src.index("_set_param_gather_pending(model, False)") > i_dis
+    assert src.index("check_tp_replicas(") > i_dis and src.index("save_checkpoint(") > i_dis
+
+
+def test_actor_refuses_weight_backup_with_the_flag():
+    from miles.backends.megatron_utils import actor
+    a = inspect.getsource(actor)
+    assert "if keep_param_gather_hooks(self.args) and self._enable_weight_backup:" in a
 
 
 def test_trainable_vision_refused(env):
