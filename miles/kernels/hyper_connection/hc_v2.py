@@ -223,7 +223,11 @@ def _v2_silu_kernel(a_ptr, s_ptr, numel, N: tl.constexpr, BLOCK: tl.constexpr):
 @triton.jit
 def _up_tile(s_ptr, wu_ptr, ts, tmask, cs, cmask, c, C, R: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr,
              BK: tl.constexpr, PREC: tl.constexpr):  # fmt: skip
-    """z2[ts, c*C + cs] = silu[ts, :] @ w_up[c*C + cs, :]^T (fp32 [BM, BN]); the forward and backward use this."""
+    """z2[ts, c*C + cs] = silu[ts, :] @ w_up[c*C + cs, :]^T (fp32 [BM, BN]); the forward and backward use this.
+
+    The callers loop over the n streams with ``range`` (not ``tl.static_range``): unrolled, with a single K step
+    (R <= BK) and TF32-rounded operands, all n accumulators were live in tensor memory at once (576 > 512 columns on
+    B300 at R 16, E1 2026-11-09, fc2dc2d5); as a loop the kernel needs 256 at every R. Same order of every sum."""
     acc = tl.zeros([BM, BN], dtype=tl.float32)
     for k0 in range(0, R, BK):
         ks = k0 + tl.arange(0, BK)
@@ -262,7 +266,7 @@ def _v2_up_mix_kernel(
     cmask = cs < C
     m2 = tmask[:, None] & cmask[None, :]
     mix = tl.zeros([BM, BN], dtype=tl.float32)
-    for c in tl.static_range(N):
+    for c in range(N):  # a loop, not unrolled: one stream's accumulator in TMEM at a time (see _up_tile)
         g = tl.sigmoid(_up_tile(s_ptr, wu_ptr, ts, tmask, cs, cmask, c, C, R, BM, BN, BK, PREC))
         rstd = tl.load(rstd_ptr + ts * N + c, mask=tmask, other=0.0)
         x = tl.load(x_ptr + ts[:, None] * W + c * C + cs[None, :], mask=m2, other=0.0).to(tl.float32)
@@ -299,7 +303,7 @@ def _v2_up_bwd_kernel(
     cmask = cs < C
     m2 = tmask[:, None] & cmask[None, :]
     dm = tl.load(dm_ptr + ts[:, None] * C + cs[None, :], mask=m2, other=0.0).to(tl.float32) / N
-    for c in tl.static_range(N):
+    for c in range(N):  # a loop, not unrolled: one stream's accumulator in TMEM at a time (see _up_tile)
         g = tl.sigmoid(_up_tile(s_ptr, wu_ptr, ts, tmask, cs, cmask, c, C, R, BM, BN, BK, PREC))
         rstd = tl.load(rstd_ptr + ts * N + c, mask=tmask, other=0.0)
         x = tl.load(x_ptr + ts[:, None] * W + c * C + cs[None, :], mask=m2, other=0.0).to(tl.float32)
