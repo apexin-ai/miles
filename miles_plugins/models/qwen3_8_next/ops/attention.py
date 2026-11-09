@@ -12,7 +12,14 @@ from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
-from miles.kernels.attention.qsa import build_qsa_block_index, qsa_block_attention, qsa_sparse_attention
+from miles.kernels.attention.qsa import (
+    build_qsa_block_index,
+    qsa_block_attention,
+    qsa_block_attention_forward,
+    qsa_block_attention_replay,
+    qsa_sparse_attention,
+)
+from miles_plugins.models.qwen3_8_next.ops import qsa_recompute_reuse as reuse
 from miles_plugins.models.qwen3_8_next.ops.cp import (
     SINGLE_RANK_GROUP,
     compose_row_shard,
@@ -54,6 +61,10 @@ class Qwen38NextQSACoreAttention(MegatronModule):
             blocks, cu_seqlens = selected
             ratio = self._owner.compress_ratio
             window = None
+            # QSA recompute reuse (ops/qsa_recompute_reuse.py): "forward" = this pass keeps in ``entry`` what the
+            # replay will reuse; "replay" = the recompute replay reads it; None = neither (reuse off: as before)
+            phase = getattr(self._owner, "_qsa_reuse_phase", None)  # config-access-exempt: set by the owner's forward
+            entry = getattr(self._owner, "_qsa_reuse_entry", None)  # config-access-exempt: set by the owner's forward
             if cp_enabled(self.config):
                 # The block ids address the whole sequence, so the keys have to be the whole
                 # sequence too. The gather's backward reduce-scatters, summing what every rank's
@@ -82,14 +93,38 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                     self.softmax_scale,
                     self._owner.indexer.block_topk,
                 )
-            index = build_qsa_block_index(
-                blocks,
-                cu_seqlens,
-                compress_ratio=ratio,
-                num_heads=query.shape[1],
-                num_kv_heads=key.shape[1],
-            )
-            out = qsa_block_attention(query, key, value, index, self.softmax_scale)
+            if phase == "replay" and entry.index is not None and not reuse.audit():
+                index = entry.index
+                reuse._count("skipped_index_builds")
+            else:
+                index = build_qsa_block_index(
+                    blocks,
+                    cu_seqlens,
+                    compress_ratio=ratio,
+                    num_heads=query.shape[1],
+                    num_kv_heads=key.shape[1],
+                )
+                if phase == "replay" and entry.index is not None:  # audit: the rebuilt index must be the kept one
+                    reuse._count("audit_index_checks")
+                    reuse._count("audit_index_mismatches", int(not reuse.bitwise_equal(index, entry.index)))
+                    index = entry.index
+                elif phase == "forward" and reuse.mode() in ("index", "output"):
+                    entry.index = index
+            if phase == "forward" and reuse.mode() == "output":
+                out, lse = qsa_block_attention_forward(query, key, value, index, self.softmax_scale)
+                entry.out, entry.lse = out, lse
+            elif phase == "replay" and entry.out is not None:
+                if reuse.audit():  # the forward kernel on the replay's q, k, v must give the kept out / lse
+                    fresh_out, fresh_lse = qsa_block_attention_forward(query, key, value, index, self.softmax_scale)
+                    reuse._count("audit_output_checks")
+                    reuse._count("audit_output_mismatches", int(not reuse.bitwise_equal(fresh_out, entry.out)))
+                    reuse._count("audit_lse_mismatches", int(not reuse.bitwise_equal(fresh_lse, entry.lse)))
+                    del fresh_out, fresh_lse
+                else:
+                    reuse._count("skipped_attention_forwards")
+                out = qsa_block_attention_replay(query, key, value, index, self.softmax_scale, entry.out, entry.lse)
+            else:
+                out = qsa_block_attention(query, key, value, index, self.softmax_scale)
             if window is not None:
                 out = out[window[0] : window[1]]
             return out.reshape(out.shape[0], -1)
@@ -137,6 +172,9 @@ class Qwen38NextAttention(SelfAttention):
         self._qsa_selection = None
         self._qsa_blocks = None
         self._qsa_cp_rows = None
+        self._qsa_reuse_phase = None
+        self._qsa_reuse_entry = None
+        self._qsa_reuse_stash = reuse.LayerStash(layer_number)
 
     @staticmethod
     def _packed_positions(cu_seqlens: Tensor, total: int) -> Tensor:
@@ -148,9 +186,59 @@ class Qwen38NextAttention(SelfAttention):
         seg = seg.cumsum(0)
         return idx - starts[seg]
 
+    def _reuse_phase(self, packed) -> tuple[str | None, "reuse.Entry | None"]:
+        """("forward", None): Megatron's checkpoint runs this forward (no grad) and the replay will reuse what it
+        keeps; ("replay", entry): the recompute replay of such a forward; (None, None): reuse is off or not
+        applicable (no packing, eval, a microbatch without the full recompute)."""
+        if reuse.mode() == "off" or packed is None or not self.training or not is_checkpointing():
+            return None, None
+        reuse.check_config(self.config)
+        if not torch.is_grad_enabled():
+            return "forward", None
+        cu = getattr(packed, "cu_seqlens_q", None)  # config-access-exempt: checked below, as forward does
+        entry = self._qsa_reuse_stash.pop(cu)
+        if entry is None:
+            raise RuntimeError(
+                f"QSA recompute reuse: the replay of layer {self.layer_number} found no entry of its microbatch "
+                "(the forward pass keeps one, or a marker, for every checkpointed microbatch with reuse on): "
+                "reuse switched on between a forward and its backward, or a pairing bug"
+            )
+        entry.check_unmodified(self.layer_number)
+        return "replay", entry
+
     def forward(self, hidden_states: Tensor, *args, **kwargs):
         packed = kwargs.get("packed_seq_params")
+        phase, entry = self._reuse_phase(packed)
+        if phase == "replay" and not entry.keep:
+            reuse._count("marker_replays")
+            phase, entry = None, None
+        if phase == "replay" and not reuse.audit():
+            return self._replay_forward(hidden_states, packed, entry, *args, **kwargs)
+        return self._full_forward(hidden_states, packed, phase, entry, *args, **kwargs)
 
+    def _replay_forward(self, hidden_states: Tensor, packed, entry, *args, **kwargs):
+        """The replay with reuse: no SP gather, no indexer; the core attention reads ``entry``."""
+        if tuple(hidden_states.shape) != entry.hs_shape:
+            raise RuntimeError(
+                f"QSA recompute reuse: layer {self.layer_number} replays an input of shape "
+                f"{tuple(hidden_states.shape)}, its forward pass had {entry.hs_shape}"
+            )
+        reuse._count("hits")
+        reuse._count("skipped_indexer_selections")
+        self._qsa_cp_rows = None
+        self._qsa_cu_seqlens = packed.cu_seqlens_q
+        self._qsa_selection = None
+        self._qsa_blocks = (entry.blocks, entry.blocks_cu)
+        self._qsa_reuse_phase, self._qsa_reuse_entry = "replay", entry
+        try:
+            return super().forward(hidden_states, *args, **kwargs)
+        finally:
+            self._qsa_selection = None
+            self._qsa_cu_seqlens = None
+            self._qsa_blocks = None
+            self._qsa_reuse_phase = self._qsa_reuse_entry = None
+
+    def _full_forward(self, hidden_states: Tensor, packed, phase, entry, *args, **kwargs):
         indexer_states = hidden_states
         if getattr(
             self.config, "sequence_parallel", False
@@ -227,6 +315,22 @@ class Qwen38NextAttention(SelfAttention):
                     indexer_states[:, 0], positions, rotary_pos_emb, materialized_rope
                 )
                 self._qsa_blocks = None
+        if phase == "forward":
+            keep = reuse.wants_entry(seq)
+            entry = reuse.Entry(cu=packed.cu_seqlens_q, seq=seq, hs_shape=tuple(hidden_states.shape), keep=keep)
+            if keep and (reuse.mode() == "blocks" or reuse.audit()):
+                entry.blocks, entry.blocks_cu = self._qsa_blocks
+            elif keep:
+                entry.blocks_cu = self._qsa_blocks[1]
+            self._qsa_reuse_stash.push(entry)
+            if not keep:
+                phase, entry = None, None
+        elif phase == "replay":  # audit: the recomputed selection must be the kept one; the kept one is used
+            reuse._count("hits")
+            reuse._count("audit_selection_checks")
+            reuse._count("audit_selection_mismatches", int(not reuse.bitwise_equal(self._qsa_blocks[0], entry.blocks)))
+            self._qsa_blocks = (entry.blocks, entry.blocks_cu)
+        self._qsa_reuse_phase, self._qsa_reuse_entry = phase, entry
         original_cp_group = None
         if cp:
             # SelfAttention applies RoPE with apply_rotary_pos_emb(cp_group=pg_collection.cp), which
@@ -244,7 +348,12 @@ class Qwen38NextAttention(SelfAttention):
             original_cp_group = self.pg_collection.cp
             self.pg_collection.cp = SINGLE_RANK_GROUP
         try:
-            return super().forward(hidden_states, *args, **kwargs)
+            result = super().forward(hidden_states, *args, **kwargs)
+            if phase == "forward":
+                if reuse.mode() != "blocks" and not reuse.audit():
+                    entry.blocks = None  # index / output: the replay reads the index, not the ids
+                self._qsa_reuse_stash.account(entry)
+            return result
         finally:
             if original_cp_group is not None:
                 self.pg_collection.cp = original_cp_group
@@ -252,6 +361,7 @@ class Qwen38NextAttention(SelfAttention):
             self._qsa_cu_seqlens = None
             self._qsa_blocks = None
             self._qsa_cp_rows = None
+            self._qsa_reuse_phase = self._qsa_reuse_entry = None
 
     def _indexer_tp_group(self):
         """The TP group the indexer splits its query rows over, or None (every rank scores every row).

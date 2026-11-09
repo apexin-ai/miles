@@ -495,12 +495,71 @@ class _QSABlockAttention(torch.autograd.Function):
         return grad_q, grad_k, grad_v, None, None
 
 
+class _QSABlockAttentionReplay(torch.autograd.Function):
+    """``_QSABlockAttention`` whose forward output and log-sum-exp are given instead of computed.
+
+    For the recompute replay of a checkpointed layer (``ops/qsa_recompute_reuse.py``): ``out`` / ``lse`` are what
+    ``_forward`` returned for the same ``q, k, v, index`` in the layer's forward pass. The saved tensors and the
+    backward are those of ``_QSABlockAttention``, so the gradients are the ones the recomputed forward would give
+    whenever ``_forward`` is deterministic (it is: one program writes each output row, no atomics).
+    """
+
+    @staticmethod
+    def forward(ctx, q, k, v, index, scale, out, lse):
+        q, k, v = (_last_dim_contiguous(t) for t in (q, k, v))
+        if out.shape != q.shape or out.dtype != q.dtype or lse.shape != q.shape[:2] or lse.dtype != torch.float32:
+            raise ValueError(
+                f"QSA replay: kept out {tuple(out.shape)} {out.dtype} / lse {tuple(lse.shape)} {lse.dtype} do not "
+                f"fit q {tuple(q.shape)} {q.dtype}"
+            )
+        ctx.save_for_backward(q, k, v, out, lse)
+        ctx.index = index
+        ctx.scale = scale
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        q, k, v, out, lse = ctx.saved_tensors
+        grad_out = _last_dim_contiguous(grad_out)
+        delta = _backward_delta(out, grad_out)
+        grad_q = _backward_dq(q, k, v, grad_out, lse, delta, ctx.index, ctx.scale)
+        grad_k, grad_v = _backward_dkdv(q, k, v, grad_out, lse, delta, ctx.index, ctx.scale)
+        return grad_q, grad_k, grad_v, None, None, None, None
+
+
+def _check_head_dim(q: Tensor) -> None:
+    head_dim = q.shape[-1]
+    if head_dim < 16 or head_dim & (head_dim - 1):
+        raise ValueError(f"QSA block attention needs a power-of-two head_dim >= 16, got {head_dim}")
+
+
 def qsa_block_attention(q: Tensor, k: Tensor, v: Tensor, index: QSABlockIndex, scale: float) -> Tensor:
     """``q`` [T, Hq, D], ``k`` / ``v`` [T, Hkv, D] -> [T, Hq, D] over the blocks of ``index``.
 
     ``D`` must be a power of two of at least 16. A query that sees no key gets zeros.
     """
-    head_dim = q.shape[-1]
-    if head_dim < 16 or head_dim & (head_dim - 1):
-        raise ValueError(f"QSA block attention needs a power-of-two head_dim >= 16, got {head_dim}")
+    _check_head_dim(q)
     return _QSABlockAttention.apply(q, k, v, index, scale)
+
+
+def qsa_block_attention_forward(
+    q: Tensor, k: Tensor, v: Tensor, index: QSABlockIndex, scale: float
+) -> tuple[Tensor, Tensor]:
+    """The forward of :func:`qsa_block_attention` without autograd: ``(out [T, Hq, D], lse [T, Hq] fp32)``.
+
+    The same kernel on the same (last-dim contiguous) operands as ``_QSABlockAttention.forward``, so ``out`` is
+    bitwise the tensor :func:`qsa_block_attention` returns.
+    """
+    _check_head_dim(q)
+    with torch.no_grad():
+        q, k, v = (_last_dim_contiguous(t) for t in (q, k, v))
+        return _forward(q, k, v, index, scale)
+
+
+def qsa_block_attention_replay(
+    q: Tensor, k: Tensor, v: Tensor, index: QSABlockIndex, scale: float, out: Tensor, lse: Tensor
+) -> Tensor:
+    """:func:`qsa_block_attention` with the forward's ``out`` / ``lse`` given (kept from an earlier forward of the
+    same ``q, k, v, index``): returns ``out``; the backward is the one of :func:`qsa_block_attention`."""
+    _check_head_dim(q)
+    return _QSABlockAttentionReplay.apply(q, k, v, index, scale, out, lse)
