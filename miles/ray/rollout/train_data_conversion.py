@@ -48,6 +48,10 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "lineage_output_counts": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_mask_sums": ValueSpec(codec="ndarray", dtype="int64"),
+    # merged SFT step (backends/training_utils/loss/row_loss_scale.py): per-row loss numerator scale and identity
+    "row_loss_scale": ValueSpec(codec="ndarray", dtype="float32"),
+    "logical_bucket_id": ValueSpec(codec="ndarray", dtype="int64"),
+    "row_instance_id": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
     "prompt": ValueSpec(codec="msgpack_ragged"),
     "metadata": ValueSpec(codec="msgpack_ragged"),
@@ -223,7 +227,33 @@ def convert_samples_to_train_data(
     if x is not None:
         train_data["dynamic_global_batch_size"] = x
 
+    _add_row_loss_scale_fields(args, samples, train_data)
     return train_data
+
+
+def _add_row_loss_scale_fields(args, samples: list[Sample], train_data: dict[str, Any]) -> None:
+    """Merged SFT step: every row carries all of row_loss_scale / logical_bucket_id / row_instance_id in its
+    metadata, or none does (then nothing is added and the train data is as before)."""
+    from miles.backends.training_utils.loss.row_loss_scale import ROW_FIELDS
+
+    have = [all(k in (s.metadata or {}) for k in ROW_FIELDS) for s in samples]
+    some = [any(k in (s.metadata or {}) for k in ROW_FIELDS) for s in samples]
+    if not any(some):
+        return
+    if not all(have):
+        bad = next(i for i, h in enumerate(have) if not h)
+        raise ValueError(
+            f"row_loss_scale fields {ROW_FIELDS} must be on every row of a merged step; row {bad} "
+            f"(sample_index {samples[bad].index}) has {sorted(k for k in ROW_FIELDS if k in (samples[bad].metadata or {}))}"
+        )
+    if train_data.get("dynamic_global_batch_size") != len(samples):
+        raise ValueError(
+            f"a merged step must be one dynamic global batch of all its {len(samples)} rows, got "
+            f"dynamic_global_batch_size {train_data.get('dynamic_global_batch_size')}"
+        )
+    train_data["row_loss_scale"] = [float(s.metadata["row_loss_scale"]) for s in samples]
+    train_data["logical_bucket_id"] = [int(s.metadata["logical_bucket_id"]) for s in samples]
+    train_data["row_instance_id"] = [int(s.metadata["row_instance_id"]) for s in samples]
 
 
 def _check_store_plans(args, samples: list[Sample]) -> None:
@@ -558,6 +588,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "loss_weights",
             "advantages",
             "target_tokens",
+            "row_loss_scale",
+            "logical_bucket_id",
+            "row_instance_id",
         ]:
             if key not in data:
                 continue

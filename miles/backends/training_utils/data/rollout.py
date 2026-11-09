@@ -218,7 +218,18 @@ def get_batch(
     # fetch it here so callers don't have to know. None for non-multi-LoRA runs.
     if "adapter_slots" not in keys:
         keys = [*keys, "adapter_slots"]
+    # merged SFT step (loss/row_loss_scale.py): this micro-batch's index within the step, before get_next moves on
+    # (the index list's position with micro_batch_indices, else the contiguous slice number)
+    mb_index = None
+    if data_iterator.rollout_data.get("row_instance_id") is not None:
+        mb_index = (
+            data_iterator.offset
+            if data_iterator.micro_batch_indices is not None
+            else data_iterator.offset // data_iterator.micro_batch_size
+        )
     batch = data_iterator.get_next(keys)
+    if mb_index is not None:
+        batch["q38_mb_index"] = mb_index
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]

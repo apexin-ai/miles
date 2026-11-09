@@ -499,6 +499,11 @@ def sft_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+    from miles.backends.training_utils.loss import row_loss_scale
+
+    if row_loss_scale.has_row_fields(batch):
+        # merged SFT step (apex/pr/qwen38-dynb-merge): per-row numerator scale, denominator unchanged
+        return row_loss_scale.scaled_sft_loss(args, batch, log_probs, logits)
     log_probs = torch.cat(log_probs, dim=0)
     loss = -sum_of_sample_mean(log_probs)
 

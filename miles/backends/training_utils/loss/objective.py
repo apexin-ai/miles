@@ -7,6 +7,7 @@ from miles.backends.training_utils.loss.hub.advantages import compute_advantages
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
 from miles.backends.training_utils.loss.hub.losses import get_loss_function
 from miles.backends.training_utils.loss.hub.math_utils import compute_approx_kl
+from miles.backends.training_utils.loss import row_loss_scale
 from miles.backends.training_utils.loss.hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.args.custom_view import compute_custom_function_config
@@ -175,6 +176,8 @@ def loss_function(
     parallel_state = get_parallel_state()
     num_tokens = count_loss_tokens(batch["loss_masks"])
     num_samples = len(batch["response_lengths"])
+    # merged SFT step (row_loss_scale.py): the denominator this micro-batch returns to Megatron, once per micro-batch
+    row_loss_scale.notify("objective", batch, num_tokens=num_tokens)
 
     sum_of_sample_mean = get_sum_of_sample_mean(
         batch["total_lengths"],

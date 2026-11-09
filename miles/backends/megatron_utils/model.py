@@ -32,6 +32,7 @@ from miles.backends.megatron_utils.tp_replica_check import check_tp_replicas
 from miles.backends.megatron_utils.unstepped_optimizer_state import materialize_unstepped_optimizer_states
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.loss import row_loss_scale
 from miles.backends.training_utils.loss.objective import loss_function
 from miles.backends.training_utils.metrics.checks import check_grad_norm, check_kl
 from miles.backends.training_utils.metrics.log_utils import (
@@ -591,11 +592,15 @@ def run_forward_backward_pass(
                 "target_tokens",
                 "sample_indices",
                 *sampling_mask_keys,
+                *row_loss_scale.ROW_FIELDS,
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
         )
+        if (mb_index := batch.get(row_loss_scale.MB_INDEX_KEY)) is not None and _train_step_context is not None:
+            # merged SFT step: a stable id of this micro-batch, fixed before the loss (and any recompute of it) runs
+            batch[row_loss_scale.MB_ID_KEY] = (*_train_step_context, mb_index)
         ddp_trace.on_microbatch(batch)
 
         if "adapter_token_counts" in batch:
@@ -689,8 +694,9 @@ def train_one_step(
     _zero_grads(model, optimizer, disable_optimizer)
     ddp_trace.begin_step()
     f8_guard.begin_step(rollout_id)
-    global _step_num_tokens
+    global _step_num_tokens, _train_step_context
     _step_num_tokens = None
+    _train_step_context = (rollout_id, step_id)
 
     if (x := args.custom_megatron_before_train_step_hook_path) is not None:
         from miles.utils.args.custom_view import compute_custom_function_config
@@ -704,6 +710,24 @@ def train_one_step(
         args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts
     )
     ddp_trace.end_step(rollout_id)  # Q38_DDP_TRACE only: the step's reductions, after finalize_model_grads
+    _train_step_context = None
+    if (x := args.custom_megatron_after_forward_backward_hook_path) is not None:
+        # every step, before the skip decisions below (no supervised token, non-finite gradients) and the optimizer:
+        # a data check here cannot be bypassed by a skipped step
+        from miles.utils.args.custom_view import compute_custom_function_config
+        from miles.utils.function_registry import load_function
+
+        custom_after_fb_hook = load_function(x)
+        fn_args = compute_custom_function_config(args, x)
+        custom_after_fb_hook(
+            fn_args,
+            rollout_id,
+            step_id,
+            model,
+            optimizer,
+            step_num_tokens=_step_num_tokens,
+            num_microbatches=num_microbatches,
+        )
     if args.enable_sample_ownership_checker:
         local_consumed_identities = SampleIdentityExtractor.get_consumed_sample_identities(
             start_offset=sample_consumption_start,
@@ -836,6 +860,8 @@ def train_one_step(
 # This step's supervised-token count as finalize_model_grads leaves it: broadcast over PP and all-reduced over
 # DP-CP in place, so every rank holds the same value. None unless the loss is per-token normalized.
 _step_num_tokens: torch.Tensor | None = None
+# (rollout_id, step_id) of the train step whose forward / backward pass is running; None outside it
+_train_step_context: tuple[int, int] | None = None
 
 
 _low_memory_clears = 0

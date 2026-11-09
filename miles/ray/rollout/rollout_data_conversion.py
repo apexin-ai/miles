@@ -24,6 +24,7 @@ def postprocess_rollout_data(
     # Compact rollouts must not be trimmed by sample count; the schedule drops
     # whole trailing rollouts instead.
     is_compact = any(s.rollout_id is not None for s in data)
+    merged = _merged_step_instances(args, data, is_compact)
 
     if not args.disable_rollout_trim_samples and not is_compact:
         global_batch_size = args.global_batch_size
@@ -46,7 +47,30 @@ def postprocess_rollout_data(
             logger.info(f"trim number of samples from {origin_data_length} to {trim_len}")
         logger.info(f"Final collected {len(data)} samples from rollout to train")
 
+    if merged is not None:
+        after = [s.metadata["row_instance_id"] for s in data]
+        if metadata.get("dynamic_global_batch_size") != len(merged) or after != merged:
+            raise ValueError(
+                f"merged step: the trim changed the step ({len(merged)} rows before, {len(after)} after, "
+                f"dynamic_global_batch_size {metadata.get('dynamic_global_batch_size')}): a merged step trains "
+                "exactly the rows of its plan"
+            )
     return data, metadata
+
+
+def _merged_step_instances(args: Any, data: list[Sample], is_compact: bool) -> list[int] | None:
+    """Row instance ids of a merged SFT step (rows with row_loss_scale metadata) before the trim; None otherwise.
+    Such a step must reach the trainer as one dynamic global batch of all its rows."""
+    if not any("row_loss_scale" in (s.metadata or {}) for s in data):
+        return None
+    if args.disable_rollout_trim_samples or is_compact or not args.use_dynamic_global_batch_size:
+        raise ValueError(
+            "merged step (row_loss_scale): needs --use-dynamic-global-batch-size, no "
+            "--disable-rollout-trim-samples and no Sample.rollout_id (compact rollouts)"
+        )
+    if not all("row_instance_id" in (s.metadata or {}) for s in data):
+        raise ValueError("merged step (row_loss_scale): every row needs its row_instance_id")
+    return [s.metadata["row_instance_id"] for s in data]
 
 
 def validate_compact_rollout_ids(node, depth=0):

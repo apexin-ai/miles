@@ -23,6 +23,13 @@ class CustomMegatronPluginsConfig(BaseConfig):
         CustomFunctionConfig | None,
         Arg(),
     ] = None
+    # Called on every train step after the forward / backward pass and finalize_model_grads (the step's global
+    # token count is known), before any skip decision (no supervised token, non-finite gradients) and before the
+    # optimizer: hook(args_view, rollout_id, step_id, model, optimizer, step_num_tokens=..., num_microbatches=...)
+    custom_megatron_after_forward_backward_hook_path: A[
+        CustomFunctionConfig | None,
+        Arg(),
+    ] = None
 
 
 class Dsv4MegatronPluginsConfig(BaseConfig):
