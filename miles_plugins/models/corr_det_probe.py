@@ -1,4 +1,10 @@
-"""Test-only probe for the M039 hdirect whole-model determinism run (v2). Off unless MILES_CORR_DET_PROBE=1.
+"""Test-only probe for the M039 hdirect whole-model determinism run (v3). Off unless MILES_CORR_DET_PROBE=1.
+
+v3 (RECHECK19): every tag also carries the REAL identity of its forward: the Megatron TransformerLayer whose
+forward (or recompute) runs the GDN core, found on the Python stack as the innermost frame whose ``self`` has both
+``layer_number`` and ``current_microbatch`` (Megatron's schedule sets ``current_microbatch`` on every decoder layer
+before each microbatch's forward): (layer_number, current_microbatch, id(layer)). The exact comparison also requires
+equal strides.
 
 Never use it in a training run: it keeps GPU copies of every correction call, adds work and writes evidence files.
 
@@ -35,11 +41,12 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import threading
 from pathlib import Path
 
 ENV = "MILES_CORR_DET_PROBE"
-MARK = "MILES_CORR_DET_PROBE=1: correction digests and per-parameter main_grad hashes enabled (test only, v2)"
+MARK = "MILES_CORR_DET_PROBE=1: correction digests and per-parameter main_grad hashes enabled (test only, v3)"
 MAX_CALLS = 1024
 MAX_SAVED_FAIL = 8
 MAX_SAVED_INPUT = 2
@@ -145,7 +152,7 @@ def consumed_equal(kw, ref):
     import torch
     dev = kw["dht_buffer"].device
     for k in ("dht_buffer", "mt_buffer", "fallback_mask", "seq_map_r2c"):
-        if kw[k].shape != ref[k].shape or kw[k].dtype != ref[k].dtype:
+        if kw[k].shape != ref[k].shape or kw[k].dtype != ref[k].dtype or kw[k].stride() != ref[k].stride():
             return torch.zeros((), dtype=torch.bool, device=dev)
     rows, mt = ref["_rows"], ref["_mt"]
     ne = (_bits_ne(kw["dht_buffer"], ref["dht_buffer"]).flatten(2).any(-1) & rows).any()
@@ -153,6 +160,22 @@ def consumed_equal(kw, ref):
     ne = ne | ((kw["fallback_mask"].bool() != ref["fallback_mask"].bool()) & rows).any()
     ne = ne | (kw["seq_map_r2c"] != ref["seq_map_r2c"]).any()
     return ~ne
+
+
+def layer_context(start=2, depth=200):
+    """(layer_number, current_microbatch, id) of the innermost caller frame whose self has both attributes as
+    ints (Megatron's TransformerLayer during forward / recompute), else (None, None, None)."""
+    f = sys._getframe(start)
+    for _ in range(depth):
+        if f is None:
+            break
+        obj = f.f_locals.get("self")
+        if obj is not None:
+            ln, mb = getattr(obj, "layer_number", None), getattr(obj, "current_microbatch", None)
+            if isinstance(ln, int) and not isinstance(ln, bool) and isinstance(mb, int) and not isinstance(mb, bool):
+                return ln, mb, id(obj)
+        f = f.f_back
+    return None, None, None
 
 
 class _Tag:
@@ -205,11 +228,12 @@ class _Probe:
             self.nograd_fwd += 1
             return result
         tag = len(self.fwd)
+        layer, mb, module = layer_context()
         qkv = [args[i] if len(args) > i else kwargs.get(n) for i, n in enumerate(("q", "k", "v"))]
         q = qkv[0]
         cu = kwargs.get("cu_seqlens")
         shapes = [list(a.shape) if torch.is_tensor(a) else None for a in qkv]
-        self.fwd.append([tag, shapes, str(getattr(q, "dtype", None)), cu is not None])
+        self.fwd.append([tag, layer, mb, module, shapes, str(getattr(q, "dtype", None)), cu is not None])
         self.fwd_cu.append(digest(cu, region="cu") if torch.is_tensor(cu) else torch.zeros(4, dtype=torch.int64,
                                                                                                device=out.device))
         tagged = _Tag.get().apply(out, self, tag)
