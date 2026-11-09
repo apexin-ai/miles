@@ -13,10 +13,11 @@ so the checks are tolerances, not bitwise equality:
 Both paths run their Triton kernels under ``TRITON_INTERPRET=1`` on CPU, in a subprocess because the flag must be
 set before ``triton.jit`` decorates the kernels. The interpreter (Triton 3.8) truncates fp32 -> bf16 casts, while
 the GPU backend (``cvt.rn.bf16.f32``) and torch round to nearest even; the worker patches the interpreter's cast to
-torch's rounding so the bf16 cases model the GPU (``_interpreter_bf16_rtne``). Cases: fp32 / tf32 (= fp32 on CPU) / bf16 matmul precision, with
-and without the inject weight (head contraction), C not a power of two, n = 3 (masked stream lanes), forced
-norm-backward token blocks with a ragged last block, T = 1, and T = 0 on the 2-D autograd functions. GPU numerics and speed: the GPU script
-tests/fast-gpu/kernels/hyper_connection/test_hc_fused_gpu.py.
+torch's rounding so the bf16 cases model the GPU (``_interpreter_bf16_rtne``). Cases: fp32 / tf32 (= fp32 on CPU) /
+bf16 matmul precision, with and without the inject weight (head contraction), C not a power of two, n = 3 (masked
+stream lanes), forced norm-backward token blocks with a ragged last block, T = 1, T = 0 on the 2-D autograd
+functions, and a strided (transposed) inject weight. Every output and gradient must be finite before any comparison.
+GPU numerics and speed: the GPU script tests/fast-gpu/kernels/hyper_connection/test_hc_fused_gpu.py.
 """
 
 import os
@@ -41,6 +42,13 @@ CASES = [
     (37, 32, 4, 8, "bfloat16", "fp32", False, None),  # head contraction (no inject)
     (37, 40, 4, 8, "bfloat16", "bf16", False, 8),
     (1, 16, 4, 4, "bfloat16", "fp32", True, None),
+]
+# strided inject weight (review H2REV P2: the kernels once read it as contiguous rows): [n, n*C] with stride (1, n),
+# a transpose of a contiguous [n*C, n]; clone() keeps the strides, so the leaf the paths see is strided too
+STRIDED_CASES = [
+    (7, 13, 3, 5, "float32", "fp32"),
+    (37, 40, 4, 8, "bfloat16", "tf32"),
+    (21, 24, 3, 6, "bfloat16", "bf16"),
 ]
 NAMES = ["mixed", "h_post", "dx", "dweight", "dw_down", "dw_up", "dw_inject"]
 EPS = 1e-6
@@ -75,7 +83,9 @@ def _run(fn, tensors, dmixed, dh_post, with_inject):
     out = [mixed.detach(), h_post.detach()] + [leaf.grad for leaf in leaves if leaf is not None]
     if not with_inject:
         out = out[:1] + out[2:]
-    return [torch.nan_to_num(o) for o in out]
+    for i, o in enumerate(out):
+        assert o is not None and torch.isfinite(o).all(), f"output / grad {i} is not finite"
+    return out
 
 
 def _reference(n, round_operands):
@@ -182,8 +192,37 @@ def _worker():
             assert cos >= (0.9999 if low_precision else 0.9999999), (case_id, name, cos)
             assert err_f <= 1.5 * err_d + 2e-6, (case_id, name, err_f, err_d)
     hc._bwd_block_t = real_block_t
+    _check_strided_inject(hc, torch)
     _check_empty(hc, torch)
     print("ALL-OK", flush=True)
+
+
+def _check_strided_inject(hc, torch):
+    """A strided inject weight gives the same forward and every gradient as the default path (which uses torch
+    matmuls, stride-aware), and the gradient lands on the strided leaf with its shape."""
+    for case_id, (T, C, n, R, dtype_name, precision) in enumerate(STRIDED_CASES):
+        tensors, dmixed, dh_post = _inputs(T, C, n, R, getattr(torch, dtype_name), seed=50 + case_id)
+        tensors[4] = tensors[4].t().contiguous().t()
+        assert tensors[4].shape == (n, n * C) and not tensors[4].is_contiguous()
+        assert not tensors[4].clone().is_contiguous()
+
+        def default(*a):
+            return hc.hc_mix_inject(*a, n, EPS, matmul_precision=precision)
+
+        def fused(*a):
+            return hc.hc_mix_inject(*a, n, EPS, matmul_precision=precision, fused=True)
+
+        want = _run(default, tensors, dmixed, dh_post, True)
+        got = _run(fused, tensors, dmixed, dh_post, True)
+        contiguous = [t.contiguous() if i == 4 else t for i, t in enumerate(tensors)]
+        ref_c = _run(fused, contiguous, dmixed, dh_post, True)
+        for name, g, w, c in zip(NAMES, got, want, ref_c, strict=True):
+            assert g.shape == w.shape and g.dtype == w.dtype, (case_id, name)
+            assert torch.equal(g, c), (case_id, name, "strided and contiguous inject weight differ")
+            diff = _rel(g, w)
+            print(f"strided {case_id} {precision} {name}: fused-vs-default rel {diff:.2e}", flush=True)
+            assert diff <= (1e-2 if g.dtype != torch.float32 or precision == "bf16" else 2e-5), (case_id, name, diff)
+    print("strided-OK", flush=True)
 
 
 def _check_empty(hc, torch):

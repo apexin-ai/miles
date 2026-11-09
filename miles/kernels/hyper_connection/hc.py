@@ -553,6 +553,12 @@ class _HCMixInjectFused(torch.autograd.Function):
         dev = x2d.device
         bf16 = precision == "bf16"
         has_inject = w_inject is not None
+        # the kernels address the norm and inject weights as contiguous rows (w_down / w_up go through torch matmuls):
+        # a strided view (e.g. a transpose) is copied once here and the same copy is saved for the backward; the
+        # gradients keep the parameters' shapes, so autograd maps them back to the original tensors
+        weight = weight.contiguous()
+        if has_inject:
+            w_inject = w_inject.contiguous()
         mm_in = torch.empty(T, W, dtype=torch.bfloat16 if bf16 else torch.float32, device=dev)
         rstd = torch.empty(T, n, dtype=torch.float32, device=dev)
         h_post = torch.empty(T, n, dtype=torch.float32, device=dev) if has_inject else None

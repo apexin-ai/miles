@@ -1,9 +1,10 @@
 """``hc_mix_inject(..., fused=True)`` (``--qwen38-hc-fused``) on the GPU: numerics against the default path and an
 fp64 reference, determinism, and (``__main__``) a numerics report and a micro-benchmark on Qwen3.8-Flash-Next shapes.
 
-pytest: moderate shapes (C 2560, n 4, R 320 included), every matmul precision, with and without the inject weight:
-the fused error against fp64 is at most 1.5x the default path's (plus a floor), the cosine to the default path is
->= 0.9999, and two fused runs are bitwise equal.
+pytest: moderate shapes (C 2560, n 4, R 320 included; T 4097 for a ragged norm-backward token block), every matmul
+precision, with and without the inject weight, plus a strided inject weight and fp32 activations: every output and
+gradient is finite, the fused error against fp64 is at most 1.5x the default path's (plus a floor), the cosine to the
+default path is >= 0.9999, and two fused runs are bitwise equal.
 
 Report and benchmark (single GPU, no distributed setup)::
 
@@ -110,8 +111,11 @@ def metrics(a, b):
     }
 
 
-def compare(T, C, n, R, precision, with_inject, wide=1.0, seed=0):
-    tensors, dmixed, dh_post = make_inputs(T, C, n, R, seed=seed, wide=wide)
+def compare(T, C, n, R, precision, with_inject, wide=1.0, seed=0, dtype=torch.bfloat16, strided_inject=False):
+    tensors, dmixed, dh_post = make_inputs(T, C, n, R, dtype=dtype, seed=seed, wide=wide)
+    if strided_inject:  # [n, n*C] with stride (1, n): a transpose of a contiguous [n*C, n] (review H2REV P2)
+        tensors[4] = tensors[4].t().contiguous().t()
+        assert not tensors[4].clone().is_contiguous()
     default = run(path(n, precision, False), tensors, dmixed, dh_post, with_inject)
     fused = run(path(n, precision, True), tensors, dmixed, dh_post, with_inject)
     again = run(path(n, precision, True), tensors, dmixed, dh_post, with_inject)
@@ -125,6 +129,7 @@ def compare(T, C, n, R, precision, with_inject, wide=1.0, seed=0):
     names = NAMES if with_inject else [m for m in NAMES if m not in ("h_post", "dw_inject")]
     rows = {}
     for name, f, d, a, r in zip(names, fused, default, again, ref, strict=True):
+        assert torch.isfinite(f).all() and torch.isfinite(d).all(), name
         rows[name] = {
             "fused_vs_default": metrics(f, d),
             "fused_vs_fp64": metrics(f, r),
@@ -137,21 +142,35 @@ def compare(T, C, n, R, precision, with_inject, wide=1.0, seed=0):
     return rows
 
 
-SHAPES = [(7, 64, 4, 16), (300, 2560, 4, 320), (4096, 2560, 4, 320)]
+# 4097: the norm backward runs 16-token blocks (_bwd_block_t) with a ragged last block on the GPU
+SHAPES = [(7, 64, 4, 16), (300, 2560, 4, 320), (4096, 2560, 4, 320), (4097, 2560, 4, 320)]
 
 
 @pytest.mark.parametrize("T,C,n,R", SHAPES)
 @pytest.mark.parametrize("precision", ["fp32", "tf32", "bf16"])
 @pytest.mark.parametrize("with_inject", [True, False])
 def test_fused_matches_default_and_fp64(T, C, n, R, precision, with_inject):
-    rows = compare(T, C, n, R, precision, with_inject, seed=T)
+    _assert_rows(compare(T, C, n, R, precision, with_inject, seed=T), precision)
+
+
+def _assert_rows(rows, precision):
     for name, r in rows.items():
-        err_f = r["fused_vs_fp64"]["rel_fro"]
-        err_d = r["default_vs_fp64"]["rel_fro"]
+        err_f, err_d = r["fused_vs_fp64"]["rel_fro"], r["default_vs_fp64"]["rel_fro"]
         floor = 2e-6 if r["dtype"] == "torch.float32" and precision == "fp32" else 1e-4
         assert r["fused_deterministic"], name
         assert err_f <= 1.5 * err_d + floor, (name, err_f, err_d)
         assert r["fused_vs_default"]["cos"] >= 0.9999, (name, r["fused_vs_default"])
+
+
+@pytest.mark.parametrize("T,C,n,R", [(7, 13, 3, 5), (300, 2560, 4, 320)])
+@pytest.mark.parametrize("precision", ["fp32", "tf32", "bf16"])
+def test_strided_inject_weight(T, C, n, R, precision):
+    _assert_rows(compare(T, C, n, R, precision, True, seed=T + 1, strided_inject=True), precision)
+
+
+@pytest.mark.parametrize("precision", ["fp32", "tf32"])
+def test_fp32_activations(precision):
+    _assert_rows(compare(300, 2560, 4, 320, precision, True, seed=5, dtype=torch.float32), precision)
 
 
 # ---------------------------------------------------------------------------------------------------- report / bench
