@@ -168,3 +168,35 @@ def test_train_installs_scopes_with_the_flag():
     src = inspect.getsource(mm.train)
     i = src.index("_refuse_trainable_vision(model)")
     assert src.index("install_param_gather_scopes(model)") > i
+
+
+def test_parameter_shared_between_layers_refused():
+    chunk = Chunk(split=True)
+    layers = chunk.module.decoder.layers
+    layers[1].mixer.a = layers[0].mixer.a   # one module (and its Parameter) in two layers
+    with pytest.raises(ValueError, match="several scopes"):
+        mm.install_param_gather_scopes([chunk])
+
+
+def test_parameter_shared_between_a_layer_and_the_model_refused():
+    chunk = Chunk(split=True)
+    chunk.module.head = chunk.module.decoder.layers[0].mixer.norm   # an outer reader of a layer's weight
+    with pytest.raises(ValueError, match="several scopes"):
+        mm.install_param_gather_scopes([chunk])
+
+
+def test_several_chunks_refused():
+    with pytest.raises(ValueError, match="one model chunk"):
+        mm.install_param_gather_scopes([Chunk(split=True), Chunk(split=True)])
+
+
+def test_read_then_scope_is_not_detectable_by_the_digest():
+    """RECHECK2 R4: a reader that runs before the scope barrier and the barrier afterwards (the gather then
+    completes normally) leaves correct contents at the barrier: a digest cannot see the earlier read. It is prevented by
+    the topology rule (every reader inside the layer that owns the parameter, the layer pre-hook first), not detected."""
+    chunk = Chunk(split=True)
+    mm.install_param_gather_scopes([chunk])
+    m = chunk.module.decoder.layers[0].mixer
+    early = float(m.a.weight[0, 0])                       # a read outside / before the layer
+    mm._qwen38_finish_scope(chunk, "c0:module.decoder.layers.0", [chunk.param_to_bucket_group[m.a.weight]])
+    assert early == 1.0 and float(m.a.weight[0, 0]) == 2.0

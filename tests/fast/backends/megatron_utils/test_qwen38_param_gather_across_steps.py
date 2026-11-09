@@ -178,6 +178,7 @@ def test_warm_with_hooks_switched_off_rearms(env):
     ({}, {"debug_train_only": False}), ({}, {"save_local_weight_checksum": True}), ({}, {"enable_witness": True}),
     ({}, {"ci_save_model_hash": True}), ({}, {"custom_megatron_before_train_step_hook_path": "x.hook"}),
     ({}, {"keep_old_actor": True}), ({}, {"colocate": True}), ({}, {"offload_train": True}),
+    ({"pipeline_model_parallel_size": 2}, {}), ({"virtual_pipeline_model_parallel_size": 2}, {}),
 ])
 def test_refused_combinations(backend, flag_args):
     args = _args(**backend)

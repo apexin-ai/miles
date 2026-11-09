@@ -402,6 +402,10 @@ def keep_param_gather_hooks(args) -> bool:
             "parameters with a pending gather: the hook must call finish_pending_param_gather itself and say so "
             "with --qwen38-before-step-hook-drains-param-gather"
         )
+    if (getattr(backend, "pipeline_model_parallel_size", 1) or 1) != 1 or getattr(
+        backend, "virtual_pipeline_model_parallel_size", None
+    ):  # config-access-exempt: the scope rule (install_param_gather_scopes) is shown for PP 1 only
+        problems.append("pipeline / virtual pipeline parallelism is not supported (PP 1, one model chunk only)")
     for key in ("keep_old_actor", "colocate", "offload_train"):  # weight backup / model switch read or overwrite
         if getattr(args, key, False):  # config-access-exempt: optional actor fields
             problems.append(f"not with --{key.replace('_', '-')} (weight backup / model switch)")
@@ -469,6 +473,8 @@ def install_param_gather_scopes(model_chunks: Sequence[DDP]) -> list:
     all its parameters, and on the model one for the parameters outside the layers. Active only while the DDP
     pre-hooks are enabled. Returns the scope list (name, parameter names); refuses a chunk without decoder layers."""
     scopes = []
+    if len(model_chunks) != 1:
+        raise ValueError("--qwen38-overlap-param-gather-across-steps: one model chunk only (PP 1, no virtual pipeline)")
     for ci, chunk in enumerate(model_chunks):
         if getattr(chunk, "_qwen38_scopes", None) is not None:  # config-access-exempt: ours, installed once
             scopes += chunk._qwen38_scopes
@@ -477,6 +483,22 @@ def install_param_gather_scopes(model_chunks: Sequence[DDP]) -> list:
         layers = [(n, m) for n, m in chunk.named_modules() if _LAYER_NAME.search(n)]
         if not layers:
             raise ValueError("--qwen38-overlap-param-gather-across-steps: no decoder layers found in the model chunk")
+        # RECHECK2 R4: every registration of every trainable Parameter (no de-duplication): a Parameter (or a module)
+        # registered under two scopes -- two layers, or a layer and the model outside the layers -- has readers this
+        # ownership rule does not wait for: refuse instead of guessing
+        layer_names = [n for n, _ in layers]
+        owners = {}
+        for mname, mod in chunk.named_modules(remove_duplicate=False):
+            scope = next((ln for ln in layer_names if mname == ln or mname.startswith(ln + ".")), "outer")
+            for p in mod._parameters.values():
+                if p is not None and p.requires_grad:
+                    owners.setdefault(id(p), set()).add(scope)
+        shared = sorted(names.get(pid, "?") for pid, sc in owners.items() if len(sc) > 1)
+        if shared:
+            raise ValueError(
+                "--qwen38-overlap-param-gather-across-steps: parameters registered under several scopes (shared "
+                f"between layers or with the model outside them) are not supported: {shared[:5]}"
+            )
         in_layer = set()
         mine = []
 
