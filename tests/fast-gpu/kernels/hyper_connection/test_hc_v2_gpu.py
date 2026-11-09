@@ -453,10 +453,15 @@ def main(argv):
                 out["sweep"].append(row)
                 print(f"SWEEP {json.dumps(row)}", flush=True)
         os.environ.pop("MILES_HCV2_CONFIG", None)
+        # the first candidate ({}) is the locked default: its failure fails the sweep (other candidates are results)
+        out["sweep_baseline_failed"] = any("error" in r for r in out["sweep"] if r["candidate"] == {})
     if a.out:
         with open(a.out, "w") as fh:
             json.dump(out, fh, indent=1)
         print(f"WROTE {a.out}", flush=True)
+    if out.get("sweep_baseline_failed"):
+        print("HCV2_SWEEP_BASELINE_FAILED", flush=True)
+        raise SystemExit(1)
     print("HCV2_GPU_DONE", flush=True)
 
 
