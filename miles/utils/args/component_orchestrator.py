@@ -19,3 +19,26 @@ class OrchestratorOnlyConfig(BaseConfig):
             ),
         ),
     ] = True
+    driver_log_memory_interval: A[
+        int,
+        Arg(
+            help=(
+                "With the cache kept between steps (--no-clear-memory-every-step, no save or eval due): train.py "
+                "asks every trainer rank for its step-end memory line (one RPC to every rank, ~0.2 s at 256 ranks) "
+                "only after a rollout whose rollout_id + 1 is a multiple of N; 0 never. Default 1: after every "
+                "rollout, as before. The clears around a save or an eval print their own lines either way."
+            ),
+        ),
+    ] = 1
+    skip_train_only_weight_update: A[
+        bool,
+        Arg(
+            action=argparse.BooleanOptionalAction,
+            help=(
+                "Pure training runs only (--debug-train-only, no inference engine): train.py skips the weight update "
+                "after each trained rollout, which there reaches no engine (every trainer rank returns no weight "
+                "version) but costs a round trip to every rank. The ORCHESTRATOR_STEP_END fault hook still runs; the "
+                "update before the first rollout stays. Default off."
+            ),
+        ),
+    ] = False

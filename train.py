@@ -24,8 +24,18 @@ from miles.utils.orchestration_utils import (
     init_orchestration_script,
     parse_orchestrator_startup_info,
 )
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook_async
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 
 logger = logging.getLogger(__name__)
+
+
+def log_memory_due(interval: int, rollout_id: int | None) -> bool:
+    """--driver-log-memory-interval: 1 every rollout (and a call without a rollout id), 0 never, N the rollouts whose
+    rollout_id + 1 is a multiple of N."""
+    if interval == 1:
+        return True
+    return interval > 0 and rollout_id is not None and (rollout_id + 1) % interval == 0
 
 
 async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
@@ -88,14 +98,14 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         await inference_controller.prepare_eval()
         await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
 
-    async def offload_train(*, clear_memory: bool = True):
+    async def offload_train(*, clear_memory: bool = True, rollout_id: int | None = None):
         if args.use_critic:
             return
         if args.offload_train:
             await actor_model.offload()
         elif clear_memory:
             await actor_model.clear_memory()
-        else:
+        elif log_memory_due(args.driver_log_memory_interval, rollout_id):
             await actor_model.log_memory()
 
     async def save(rollout_id, force_sync=False):
@@ -181,10 +191,18 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
             else:
                 # --no-clear-memory-every-step: nothing else uses the GPU between steps, so keep the cache unless a
                 # save just ran or an eval follows.
-                await offload_train(clear_memory=args.clear_memory_every_step or save_due or eval_due)
+                await offload_train(
+                    clear_memory=args.clear_memory_every_step or save_due or eval_due, rollout_id=rollout_id
+                )
                 if args.offload_rollout:
                     await inference_controller.onload_weights()
-            await update_weights(args, actor_model, rollout_executor, inference_controller, rollout_id=rollout_id)
+            if args.skip_train_only_weight_update:
+                # --debug-train-only without engines (validated): the update reaches no engine; keep its fault hook
+                await reach_fault_hook_async(
+                    FaultHookName.ORCHESTRATOR_STEP_END, rollout_id=rollout_id, trainer_model_id=None
+                )
+            else:
+                await update_weights(args, actor_model, rollout_executor, inference_controller, rollout_id=rollout_id)
             if args.offload_rollout:
                 await inference_controller.onload_kv()
 

@@ -1941,6 +1941,30 @@ def test_shared_actor_critic_ppo_rejects_indep_dp():
         miles_validate_args(args)
 
 
+class TestStepOverheadSwitches:
+    def test_defaults(self):
+        args = _parse_megatron_args([])
+        assert args.driver_log_memory_interval == 1
+        assert args.skip_train_only_weight_update is False
+
+    def test_pure_training_run_may_set_both(self):
+        args = _parse_megatron_args(
+            ["--debug-train-only", "--driver-log-memory-interval", "0", "--skip-train-only-weight-update"]
+        )
+        miles_validate_args(args)
+        assert args.driver_log_memory_interval == 0 and args.skip_train_only_weight_update is True
+
+    def test_negative_interval_is_refused(self):
+        args = _parse_megatron_args(["--debug-train-only", "--driver-log-memory-interval", "-1"])
+        with pytest.raises(AssertionError, match="--driver-log-memory-interval must be >= 0"):
+            miles_validate_args(args)
+
+    def test_skip_weight_update_needs_a_pure_training_run(self):
+        args = _parse_megatron_args(["--skip-train-only-weight-update"])
+        with pytest.raises(AssertionError, match="--skip-train-only-weight-update needs --debug-train-only"):
+            miles_validate_args(args)
+
+
 class TestClearMemoryEveryStep:
     def test_defaults_on(self):
         assert _parse_megatron_args([]).clear_memory_every_step is True

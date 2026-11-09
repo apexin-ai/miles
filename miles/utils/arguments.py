@@ -1381,6 +1381,13 @@ def miles_validate_args(args):
         args.rollout_num_gpus = 0
     args.starts_inference_engines = not args.debug_train_only or args.eval_num_gpus > 0
     validate_prefetch_rollout_args(args)
+    assert (
+        args.driver_log_memory_interval >= 0
+    ), f"--driver-log-memory-interval must be >= 0, got {args.driver_log_memory_interval}"
+    if args.skip_train_only_weight_update:
+        assert (
+            args.debug_train_only and not args.starts_inference_engines
+        ), "--skip-train-only-weight-update needs --debug-train-only without inference engines (no eval engines)"
 
     if args.use_critic and not args.debug_rollout_only:
         if args.offload_train is None:

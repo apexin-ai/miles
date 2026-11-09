@@ -37,6 +37,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         ft_components=[],
         fully_async=False,
         hf_checkpoint="/base/checkpoint",
+        driver_log_memory_interval=1,
         num_critic_only_steps=0,
         num_rollout=0,
         offload_rollout=False,
@@ -47,6 +48,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         save_rollout_ids=None,
         save_trigger_sentinel=None,
         skip_eval_before_train=False,
+        skip_train_only_weight_update=False,
         start_rollout_id=0,
         use_critic=False,
     )
@@ -598,3 +600,110 @@ class TestClearMemoryEveryStep:
 
         assert events.count("actor_offload") == 2
         assert "actor_clear_memory" not in events and "actor_log_memory" not in events
+
+
+class TestStepOverheadSwitches:
+    """--driver-log-memory-interval and --skip-train-only-weight-update (qwen38 step overhead H10): the defaults keep the
+    loop's exact call sequence; the switches drop only the step-end memory RPC / the per-rollout weight update."""
+
+    async def test_defaults_keep_every_step_end_call(self, monkeypatch: pytest.MonkeyPatch):
+        events: list[str] = []
+        args = _make_args(num_rollout=4, clear_memory_every_step=False)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert _loop_trace(events) == [
+            "actor_train:0",
+            "actor_log_memory",
+            "update_weights:0",
+            "actor_train:1",
+            "actor_log_memory",
+            "update_weights:1",
+            "actor_train:2",
+            "actor_log_memory",
+            "update_weights:2",
+            "actor_train:3",
+        ]
+
+    async def test_driver_log_memory_interval_logs_every_nth_rollout_and_keeps_the_save_clears(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        events: list[str] = []
+        args = _make_args(num_rollout=7, save_interval=4, clear_memory_every_step=False, driver_log_memory_interval=3)
+        _install_driver_fakes(monkeypatch, args, events, num_rollout_per_epoch=100)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert _loop_trace(events) == [
+            "actor_train:0",
+            "update_weights:0",
+            "actor_train:1",
+            "update_weights:1",
+            "actor_train:2",
+            "actor_log_memory",  # rollout_id + 1 = 3
+            "update_weights:2",
+            "actor_train:3",
+            "actor_clear_memory",  # the save's clears are not affected
+            "executor_save:3",
+            "actor_save:3",
+            "actor_clear_memory",
+            "update_weights:3",
+            "actor_train:4",
+            "update_weights:4",
+            "actor_train:5",
+            "actor_log_memory",  # rollout_id + 1 = 6
+            "update_weights:5",
+            "actor_train:6",
+            "actor_clear_memory",
+            "executor_save:6",
+            "actor_save:6",
+        ]
+
+    async def test_driver_log_memory_interval_zero_never_logs(self, monkeypatch: pytest.MonkeyPatch):
+        events: list[str] = []
+        args = _make_args(num_rollout=4, clear_memory_every_step=False, driver_log_memory_interval=0)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert "actor_log_memory" not in events and "actor_clear_memory" not in events
+        assert events.count("update_weights:None") == 1
+
+    async def test_driver_log_memory_interval_does_not_touch_the_per_step_clear(self, monkeypatch: pytest.MonkeyPatch):
+        events: list[str] = []
+        args = _make_args(num_rollout=3, driver_log_memory_interval=0)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert events.count("actor_clear_memory") == 2
+
+    async def test_skip_weight_update_keeps_the_initial_update_and_the_fault_hook(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        events: list[str] = []
+        args = _make_args(num_rollout=3, clear_memory_every_step=False, skip_train_only_weight_update=True)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        async def fault_hook(name, **context):
+            events.append(f"fault_hook:{name.value}:{context['rollout_id']}:{context['trainer_model_id']}")
+
+        monkeypatch.setattr(train_driver, "reach_fault_hook_async", fault_hook)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert [e for e in events if e.startswith(("update_weights:", "fault_hook:"))] == [
+            "update_weights:None",
+            "fault_hook:orchestrator_step_end:0:None",
+            "fault_hook:orchestrator_step_end:1:None",
+        ]
+        assert events.count("actor_log_memory") == 2
+
+
+@pytest.mark.parametrize(
+    "interval, rollout_id, due",
+    [(1, None, True), (1, 0, True), (0, 5, False), (0, None, False), (3, 2, True), (3, 3, False), (3, None, False)],
+)
+def test_log_memory_due(interval: int, rollout_id: int | None, due: bool):
+    assert train_driver.log_memory_due(interval, rollout_id) is due
