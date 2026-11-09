@@ -11,6 +11,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.hf_export import save_hf_model
+from miles.backends.megatron_utils.model import finish_pending_param_gather
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.megatron_config import has_megatron_checkpoint
 from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
@@ -935,6 +936,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.save_hf is not None and self.role == "actor":
             assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
+            finish_pending_param_gather(self.args, self.model)  # save() synced already; no-op unless pending
             save_hf_model(self.args, rollout_id, self.model, publisher=self.snapshot_publisher)
 
         if force_sync:
@@ -969,6 +971,7 @@ class MegatronTrainRayActor(TrainRayActor):
         """
         self._heartbeat.bump()
         assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
+        finish_pending_param_gather(self.args, self.model)  # --qwen38-overlap-param-gather-across-steps
         save_hf_model(
             self.args, rollout_id, self.model, publisher=self.snapshot_publisher, path=path, raise_on_error=True
         )

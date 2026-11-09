@@ -375,6 +375,53 @@ def should_disable_forward_pre_hook(args: TrainerConfig) -> bool:
     return args.backend.use_distributed_optimizer and args.backend.overlap_param_gather
 
 
+def keep_param_gather_hooks(args) -> bool:
+    """--qwen38-overlap-param-gather-across-steps (F8 tier B): the pre-hooks stay on between train() calls."""
+    on = bool(getattr(args, "qwen38_overlap_param_gather_across_steps", False))  # config-access-exempt: plugin knob
+    if not on:
+        return False
+    backend = args.backend
+    problems = []
+    if not (backend.use_distributed_optimizer and backend.overlap_param_gather and backend.overlap_grad_reduce):
+        problems.append("needs --use-distributed-optimizer, --overlap-param-gather and --overlap-grad-reduce")
+    if getattr(backend, "align_param_gather", False):  # config-access-exempt: optional megatron field
+        problems.append("not with --align-param-gather")
+    if getattr(backend, "overlap_param_gather_with_optimizer_step", False):  # config-access-exempt: optional
+        problems.append("not with --overlap-param-gather-with-optimizer-step")
+    if not getattr(args, "debug_train_only", False):  # config-access-exempt: weight updates read the params
+        problems.append("needs --debug-train-only (a weight update would read parameters with a pending gather)")
+    if getattr(args, "save_local_weight_checksum", False) or getattr(args, "enable_witness", False):
+        problems.append("not with --save-local-weight-checksum / --enable-witness (they read the parameters)")
+    if problems:
+        raise ValueError("--qwen38-overlap-param-gather-across-steps: " + "; ".join(problems))
+    return True
+
+
+def forward_pre_hooks_enabled(model_chunks: Sequence[DDP]) -> bool:
+    """True when every chunk has its DDP forward pre-hooks registered."""
+    return all(len(getattr(c, "remove_forward_pre_hook_handles", None) or {}) > 0 for c in model_chunks)
+
+
+def finish_pending_param_gather(args, model_chunks: Sequence[DDP]) -> bool:
+    """With keep_param_gather_hooks: finish the gather an earlier optimizer step left pending (synchronous all-gather
+    of every bucket, then the pre-hooks back on). Call before reading parameters outside a training step. Returns
+    whether it synchronized."""
+    if not keep_param_gather_hooks(args) or not forward_pre_hooks_enabled(model_chunks):
+        return False
+    disable_forward_pre_hook(model_chunks)  # param_sync=True
+    enable_forward_pre_hook(model_chunks)
+    return True
+
+
+def _refuse_trainable_vision(model_chunks: Sequence[DDP]) -> None:
+    names = [n for c in model_chunks for n, p in c.named_parameters() if p.requires_grad and ("vision" in n or "visual" in n)]
+    if names:
+        raise ValueError(
+            "--qwen38-overlap-param-gather-across-steps with trainable vision parameters "
+            f"({names[:3]} ...): text micro-batches never run their pre-hooks"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Forward-only inference
 # ---------------------------------------------------------------------------
@@ -394,6 +441,8 @@ def forward_only(
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
+    With --qwen38-overlap-param-gather-across-steps a pending parameter all-gather is finished first.
+
     The model is put into evaluation mode, a forward-only pipeline pass is
     executed, and relevant outputs are aggregated and returned.
 
@@ -412,6 +461,7 @@ def forward_only(
     Returns:
         Aggregated outputs keyed by ``store_prefix + key``.
     """
+    finish_pending_param_gather(args, model)
 
     dumper_phase_util = DumperMegatronUtil(
         args, model, DumperPhase.FWD_ONLY, rollout_id=rollout_id, store_prefix=store_prefix
@@ -953,13 +1003,23 @@ def train(
     # Disable forward pre-hook to start training to ensure that errors in checkpoint loading
     # or random initialization don't propagate to all ranks in first all-gather (which is a
     # no-op if things work correctly).
-    if should_disable_forward_pre_hook(args):
+    # --qwen38-overlap-param-gather-across-steps: from the second train() on the pre-hooks are still on and the
+    # previous optimizer step's all-gather is pending; this step's forward pre-hooks finish it bucket by bucket
+    keep_hooks = keep_param_gather_hooks(args)
+    warm = keep_hooks and bool(getattr(model[0], "_qwen38_param_gather_warm", False))  # config-access-exempt: ours
+    if keep_hooks and not warm:
+        _refuse_trainable_vision(model)
+    if should_disable_forward_pre_hook(args) and not warm:
         disable_forward_pre_hook(model, param_sync=False)
         # Also remove param_sync_func temporarily so that sync calls made in
         # `forward_backward_func` are no-ops.
         param_sync_func = config.param_sync_func
         config.param_sync_func = None
         pre_hook_enabled = False
+    elif warm:
+        if not forward_pre_hooks_enabled(model):  # a sync (save / export) re-enabled them: still on; else re-arm
+            enable_forward_pre_hook(model)
+        pre_hook_enabled = True
 
     num_steps_per_rollout = len(num_microbatches)
     if parallel_state.indep_dp.size > 1:
@@ -987,7 +1047,7 @@ def train(
             # Enable forward pre-hook after training step has successfully run. All subsequent
             # forward passes will use the forward pre-hook / `param_sync_func` in
             # `forward_backward_func`.
-            if should_disable_forward_pre_hook(args):
+            if should_disable_forward_pre_hook(args) and not warm:
                 enable_forward_pre_hook(model)
                 config.param_sync_func = param_sync_func
                 pre_hook_enabled = True
@@ -1059,7 +1119,12 @@ def train(
 
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
     if pre_hook_enabled:
-        disable_forward_pre_hook(model)
+        if keep_hooks:
+            # leave the all-gather pending: the next train()'s forward pre-hooks (or a save / forward-only pass /
+            # HF export, through finish_pending_param_gather) finish it
+            model[0]._qwen38_param_gather_warm = True
+        else:
+            disable_forward_pre_hook(model)
 
     return train_step_outcome
 

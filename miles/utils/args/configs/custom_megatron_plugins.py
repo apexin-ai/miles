@@ -211,6 +211,22 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
             )
         ),
     ] = False
+    qwen38_overlap_param_gather_across_steps: A[
+        bool,
+        Arg(
+            help=(
+                "With --overlap-param-gather (and the distributed optimizer): keep the DDP forward pre-hooks on "
+                "between train() calls (one SFT step per rollout), so the parameter all-gather of an optimizer "
+                "step is finished bucket by bucket in the next step's forward pre-hooks instead of synchronously "
+                "at the end of train(). Before anything reads the parameters outside a training step (forward-only "
+                "passes, HF export) the pending gather is finished synchronously; save() already "
+                "does that. Refused with trainable vision parameters (a text micro-batch never runs their "
+                "pre-hooks), --align-param-gather, overlap with the optimizer step, a run that is not "
+                "--debug-train-only, --save-local-weight-checksum and --enable-witness. No numeric change: an "
+                "all-gather only copies. Off: train() as before (PERF-F F8 tier B, 2026-11-09)."
+            )
+        ),
+    ] = False
     qwen38_fla_conv_pinned: A[
         bool,
         Arg(
