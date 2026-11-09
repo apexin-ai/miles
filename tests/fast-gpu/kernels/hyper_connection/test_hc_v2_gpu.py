@@ -198,6 +198,41 @@ def check_rows(rows, precision):
     return bad
 
 
+def _assert_clean(bad):
+    """Fail with every violation spelled out (tensor, rule, v2 value, default value), so a GPU failure needs no rerun."""
+    assert bad == [], f"{len(bad)} violations:\n" + "\n".join(repr(b) for b in bad)
+
+
+def _tf32_rna_ref(t):
+    """fp32 -> TF32 round to nearest, ties away (the cuBLAS conversion), as fp64."""
+    b = t.float().contiguous().view(torch.int32)
+    return ((b + 0x1000) & -8192).view(torch.float32).double()
+
+
+def test_tf32_matches_round_to_nearest_emulation():
+    """TF32 rounding mode (E1 2026-11-09): with fp32 activations and weights, v2's forward error against fp64 is at
+    most 1.1x that of an emulation of TF32 operands rounded to nearest (fp64 accumulation). Truncated operands gave
+    3.7x (3.47e-5 vs 9.3e-6 for mixed)."""
+    n = 4
+    tensors, _, _ = make_inputs(300, 2560, n, 320, dtype=torch.float32, seed=5)
+    x, weight, w_down, w_up, w_inj = tensors
+    with torch.no_grad():
+        mixed, h_post = path(n, "tf32", "v2")(*tensors)
+        xg = x.double().unflatten(-1, (n, -1))
+        normed = (xg * torch.rsqrt(xg.pow(2).mean(-1, keepdim=True) + EPS)).flatten(-2) * (1.0 + weight.double())
+
+        def chain(r):
+            z1 = r(normed) @ r(w_down).T / n
+            gate = torch.sigmoid(r(torch.nn.functional.silu(z1)) @ r(w_up).T)
+            return (gate * normed).unflatten(-1, (n, -1)).mean(dim=1)
+
+        ref = chain(lambda t: t.double())
+        emu = chain(_tf32_rna_ref)
+    err_v2 = metrics(mixed, ref)["rel_fro"]
+    err_rn = metrics(emu, ref)["rel_fro"]
+    assert err_v2 <= 1.1 * err_rn, f"mixed vs fp64: v2 {err_v2:.4e} > 1.1 x round-to-nearest emulation {err_rn:.4e}"
+
+
 # 4097 / 300: ragged last token tile of every kernel; (7, 64, 4, 16): tiny R (masked K / N tiles)
 SHAPES = [(7, 64, 4, 16), (300, 2560, 4, 320), (4096, 2560, 4, 320), (4097, 2560, 4, 320)]
 
@@ -206,17 +241,17 @@ SHAPES = [(7, 64, 4, 16), (300, 2560, 4, 320), (4096, 2560, 4, 320), (4097, 2560
 @pytest.mark.parametrize("precision", ["fp32", "tf32", "bf16"])
 @pytest.mark.parametrize("with_inject", [True, False])
 def test_v2_matches_default_and_fp64(T, C, n, R, precision, with_inject):
-    assert check_rows(compare(T, C, n, R, precision, with_inject, seed=T), precision) == []
+    _assert_clean(check_rows(compare(T, C, n, R, precision, with_inject, seed=T), precision))
 
 
 @pytest.mark.parametrize("precision", ["fp32", "tf32", "bf16"])
 def test_strided_weights(precision):
-    assert check_rows(compare(300, 2560, 4, 320, precision, True, seed=11, strided=True), precision) == []
+    _assert_clean(check_rows(compare(300, 2560, 4, 320, precision, True, seed=11, strided=True), precision))
 
 
 @pytest.mark.parametrize("precision", ["fp32", "tf32"])
 def test_fp32_activations(precision):
-    assert check_rows(compare(300, 2560, 4, 320, precision, True, seed=5, dtype=torch.float32), precision) == []
+    _assert_clean(check_rows(compare(300, 2560, 4, 320, precision, True, seed=5, dtype=torch.float32), precision))
 
 
 def test_default_tiles_locked():

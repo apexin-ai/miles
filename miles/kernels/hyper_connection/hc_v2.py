@@ -39,7 +39,8 @@ the same GPU and toolchain are bitwise equal.
 Numerics (relative to the default path; none of this changes parameters or checkpoints):
 
 - every GEMM keeps ``matmul_precision``'s operand rounding (fp32 / TF32 / bf16 operands, fp32 accumulation); the
-  operands are the same fp32 values the fused path feeds cuBLAS, the accumulation order is Triton's;
+  operands are the same fp32 values the fused path feeds cuBLAS, rounded to TF32 the way cuBLAS does (nearest, ties
+  away, ``_rna_tf32``; not Triton's truncation); the accumulation order is Triton's;
 - the inject projection is an fp32 dot product (as the fused path), its two gradient GEMMs follow
   ``matmul_precision`` (as the default path);
 - dweight is a sum of per-token-block partials (block = the dx kernel's token tile).
@@ -68,7 +69,7 @@ _DEFAULT_CONFIG = {
     "down": {"BM": 128, "BN": 64, "BK": 64, "num_warps": 8, "num_stages": 3},
     "up": {"BM": 64, "BN": 128, "BK": 64, "num_warps": 8, "num_stages": 3},
     "wgrad": {"BM": 64, "BN": 128, "BK": 64, "num_warps": 8, "num_stages": 2},
-    "dx": {"BM": 64, "BN": 128, "BK": 32, "num_warps": 8, "num_stages": 3},
+    "dx": {"BM": 32, "BN": 128, "BK": 64, "num_warps": 8, "num_stages": 3},  # E2 2026-11-09: ~20% faster than 64/128/32
     "small": {"BT": 8, "num_warps": 4},
 }
 
@@ -88,8 +89,20 @@ _INTERPRET_BF16 = tl.constexpr(os.environ.get("TRITON_INTERPRET") == "1")
 
 
 @triton.jit
+def _rna_tf32(x):
+    """fp32 -> the nearest TF32 value (10-bit mantissa), ties away from zero, as ``cvt.rna.tf32.f32`` and as cuBLAS /
+    CUTLASS convert fp32 GEMM operands. Triton's tf32 dot hands the fp32 bits to the MMA, which drops the low 13 bits
+    (truncation): an operand bias of -2^-11 on average, 3.7x the default path's error with fp32 activations (E1
+    2026-11-09, test_fp32_activations[tf32]). Integer ops, so the interpreter runs it too; bf16 values are TF32-exact
+    and pass unchanged; inf / nan keep their class."""
+    bits = x.to(tl.int32, bitcast=True)
+    return ((bits + 0x1000) & -8192).to(tl.float32, bitcast=True)
+
+
+@triton.jit
 def _dot(a, b, acc, PREC: tl.constexpr):
-    """acc + a @ b: PREC 0 fp32 (IEEE), 1 TF32 operands, 2 bf16 operands; fp32 accumulation."""
+    """acc + a @ b: PREC 0 fp32 (IEEE), 1 TF32 operands (rounded to nearest, see _rna_tf32), 2 bf16 operands; fp32
+    accumulation."""
     if PREC == 2:
         if _INTERPRET_BF16:
             return tl.dot(
@@ -97,7 +110,7 @@ def _dot(a, b, acc, PREC: tl.constexpr):
             )
         return tl.dot(a.to(tl.bfloat16), b.to(tl.bfloat16), acc)
     elif PREC == 1:
-        return tl.dot(a, b, acc, input_precision="tf32")
+        return tl.dot(_rna_tf32(a), _rna_tf32(b), acc, input_precision="tf32")
     else:
         return tl.dot(a, b, acc, input_precision="ieee")
 

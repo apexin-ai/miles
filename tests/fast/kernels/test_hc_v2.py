@@ -189,10 +189,97 @@ def _worker():
             assert diff <= (1e-2 if low_precision else 2e-5), (case_id, name, diff)
             assert cos >= (0.9999 if low_precision else 0.9999999), (case_id, name, cos)
             assert err_v <= 1.5 * err_d + 2e-6, (case_id, name, err_v, err_d)
+    _check_rna_tf32(torch)
+    _check_tf32_vs_rn_emulation(hc, torch)
     _check_length_invariance(hc, torch)
     _check_strided(hc, torch)
     _check_empty(hc, torch)
     print("ALL-OK", flush=True)
+
+
+def _check_rna_tf32(torch):
+    """``_rna_tf32`` (E1 2026-11-09): nearest TF32, ties away from zero, symmetric in sign; bf16 values, 0, inf, nan
+    unchanged in class; matches an independent integer reference on 2**16 random fp32 bit patterns."""
+    import triton
+    import triton.language as tl
+
+    from miles.kernels.hyper_connection import hc_v2
+
+    globals()["_rna_tf32"] = hc_v2._rna_tf32  # triton.jit resolves names in the module globals
+
+    @triton.jit
+    def k(x_ptr, y_ptr, n, BLOCK: tl.constexpr):
+        offs = tl.arange(0, BLOCK)
+        m = offs < n
+        tl.store(y_ptr + offs, _rna_tf32(tl.load(x_ptr + offs, mask=m, other=0.0)), mask=m)
+
+    def run(x):
+        y = torch.empty_like(x)
+        k[(1,)](x, y, x.numel(), BLOCK=triton.next_power_of_2(x.numel()))
+        return y
+
+    ulp = 2.0**-10  # TF32 ulp at [1, 2)
+    cases = torch.tensor(
+        [1.0, 1.0 + ulp / 2, 1.0 + ulp / 2 - 2**-23, 1.0 + ulp / 2 + 2**-23, 1.0 + 1.5 * ulp, -(1.0 + ulp / 2),
+         -(1.0 + ulp / 2 - 2**-23), 0.0, -0.0, 3.0e38, float("inf"), -float("inf")],
+        dtype=torch.float32,
+    )  # fmt: skip
+    want = torch.tensor(
+        [1.0, 1.0 + ulp, 1.0, 1.0 + ulp, 1.0 + 2 * ulp, -(1.0 + ulp), -1.0, 0.0, -0.0, None or 0.0, float("inf"), -float("inf")],
+        dtype=torch.float32,
+    )  # fmt: skip
+    got = run(cases)
+    for i in range(len(cases)):
+        if i == 9:  # 3.0e38 rounds within range
+            assert torch.isfinite(got[i]) and abs(got[i].item() - 3.0e38) <= 3.0e38 * ulp, got[i]
+            continue
+        assert torch.equal(got[i], want[i]) and (torch.signbit(got[i]) == torch.signbit(want[i])), (i, cases[i], got[i], want[i])
+    assert torch.isnan(run(torch.tensor([float("nan")]))).all()
+    bf = torch.randn(4096).bfloat16().float()
+    assert torch.equal(run(bf), bf), "bf16 values must be TF32-exact"
+    g = torch.Generator().manual_seed(3)
+    bits = torch.randint(-(2**31), 2**31 - 1, (65536,), generator=g, dtype=torch.int64).to(torch.int32)
+    x = bits.view(torch.float32)
+    x = x[torch.isfinite(x) & (x.abs() < 3.0e38)]
+    b = x.view(torch.int32).to(torch.int64)
+    mag = (b & 0x7FFFFFFF) + 0x1000
+    ref = (((b & ~0x7FFFFFFF) | (mag & 0x7FFFE000)) & 0xFFFFFFFF).to(torch.int64)
+    ref = torch.where(ref >= 2**31, ref - 2**32, ref).to(torch.int32).view(torch.float32)
+    assert torch.equal(run(x), ref), "differs from the sign-magnitude integer reference"
+    print("rna-tf32-OK", flush=True)
+
+
+def _check_tf32_vs_rn_emulation(hc, torch):
+    """With fp32 activations / weights in tf32 mode, v2's forward error vs fp64 is <= 1.1x that of an emulation with
+    TF32 operands rounded to nearest (the GPU test does the same at production shapes)."""
+    n, C, R, T = 4, 32, 20, 37
+    g = torch.Generator().manual_seed(21)
+    x = torch.randn(T, n * C, generator=g)
+    weight = 0.1 * torch.randn(n * C, generator=g)
+    w_down = torch.randn(R, n * C, generator=g) / (n * C) ** 0.5
+    w_up = 2.0 * torch.randn(n * C, R, generator=g) / R**0.5
+    w_inj = torch.randn(n, n * C, generator=g) / (n * C) ** 0.5
+    with torch.no_grad():
+        mixed, _ = hc.hc_mix_inject(x, weight, w_down, w_up, w_inj, n, EPS, matmul_precision="tf32", v2=True)
+    xg = x.double().unflatten(-1, (n, -1))
+    normed = (xg * torch.rsqrt(xg.pow(2).mean(-1, keepdim=True) + EPS)).flatten(-2) * (1.0 + weight.double())
+
+    def rn(t):
+        b = t.float().contiguous().view(torch.int32)
+        return ((b + 0x1000) & -8192).view(torch.float32).double()
+
+    def chain(r):
+        z1 = r(normed) @ r(w_down).T / n
+        gate = torch.sigmoid(r(torch.nn.functional.silu(z1)) @ r(w_up).T)
+        return (gate * normed).unflatten(-1, (n, -1)).mean(dim=1)
+
+    ref = chain(lambda t: t.double())
+    err_v2, err_rn = _rel(mixed, ref), _rel(chain(rn), ref)
+    print(f"tf32 emulation: v2 {err_v2:.3e} round-to-nearest {err_rn:.3e}", flush=True)
+    assert err_v2 <= 1.1 * err_rn + 1e-7, (err_v2, err_rn)
+    # the interpreter's dot is plain fp32: an error at the TF32 level shows _rna_tf32 is applied (without it ~1e-7)
+    assert err_v2 >= 0.5 * err_rn, ("tf32 operand rounding not applied", err_v2, err_rn)
+    print("tf32-vs-rn-OK", flush=True)
 
 
 def _check_length_invariance(hc, torch):
