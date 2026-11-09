@@ -15,16 +15,12 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
-# Rows of a forward / dQ tile and of a dK / dV step: T = _TILE_ROWS // G queries x G heads.
+from miles.kernels.attention.qsa.launch import qsa_launch
+
+# Default rows of a forward / dQ tile and of a dK / dV step: T = _TILE_ROWS // G queries x G heads. The rows and
+# the blocks per dK / dV tile come from the launch table (``launch.py``), measured with the kernels.
 _TILE_ROWS = 64
-# Blocks per dK / dV tile per arch major, measured together with block_attention's launch parameters.
-_KEY_TILE_BLOCKS = {9: 4, 10: 16}
 _SCAN_CHUNK = 1024
-
-
-def _key_tile_blocks(device: torch.device) -> int:
-    major = torch.cuda.get_device_capability(device)[0] if device.type == "cuda" else 9
-    return _KEY_TILE_BLOCKS.get(major, _KEY_TILE_BLOCKS[9])
 
 
 @dataclass(frozen=True)
@@ -35,7 +31,8 @@ class QSABlockIndex:
     and one bit per query of the tile); ``k_*`` list, per dK / dV tile, the queries that selected its
     blocks in ascending order (query, and one bit per block of the tile). The order inside a list is the
     kernels' summation order. ``*_order`` is the launch order: forward / dQ tiles busiest first, dK / dV
-    tiles by position, so that neighbouring tiles, which mostly read the same queries, run together.
+    tiles by position (neighbouring tiles, which mostly read the same queries, run together) or, with the
+    launch's ``key_order = "busiest"``, most queries first. The order of the programs does not change any sum.
     """
 
     query_tile: int
@@ -386,9 +383,10 @@ def build_qsa_block_index(
     Synchronizes with the host once, for the list sizes.
     """
     group = num_heads // num_kv_heads
-    assert num_heads % num_kv_heads == 0 and group <= _TILE_ROWS, (num_heads, num_kv_heads)
-    query_tile = min(32, _TILE_ROWS // group)  # one int32 bit per query of a tile
-    key_tile = _key_tile_blocks(blocks.device)
+    launch = qsa_launch(blocks.device)
+    assert num_heads % num_kv_heads == 0 and group <= launch.query_rows, (num_heads, num_kv_heads)
+    query_tile = min(32, launch.query_rows // group)  # one int32 bit per query of a tile
+    key_tile = launch.key_tile
     n_queries, width = blocks.shape
     blocks = blocks.to(torch.int32)
     cu = cu_seqlens.to(device=blocks.device, dtype=torch.int32)
@@ -407,6 +405,12 @@ def build_qsa_block_index(
         raise ValueError(f"cu_seqlens {cu_seqlens.tolist()} reaches past the {n_queries} rows of blocks")
     lists = _fill(blocks, grid, shape, maps, before, offsets, n_q, n_k)
     n_k_tiles = -(-n_blocks // key_tile)
+    if launch.key_order == "busiest":
+        # most queries first: the longest dK / dV programs start in the first wave
+        k_counts = counts[shape.n_q_tiles : shape.n_q_tiles + n_k_tiles]
+        k_order = torch.argsort(k_counts, descending=True, stable=True).to(torch.int32)
+    else:
+        k_order = torch.arange(n_k_tiles, dtype=torch.int32, device=blocks.device)
     return QSABlockIndex(
         query_tile=query_tile,
         key_tile=key_tile,
@@ -418,7 +422,7 @@ def build_qsa_block_index(
         k_offsets=offsets[n_q_tiles + 1 : n_q_tiles + 2 + n_k_tiles],
         k_query=lists["k_query"],
         k_bits=lists["k_bits"],
-        k_order=torch.arange(n_k_tiles, dtype=torch.int32, device=blocks.device),
+        k_order=k_order,
         block_start=grid["block_start"][:n_blocks],
         block_len=grid["block_len"][:n_blocks],
         last_key=grid["last_key"],

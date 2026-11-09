@@ -15,6 +15,7 @@ register_cuda_ci(
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 from miles.kernels.attention.qsa import build_qsa_block_index, qsa_block_attention  # noqa: E402
+from miles.kernels.attention.qsa.launch import qsa_launch_override  # noqa: E402
 
 RATIO = 4
 TOL = 1e-2
@@ -147,6 +148,58 @@ def test_deterministic():
     first = _run(attend, q, k, v, gout)
     second = _run(attend, q, k, v, gout)
     for a, b in zip(first, second, strict=True):
+        assert torch.equal(a, b)
+
+
+# launch shapes a B300 sweep may pick; each must stay within TOL of fp64 and be deterministic
+LAUNCH_VARIANTS = {
+    "nu4-w4-s2": {"fwd": {"NU": 4, "num_warps": 4, "num_stages": 2}, "dq": {"NU": 4, "num_warps": 4, "num_stages": 2}},
+    "nu32": {"fwd": {"NU": 32}, "dq": {"NU": 32}},
+    "query-rows-128": {"query_rows": 128},
+    "key-tile-4": {"key_tile": 4},
+    "key-tile-8-rows-32": {"key_tile": 8, "dkdv": {"ROWS": 32}},
+    "key-rows-128": {"dkdv": {"ROWS": 128, "num_warps": 8}},
+    "dsplit-2": {"dkdv": {"DSPLIT": 2}},
+    "dsplit-4-w4": {"dkdv": {"DSPLIT": 4, "num_warps": 4, "num_stages": 2}},
+    "busiest": {"key_order": "busiest"},
+}
+LAUNCH_CASES = [([1500, 301, 211], 6, 1, 256, 512), ([384], 12, 1, 256, 16), ([61, 128], 3, 1, 256, 8)]
+
+
+def _attend_with(blocks, lens, heads, kv_heads, scale, fields):
+    def attend(a, b, c):
+        with qsa_launch_override(**fields):
+            index = build_qsa_block_index(
+                blocks, _cu(lens), compress_ratio=RATIO, num_heads=heads, num_kv_heads=kv_heads
+            )
+            return qsa_block_attention(a, b, c, index, scale)
+
+    return attend
+
+
+@pytest.mark.parametrize("variant", LAUNCH_VARIANTS)
+@pytest.mark.parametrize("lens,heads,kv_heads,head_dim,budget", LAUNCH_CASES, ids=["g6", "g12", "g3"])
+def test_launch_variant_matches_reference_and_is_deterministic(variant, lens, heads, kv_heads, head_dim, budget):
+    q, k, v, gout = _inputs(sum(lens), heads, kv_heads, head_dim, seed=sum(lens) + heads)
+    blocks = _select(lens, budget, seed=len(lens))
+    scale = head_dim**-0.5
+    attend = _attend_with(blocks, lens, heads, kv_heads, scale, LAUNCH_VARIANTS[variant])
+    got = _run(attend, q, k, v, gout)
+    again = _run(attend, q, k, v, gout)
+    want = _run(lambda a, b, c: _reference(a, b, c, _keys(blocks, lens), scale), q, k, v, gout)
+    for name, a, b, c in zip(("out", "dq", "dk", "dv"), got, again, want, strict=True):
+        assert torch.equal(a, b), (name, "not deterministic")
+        assert _rel(a, c) < TOL, (name, _rel(a, c))
+
+
+def test_key_order_does_not_change_any_bit():
+    """The dK / dV programs are independent; only their launch order changes."""
+    lens, heads = [1500, 301, 211], 6
+    q, k, v, gout = _inputs(sum(lens), heads, 1, 256, seed=5)
+    blocks = _select(lens, 512, seed=5)
+    by_position = _run(_attend_with(blocks, lens, heads, 1, 256**-0.5, {}), q, k, v, gout)
+    busiest = _run(_attend_with(blocks, lens, heads, 1, 256**-0.5, {"key_order": "busiest"}), q, k, v, gout)
+    for a, b in zip(by_position, busiest, strict=True):
         assert torch.equal(a, b)
 
 

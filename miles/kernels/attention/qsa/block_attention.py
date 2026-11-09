@@ -8,51 +8,24 @@ choice. These kernels compute only those keys:
   tensor-core tile holds ``T * G <= 64`` rows. It walks the sorted union of its queries' blocks, ``NU``
   blocks per step, and masks each (query, key) pair with a per-(query, block) bit and ``key <= query``.
   Consecutive queries pick mostly the same blocks, so the union stays close to one query's selection.
-* dK / dV: a program owns ``NUK`` consecutive blocks of one KV head and walks the queries that selected
-  any of them, ``64 / G`` queries per step. Every key row is written by one program, so the backward
+* dK / dV: a program owns ``NUK`` consecutive blocks of one KV head (and, with ``DSPLIT > 1``, one
+  ``D / DSPLIT`` slice of their dK / dV columns) and walks the queries that selected any of them,
+  ``ROWS / G`` queries per step. Every dK / dV element is written by one program, so the backward
   needs no atomics and is deterministic.
 
-The tile lists come from :func:`~miles.kernels.attention.qsa.block_index.build_qsa_block_index`.
+The tile lists come from :func:`~miles.kernels.attention.qsa.block_index.build_qsa_block_index`; the launch
+parameters, per arch, from :mod:`~miles.kernels.attention.qsa.launch`.
 """
-
-from dataclasses import dataclass
 
 import torch
 import triton
 import triton.language as tl
 from torch import Tensor
 
-from miles.kernels.attention.qsa.block_index import _TILE_ROWS, QSABlockIndex
+from miles.kernels.attention.qsa.block_index import QSABlockIndex
+from miles.kernels.attention.qsa.launch import QSALaunch, qsa_launch
 
 _LOG2E = 1.4426950408889634
-
-
-@dataclass(frozen=True)
-class _Launch:
-    fwd: dict
-    dq: dict
-    dkdv: dict
-
-
-# Measured per arch major at head_dim 256, 12 query heads per KV head, 8K and 64K tokens of indexer selections,
-# with block_index's key tiles: sm_90 on H20 and H100, sm_100 on B200. Other archs take the sm_90 row.
-_TUNED = {
-    9: _Launch(
-        fwd={"NU": 8, "num_warps": 4, "num_stages": 3},
-        dq={"NU": 8, "num_warps": 4, "num_stages": 1},
-        dkdv={"num_warps": 4, "num_stages": 3},
-    ),
-    10: _Launch(
-        fwd={"NU": 16, "num_warps": 8, "num_stages": 3},
-        dq={"NU": 16, "num_warps": 8, "num_stages": 3},
-        dkdv={"num_warps": 8, "num_stages": 1},
-    ),
-}
-
-
-def _launch(device: torch.device) -> _Launch:
-    major = torch.cuda.get_device_capability(device)[0] if device.type == "cuda" else 9
-    return _TUNED.get(major, _TUNED[9])
 
 
 @triton.jit
@@ -283,6 +256,7 @@ def _dkdv_kernel(
     BLOCK_M: tl.constexpr,
     NUK: tl.constexpr,
     RATIO: tl.constexpr,
+    DSPLIT: tl.constexpr,
 ):
     key_tile = tl.load(K_ORDER + tl.program_id(0))
     kv_head = tl.program_id(1)
@@ -298,8 +272,14 @@ def _dkdv_kernel(
     key64 = key[:, None].to(tl.int64)
     k = tl.load(K + kv_head * stride_kh + key64 * stride_ks + offs_d[None, :], mask=key_mask[:, None], other=0.0)
     v = tl.load(V + kv_head * stride_vh + key64 * stride_vs + offs_d[None, :], mask=key_mask[:, None], other=0.0)
-    dk = tl.zeros([BLOCK_N, D], dtype=tl.float32)
-    dv = tl.zeros([BLOCK_N, D], dtype=tl.float32)
+    # this program's dK / dV columns: all of them, or slice program_id(2) of DSPLIT
+    DS: tl.constexpr = D // DSPLIT
+    if DSPLIT == 1:
+        offs_s = offs_d
+    else:
+        offs_s = tl.program_id(2) * DS + tl.arange(0, DS)
+    dk = tl.zeros([BLOCK_N, DS], dtype=tl.float32)
+    dv = tl.zeros([BLOCK_N, DS], dtype=tl.float32)
     lo = tl.load(K_OFFSETS + key_tile)
     hi = tl.load(K_OFFSETS + key_tile + 1)
     offs_m = tl.arange(0, BLOCK_M)
@@ -322,12 +302,21 @@ def _dkdv_kernel(
         allowed = ((bits[:, None] >> block_of_n[None, :]) & 1) != 0
         allowed = allowed & (key[None, :] <= last_key[:, None]) & key_mask[None, :] & entry_mask[:, None]
         p = tl.where(allowed, tl.math.exp2(qk - lse[:, None]), 0.0)
-        dv += tl.dot(tl.trans(p.to(do.dtype)), do)
+        if DSPLIT == 1:
+            q_s = q
+            do_s = do
+        else:
+            # the scores need the whole head_dim; dK / dV only this program's columns of q and dO
+            q_s_ptrs = Q + query64 * stride_qs + head[:, None] * stride_qh + offs_s[None, :]
+            do_s_ptrs = DO + query64 * stride_dos + head[:, None] * stride_doh + offs_s[None, :]
+            q_s = tl.load(q_s_ptrs, mask=entry_mask[:, None], other=0.0)
+            do_s = tl.load(do_s_ptrs, mask=entry_mask[:, None], other=0.0)
+        dv += tl.dot(tl.trans(p.to(do.dtype)), do_s)
         dp = tl.dot(do, tl.trans(v))
         ds = p * (dp - delta[:, None])
-        dk += tl.dot(tl.trans(ds.to(q.dtype)), q)
-    dk_ptrs = DK + kv_head * stride_dkh + key64 * stride_dks + offs_d[None, :]
-    dv_ptrs = DV + kv_head * stride_dvh + key64 * stride_dvs + offs_d[None, :]
+        dk += tl.dot(tl.trans(ds.to(q.dtype)), q_s)
+    dk_ptrs = DK + kv_head * stride_dkh + key64 * stride_dks + offs_s[None, :]
+    dv_ptrs = DV + kv_head * stride_dvh + key64 * stride_dvs + offs_s[None, :]
     tl.store(dk_ptrs, (dk * sm_scale).to(DK.dtype.element_ty), mask=key_mask[:, None])
     tl.store(dv_ptrs, dv.to(DV.dtype.element_ty), mask=key_mask[:, None])
 
@@ -336,7 +325,9 @@ def _query_rows(index: QSABlockIndex, group: int) -> int:
     return max(16, triton.next_power_of_2(index.query_tile * group))
 
 
-def _forward(q: Tensor, k: Tensor, v: Tensor, index: QSABlockIndex, scale: float) -> tuple[Tensor, Tensor]:
+def _forward(
+    q: Tensor, k: Tensor, v: Tensor, index: QSABlockIndex, scale: float, launch: QSALaunch
+) -> tuple[Tensor, Tensor]:
     n_queries, num_heads, head_dim = q.shape
     num_kv_heads = k.shape[1]
     group = num_heads // num_kv_heads
@@ -366,7 +357,7 @@ def _forward(q: Tensor, k: Tensor, v: Tensor, index: QSABlockIndex, scale: float
         D=head_dim,
         BLOCK_M=_query_rows(index, group),
         RATIO=index.ratio,
-        **_launch(q.device).fwd,
+        **launch.fwd,
     )
     return out, lse
 
@@ -389,7 +380,7 @@ def _backward_delta(out: Tensor, grad_out: Tensor) -> Tensor:
     return delta
 
 
-def _backward_dq(q, k, v, grad_out, lse, delta, index: QSABlockIndex, scale: float) -> Tensor:
+def _backward_dq(q, k, v, grad_out, lse, delta, index: QSABlockIndex, scale: float, launch: QSALaunch) -> Tensor:
     n_queries, num_heads, head_dim = q.shape
     num_kv_heads = k.shape[1]
     group = num_heads // num_kv_heads
@@ -422,19 +413,26 @@ def _backward_dq(q, k, v, grad_out, lse, delta, index: QSABlockIndex, scale: flo
         D=head_dim,
         BLOCK_M=_query_rows(index, group),
         RATIO=index.ratio,
-        **_launch(q.device).dq,
+        **launch.dq,
     )
     return grad_q
 
 
-def _backward_dkdv(q, k, v, grad_out, lse, delta, index: QSABlockIndex, scale: float) -> tuple[Tensor, Tensor]:
+def _backward_dkdv(
+    q, k, v, grad_out, lse, delta, index: QSABlockIndex, scale: float, launch: QSALaunch
+) -> tuple[Tensor, Tensor]:
     num_heads, head_dim = q.shape[1:]
     num_kv_heads = k.shape[1]
     group = num_heads // num_kv_heads
+    rows, dsplit = launch.key_rows, launch.dsplit
+    if group > rows or head_dim % dsplit or head_dim // dsplit < 16:
+        raise ValueError(
+            f"QSA dK / dV: {group} heads per KV head, head_dim {head_dim}; launch ROWS {rows} DSPLIT {dsplit}"
+        )
     # keys outside every block (rows past the last sequence) get no gradient
     grad_k = torch.zeros_like(k)
     grad_v = torch.zeros_like(v)
-    _dkdv_kernel[(index.k_order.numel(), num_kv_heads)](
+    _dkdv_kernel[(index.k_order.numel(), num_kv_heads, dsplit)](
         q,
         k,
         v,
@@ -461,12 +459,12 @@ def _backward_dkdv(q, k, v, grad_out, lse, delta, index: QSABlockIndex, scale: f
         scale,
         HQ=num_heads,
         G=group,
-        TB=_TILE_ROWS // group,
+        TB=rows // group,
         D=head_dim,
-        BLOCK_M=_TILE_ROWS,
+        BLOCK_M=rows,
         NUK=index.key_tile,
         RATIO=index.ratio,
-        **_launch(q.device).dkdv,
+        **launch.kernel_dkdv(),
     )
     return grad_k, grad_v
 
@@ -479,10 +477,13 @@ class _QSABlockAttention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, index, scale):
         q, k, v = (_last_dim_contiguous(t) for t in (q, k, v))
-        out, lse = _forward(q, k, v, index, scale)
+        # the backward launches as the forward did, wherever it runs
+        launch = qsa_launch(q.device)
+        out, lse = _forward(q, k, v, index, scale, launch)
         ctx.save_for_backward(q, k, v, out, lse)
         ctx.index = index
         ctx.scale = scale
+        ctx.launch = launch
         return out
 
     @staticmethod
@@ -490,8 +491,8 @@ class _QSABlockAttention(torch.autograd.Function):
         q, k, v, out, lse = ctx.saved_tensors
         grad_out = _last_dim_contiguous(grad_out)
         delta = _backward_delta(out, grad_out)
-        grad_q = _backward_dq(q, k, v, grad_out, lse, delta, ctx.index, ctx.scale)
-        grad_k, grad_v = _backward_dkdv(q, k, v, grad_out, lse, delta, ctx.index, ctx.scale)
+        grad_q = _backward_dq(q, k, v, grad_out, lse, delta, ctx.index, ctx.scale, ctx.launch)
+        grad_k, grad_v = _backward_dkdv(q, k, v, grad_out, lse, delta, ctx.index, ctx.scale, ctx.launch)
         return grad_q, grad_k, grad_v, None, None
 
 
