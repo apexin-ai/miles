@@ -219,6 +219,17 @@ def test_fp32_activations(precision):
     assert check_rows(compare(300, 2560, 4, 320, precision, True, seed=5, dtype=torch.float32), precision) == []
 
 
+def test_default_tiles_locked():
+    """The gate measures the production tiles: no MILES_HCV2_CONFIG override, and the 128-row alignment of the
+    length-invariance check matches them; fp32 matmuls default to IEEE outside the HC scope."""
+    assert not os.environ.get("MILES_HCV2_CONFIG"), "unset MILES_HCV2_CONFIG for the gate"
+    cfg = hc_v2._config()
+    assert cfg == hc_v2._DEFAULT_CONFIG
+    for key, dim in (("stats", "BT"), ("down", "BM"), ("up", "BM")):
+        assert 128 % cfg[key][dim] == 0, (key, cfg[key])
+    assert not torch.backends.cuda.matmul.allow_tf32
+
+
 def test_stride2_norm_weight():
     """A 1-D stride-2 norm weight (a view of a [W, 2] leaf; clone() would make it dense) gives the contiguous bits."""
     tensors, dmixed, dh_post = make_inputs(300, seed=12)
@@ -231,8 +242,11 @@ def test_stride2_norm_weight():
 
 
 def test_long_row_int64_offsets():
-    """T 212992 (T * n*C > 2**31): the last 512 rows' forward bits equal the same rows alone; backward finite."""
+    """T 212992 (T * n*C > 2**31): the last 512 rows' forward bits equal the same rows alone; the backward is finite
+    and the last rows' dx matches the 512-row run within TF32 tolerance (dx is row-local in exact math; the cuBLAS
+    ds1 GEMM's rounding depends on T, so not bitwise): a misaddressed write past 2**31 elements would break it."""
     T = 212992
+    torch.cuda.reset_peak_memory_stats()
     tensors, dmixed, dh_post = make_inputs(T, seed=13)
     tail = [tensors[0][-512:].clone()] + tensors[1:]
     with torch.no_grad():
@@ -242,7 +256,11 @@ def test_long_row_int64_offsets():
     del m_full, h_full
     outs = run(path(4, "tf32", "v2"), tensors, dmixed, dh_post)
     assert all(torch.isfinite(o).all() for o in outs)
-    del tensors, outs
+    outs_tail = run(path(4, "tf32", "v2"), tail, dmixed[-512:], dh_post[-512:])
+    m = metrics(outs[2][-512:], outs_tail[2])
+    assert m["rel_fro"] <= 1e-2 and m["cos"] >= 0.9999, m
+    print(f"LONGROW peak {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB dx-tail {m}", flush=True)
+    del tensors, outs, outs_tail
     torch.cuda.empty_cache()
 
 
@@ -363,6 +381,8 @@ def main(argv):
     p.add_argument("--bench-precisions", nargs="+", default=["tf32"])
     p.add_argument("--out", default=None)
     a = p.parse_args(argv)
+    if (a.report or a.bench) and os.environ.get("MILES_HCV2_CONFIG"):
+        raise SystemExit("--report / --bench measure the locked default tiles: unset MILES_HCV2_CONFIG")
     import triton
 
     out = {
@@ -371,6 +391,9 @@ def main(argv):
         "torch": torch.__version__,
         "triton": triton.__version__,
         "config": hc_v2._config(),
+        "config_override": os.environ.get("MILES_HCV2_CONFIG"),
+        "fp32_precision_global": str(torch.backends.cuda.matmul.fp32_precision),
+        "allow_tf32_global": bool(torch.backends.cuda.matmul.allow_tf32),
         "report": [],
         "invariance": {},
         "bench": [],

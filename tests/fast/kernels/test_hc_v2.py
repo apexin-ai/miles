@@ -98,10 +98,11 @@ def _reference(n, round_operands):
     def fn(x, weight, w_down, w_up, w_inj):
         xg = x.unflatten(-1, (n, -1))
         normed = (xg * torch.rsqrt(xg.pow(2).mean(dim=-1, keepdim=True) + EPS)).flatten(-2) * (1.0 + weight)
-        z1 = F.linear(rnd(normed), w_down) / n
-        gate = torch.sigmoid(F.linear(rnd(F.silu(z1)), w_up))
+        # bf16 mode rounds both GEMM operands, weights included (a no-op for bf16 weights; fp32 weights round too)
+        z1 = F.linear(rnd(normed), rnd(w_down)) / n
+        gate = torch.sigmoid(F.linear(rnd(F.silu(z1)), rnd(w_up)))
         mixed = (gate * normed).unflatten(-1, (n, -1)).mean(dim=1)
-        h_post = 2.0 * torch.sigmoid(F.linear(rnd(normed), w_inj) / n) if w_inj is not None else None
+        h_post = 2.0 * torch.sigmoid(F.linear(rnd(normed), rnd(w_inj)) / n) if w_inj is not None else None
         return mixed, h_post if h_post is not None else x.new_empty(0)
 
     return fn
@@ -243,6 +244,17 @@ def _check_strided(hc, torch):
         ((mixed.double() * dmixed.double()).sum() + (h_post.double() * dh_post.double()).sum()).backward()
         assert torch.equal(mixed.detach(), ref[0]) and torch.equal(base.grad[:, 0], ref[3]), (case_id, "stride-2 norm weight")
         assert not base.grad[:, 1].any()
+    # the direct helper (review F6): a column-major x gives the bits of its contiguous copy
+    from miles.kernels.hyper_connection import hc_v2
+
+    tensors, _, _ = _inputs(17, 16, 4, 8, torch.float32, seed=60)
+    x_cm = tensors[0].t().contiguous().t()
+    assert not x_cm.is_contiguous()
+    for precision in ("fp32", "bf16"):
+        with torch.no_grad():
+            a = hc_v2.hc_mix_inject_v2(x_cm, *tensors[1:], 4, EPS, precision)
+            b = hc_v2.hc_mix_inject_v2(tensors[0], *tensors[1:], 4, EPS, precision)
+        assert torch.equal(a[0], b[0]) and torch.equal(a[1], b[1]), (precision, "helper ignores x strides")
     print("strided-OK", flush=True)
 
 

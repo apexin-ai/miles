@@ -17,7 +17,7 @@ forward (3 kernels)
   ``_v2_up_mix_kernel``  ``z2 = silu @ w_up^T`` per stream for one column block, the epilogue applies the sigmoid,
                          multiplies by the normed input (recomputed from x) and averages over the n streams: writes
                          only ``mixed`` ``[T, C]``.
-backward (4 Triton kernels + 2 cuBLAS GEMMs)
+backward (5 Triton kernels + 2 cuBLAS GEMMs, plus a cat, dtype casts and one torch sum)
   ``_v2_silu_kernel``    ``silu(a / n)`` again (same expression as the down epilogue, so the same bits);
   ``_v2_up_bwd_kernel``  recomputes ``z2`` with the forward's tiles (bitwise the forward's), writes ``dz2`` and
                          ``q = dm * gate`` (the mix part of ``d normed``);
@@ -564,6 +564,9 @@ class _HCMixInjectV2(torch.autograd.Function):
         )
 
 
-def hc_mix_inject_v2(x2d, weight, w_down, w_up, w_inject, n, eps, precision):
-    check_matmul_precision(precision)
-    return _HCMixInjectV2.apply(x2d, weight, w_down, w_up, w_inject, n, eps, precision)
+def hc_mix_inject_v2(x, weight, w_down, w_up, w_inject, n, eps, precision):
+    """``hc.hc_mix_inject(..., v2=True)``: any leading shape and strides (the kernels address x as contiguous rows, so
+    the call goes through the public entry, which flattens x and makes it contiguous)."""
+    from miles.kernels.hyper_connection.hc import hc_mix_inject
+
+    return hc_mix_inject(x, weight, w_down, w_up, w_inject, n, eps, matmul_precision=precision, v2=True)
