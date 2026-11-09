@@ -47,7 +47,8 @@ def adversarial_cases(seed=0, scale=1):
     """``[(name, logits, kk, col_lo, kernel kwargs)]``; ``scale`` > 1 widens the rows (GPU runs).
 
     Small ``cap`` / ``digit`` / ``block`` force the radix passes, the many-ties branch and several chunks
-    on CPU-sized rows. NaN appears once per row only: with two, neither path has a fixed answer.
+    on CPU-sized rows. Every row lies in the contract's domain D (``ops/qsa_topk.py``): no NaN, the
+    ``take``-th largest is not ``+inf``. Rows outside D are in ``outside_domain_cases``.
     """
     g = torch.Generator().manual_seed(seed)
     w = lambda n: n * scale  # noqa: E731
@@ -101,16 +102,87 @@ def adversarial_cases(seed=0, scale=1):
     add("huge-values", big, 40, **small)
     tiny = torch.randn(4, w(300), generator=g) * 1e-40  # subnormals
     add("subnormals", tiny, 40, **small)
-    # one NaN per row, below and above the k-th place: NaN ranks first, as in torch.topk / torch.sort
-    nan = torch.rand(4, w(300), generator=g)
-    nan[torch.arange(4), torch.tensor([0, 17, w(150), w(299)])] = float("nan")
-    add("one-nan-per-row", nan, 12, **small)
+    # +inf above the cut (fewer than kk of them) is inside D
+    pinf = torch.rand(4, w(300), generator=g)
+    pinf[:, torch.tensor([0, 7, 50, 120, 200, 299]) * scale] = float("inf")
+    add("inf-above-cut", pinf, 12, **small)
     # the indexer's own form: a ReLU sum of 4 head scores over sqrt(d), bf16 operands
     q = torch.randn(48, 4, 32, generator=g).bfloat16().float()
     k = torch.randn(w(256), 32, generator=g).bfloat16().float()
     relu = torch.einsum("mhd,nd->mnh", q, k).relu_().sum(-1) / math.sqrt(32)
     add("relu-sum", relu, 24, 2, **wide)
     add("relu-sum-cap32", relu, 24, 2, **small)
+    return cases
+
+
+def contract_oracle_ids(logits, kk, col_lo=0):
+    """The kernel's own rule (``ops/qsa_topk.py`` contract), written independently in Python, per row.
+
+    Candidates: not ``-inf``. Order: NaN (any sign / payload) first, then larger value, then lower
+    column; ``-0.0 == +0.0``. Keep ``min(kk, candidates)``, ``-1`` for the rest.
+    """
+    out = []
+    for row in logits.tolist():
+        cand = [(j, v) for j, v in enumerate(row) if v != NEG_INF]
+        cand.sort(key=lambda jv: (0, 0.0, jv[0]) if math.isnan(jv[1]) else (1, -jv[1], jv[0]))
+        ids = [j + col_lo for j, _ in cand[:kk]]
+        out.append(ids + [-1] * (kk - len(ids)))
+    return torch.tensor(out, dtype=torch.long).reshape(logits.shape[0], kk)
+
+
+def in_domain(logits, kk):
+    """Rows of the contract's domain D: no NaN and the take-th largest candidate is not +inf."""
+    ok = []
+    for row in logits.tolist():
+        if any(math.isnan(v) for v in row):
+            ok.append(False)
+            continue
+        cand = sorted((v for v in row if v != NEG_INF), reverse=True)
+        take = min(kk, len(cand))
+        ok.append(take == 0 or cand[take - 1] != float("inf"))
+    return ok
+
+
+def _from_bits(rows):
+    return torch.tensor(rows, dtype=torch.int64).to(torch.int32).view(torch.float32)
+
+
+def outside_domain_cases():
+    """``[(name, logits, kk, col_lo, kernel kwargs, reference_must_differ)]``: NaN of either sign and several
+    payloads, several NaN per row (fewer and more than kk), NaN next to a finite tie, +inf at the cut."""
+    one, two, three = 0x3F800000, 0x40000000, 0x40400000
+    qnan, neg_qnan, snan, max_nan, neg_max_nan = 0x7FC00000, 0xFFC00001, 0x7F800001, 0x7FFFFFFF, 0xFFFFFFFF
+    pinf, ninf = 0x7F800000, 0xFF800000
+    small = dict(block=64, num_warps=4, digit=5, cap=32)
+    cases = [
+        ("nan-before-finite-tie", _from_bits([[qnan, one, one, one, one]]), 2, 0, {}, True),
+        ("negative-nan", _from_bits([[neg_qnan, one, two, three]]), 1, 0, {}, False),
+        ("nan-payloads", _from_bits([[one, snan, two, max_nan, neg_max_nan, three, neg_qnan, qnan]]), 8, 0, {}, False),
+        (
+            "nan-payloads-cut",
+            _from_bits([[one, snan, two, max_nan, neg_max_nan, three, neg_qnan, qnan]]),
+            3,
+            5,
+            {},
+            False,
+        ),
+        (
+            "more-nan-than-kk",
+            _from_bits([[two, qnan, neg_qnan, snan, max_nan, one, neg_max_nan, three]]),
+            2,
+            0,
+            {},
+            False,
+        ),
+        ("nan-and-inf", _from_bits([[pinf, one, neg_qnan, pinf, ninf, qnan, two]]), 4, 0, {}, False),
+        ("inf-tie-at-cut", _from_bits([[one, pinf, two, pinf, pinf, three]]), 2, 0, {}, False),
+    ]
+    g = torch.Generator().manual_seed(7)
+    wide = torch.rand(3, 400, generator=g)
+    bits = wide.view(torch.int32)
+    for r, payload in enumerate((0xFFC00001, 0x7F800001, 0xFFFFFFFF)):
+        bits[r, torch.randint(0, 400, (40,), generator=g)] = torch.tensor(payload, dtype=torch.int64).to(torch.int32)
+    cases.append(("many-nan-wide-cap32", wide, 20, 3, small, False))
     return cases
 
 
@@ -121,13 +193,22 @@ sys.path.insert(0, sys.argv[1])
 from tests.fast.test_qsa_indexer_fast_topk import adversarial_cases, reference_block_ids
 from miles_plugins.models.qwen3_8_next.ops.qsa_topk import select_topk_block_ids
 out = []
+from tests.fast.test_qsa_indexer_fast_topk import contract_oracle_ids, outside_domain_cases
+out = []
 for name, logits, kk, col_lo, kw in adversarial_cases(int(sys.argv[2])):
     want = reference_block_ids(logits, kk, col_lo)
     got = select_topk_block_ids(logits, kk, col_lo, **kw)
     bad = (got != want).any(1).nonzero().flatten().tolist()
-    out.append({"name": name, "equal": bool(torch.equal(got, want)), "bad_rows": bad[:5],
+    out.append({"name": name, "equal": bool(torch.equal(got, want)),
+                "oracle_equal": bool(torch.equal(got, contract_oracle_ids(logits, kk, col_lo))), "bad_rows": bad[:5],
                 "got": got[bad[0]].tolist()[:12] if bad else None, "want": want[bad[0]].tolist()[:12] if bad else None})
-print("RESULT " + json.dumps(out))
+outside = []
+for name, logits, kk, col_lo, kw, must_differ in outside_domain_cases():
+    got = select_topk_block_ids(logits, kk, col_lo, **kw)
+    outside.append({"name": name, "oracle_equal": bool(torch.equal(got, contract_oracle_ids(logits, kk, col_lo))),
+                    "reference_equal": bool(torch.equal(got, reference_block_ids(logits, kk, col_lo))),
+                    "must_differ": must_differ, "got": got[0].tolist()[:12]})
+print("RESULT " + json.dumps({"cases": out, "outside": outside}))
 """
 
 
@@ -148,10 +229,33 @@ def _run_interpreted(script, *args, timeout=900):
 
 @pytest.mark.parametrize("seed", [0, 1])
 def test_kernel_gives_the_reference_ids(seed):
-    results = _run_interpreted(_INTERPRETER_SCRIPT, seed)
+    result = _run_interpreted(_INTERPRETER_SCRIPT, seed)
+    results = result["cases"]
     assert len(results) == len(adversarial_cases(seed))
-    bad = [r for r in results if not r["equal"]]
+    bad = [r for r in results if not (r["equal"] and r["oracle_equal"])]
     assert not bad, bad
+    # outside D: the kernel follows its own contract (independent oracle), not the reference
+    outside = result["outside"]
+    assert len(outside) == len(outside_domain_cases())
+    assert all(r["oracle_equal"] for r in outside), outside
+    # the documented counterexample really differs from the reference
+    assert all(not r["reference_equal"] for r in outside if r["must_differ"]), outside
+
+
+def test_oracle_on_known_rows():
+    """The oracle itself, on rows small enough to check by eye (positive control for the oracle)."""
+    names = {c[0]: c for c in outside_domain_cases()}
+    _, logits, kk, col_lo, _, _ = names["nan-before-finite-tie"]
+    assert contract_oracle_ids(logits, kk, col_lo).tolist() == [[0, 1]]
+    assert reference_block_ids(logits, kk, col_lo).tolist() == [[1, 2]]
+    _, logits, kk, col_lo, _, _ = names["nan-payloads-cut"]
+    # NaN at columns 1, 3, 4, 6, 7 rank first by column; kk = 3 keeps 1, 3, 4 (+ col_lo 5)
+    assert contract_oracle_ids(logits, kk, col_lo).tolist() == [[6, 8, 9]]
+    _, logits, kk, col_lo, _, _ = names["inf-tie-at-cut"]
+    assert contract_oracle_ids(logits, kk, col_lo).tolist() == [[1, 3]]
+    assert not any(in_domain(names["inf-tie-at-cut"][1], 2))
+    for _, logits, kk, _, _ in adversarial_cases(0):
+        assert all(in_domain(logits, kk)), "an adversarial case left the domain D"
 
 
 def test_cases_reach_every_branch():

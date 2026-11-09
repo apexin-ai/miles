@@ -24,12 +24,19 @@ The rule (``select_topk_blocks``'s docstring, written out):
 - order: score descending, then column ascending; ``-1`` fills the rest of the ``kk`` slots;
 - scores compare as floats: ``-0.0 == +0.0`` (the key maps both to the same integer).
 
-Bitwise the same block ids as ``select_topk_blocks`` + ``torch.where(values == -inf, -1, idx + col_lo)``
-on every row whose scores hold no NaN and whose k-th largest score is not ``+inf``. Those two cases
-have no fixed answer in the reference either (its tie fix-up skips a non-finite k-th score, and
-``torch.topk`` keeps an unspecified one of equal scores); here NaN ranks above ``+inf`` as in
-``torch.topk``, and equal values keep the lower column. The indexer's scores are finite or ``-inf``
-for finite inputs (a sum of ReLUs divided by sqrt(d), masked with ``-inf``).
+Interface contract (what callers may rely on):
+
+- **Domain D**: rows with no NaN whose ``take``-th largest candidate is not ``+inf``. On every row of D the
+  ids are bitwise the ones of ``select_topk_blocks`` + ``torch.where(values == -inf, -1, idx + col_lo)``.
+  (Some rows outside D also agree, e.g. exactly ``kk`` ``+inf`` entries; nothing outside D is promised.)
+- **Outside D** the kernel follows its own rule, which can differ from the reference:
+  every NaN (either sign, any payload) is one key above ``+inf``, so NaN entries rank first; entries
+  with equal keys (several NaN, several ``+inf``) keep the lower column. The reference behaves
+  differently, e.g. ``[NaN, 1, 1, 1, 1]``, kk = 2: reference ``[1, 2]`` (its tie fix-up drops the NaN),
+  here ``[0, 1]``.
+- The indexer's scores are a ReLU sum over sqrt(d), masked with ``-inf``; finite inputs can still
+  overflow to ``+inf`` in the fp32 sum, and NaN inputs give NaN. Whether production rows ever leave D is
+  not established here; it needs an observation (count of non-finite scores) on real data.
 """
 
 import os

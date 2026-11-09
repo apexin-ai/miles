@@ -20,7 +20,13 @@ import warnings
 import pytest
 import torch
 
-from tests.fast.test_qsa_indexer_fast_topk import adversarial_cases, reference_block_ids
+from tests.fast.test_qsa_indexer_fast_topk import (
+    adversarial_cases,
+    contract_oracle_ids,
+    in_domain,
+    outside_domain_cases,
+    reference_block_ids,
+)
 
 HIDDEN = 2560
 
@@ -42,10 +48,27 @@ def test_adversarial_cases(seed, scale, settings):
     from miles_plugins.models.qwen3_8_next.ops.qsa_topk import select_topk_block_ids
 
     for name, logits, kk, col_lo, kw in adversarial_cases(seed, scale):
+        assert all(in_domain(logits, kk)), name
+        oracle = contract_oracle_ids(logits, kk, col_lo)
         logits = logits.cuda()
         want = reference_block_ids(logits, kk, col_lo)
         got = select_topk_block_ids(logits, kk, col_lo, **(kw if settings == "case" else {}))
         assert torch.equal(got, want), (name, _first_bad_row(got, want))
+        assert torch.equal(got.cpu(), oracle), (name, "oracle")
+
+
+@pytest.mark.parametrize("settings", ["case", "production"])
+def test_outside_domain_follows_the_contract(settings):
+    """NaN of either sign / any payload, several NaN, +inf at the cut: the kernel's contract (independent
+    oracle) on the GPU too; the documented counterexample differs from the reference."""
+    from miles_plugins.models.qwen3_8_next.ops.qsa_topk import select_topk_block_ids
+
+    for name, logits, kk, col_lo, kw, must_differ in outside_domain_cases():
+        oracle = contract_oracle_ids(logits, kk, col_lo)
+        got = select_topk_block_ids(logits.cuda(), kk, col_lo, **(kw if settings == "case" else {})).cpu()
+        assert torch.equal(got, oracle), (name, got.tolist(), oracle.tolist())
+        if must_differ:
+            assert not torch.equal(got, reference_block_ids(logits.cuda(), kk, col_lo).cpu()), name
 
 
 def production_tile(rows, width, seed=0, causal_from=None, device="cuda"):
