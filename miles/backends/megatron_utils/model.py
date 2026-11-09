@@ -450,6 +450,68 @@ def drain_pending_param_gather(model_chunks: Sequence[DDP]) -> bool:
     return True
 
 
+_LAYER_NAME = __import__("re").compile(r"(^|\.)decoder\.layers\.\d+$")
+
+
+def _qwen38_finish_scope(chunk, scope: str, groups) -> None:
+    """Wait for the parameter all-gather of every bucket group a forward scope reads (a decoder layer: all its
+    parameters, recursively; the model: every parameter outside the decoder layers). The PERF-F probe wraps this
+    module-level function to check the bucket contents right after the wait, before the scope runs."""
+    for g in groups:
+        g.finish_param_sync()
+
+
+def install_param_gather_scopes(model_chunks: Sequence[DDP]) -> list:
+    """--qwen38-overlap-param-gather-across-steps: Megatron's forward pre-hook waits only for the parameters a module
+    owns directly (recurse=False). Modules that read sub-module parameters functionally (GDN: in_proj_sections /
+    project / the gated norm weight, read without calling the sub-modules) would read the previous step's values
+    when their bucket is not complete yet. Register on every decoder layer a pre-hook that waits for the buckets of
+    all its parameters, and on the model one for the parameters outside the layers. Active only while the DDP
+    pre-hooks are enabled. Returns the scope list (name, parameter names); refuses a chunk without decoder layers."""
+    scopes = []
+    for ci, chunk in enumerate(model_chunks):
+        if getattr(chunk, "_qwen38_scopes", None) is not None:  # config-access-exempt: ours, installed once
+            scopes += chunk._qwen38_scopes
+            continue
+        names = {id(p): n for n, p in chunk.named_parameters()}
+        layers = [(n, m) for n, m in chunk.named_modules() if _LAYER_NAME.search(n)]
+        if not layers:
+            raise ValueError("--qwen38-overlap-param-gather-across-steps: no decoder layers found in the model chunk")
+        in_layer = set()
+        mine = []
+
+        def groups_of(params):
+            out, seen = [], set()
+            for p in params:
+                g = chunk.param_to_bucket_group.get(p)
+                if g is not None and id(g) not in seen:
+                    seen.add(id(g))
+                    out.append(g)
+            return out
+
+        def make_hook(scope, groups, _chunk=chunk):
+            def hook(module, *unused):
+                if len(getattr(_chunk, "remove_forward_pre_hook_handles", None) or {}) == 0:
+                    return  # DDP pre-hooks off (cold first step, inside a sync): the parameters are synced
+                _qwen38_finish_scope(_chunk, scope, groups)  # module-level lookup: the probe may wrap it
+            return hook
+
+        for lname, layer in layers:
+            params = [p for p in layer.parameters() if p.requires_grad]
+            in_layer.update(id(p) for p in params)
+            groups = groups_of(params)
+            layer.register_forward_pre_hook(make_hook(f"c{ci}:{lname}", groups))
+            mine.append((f"c{ci}:{lname}", sorted(names[id(p)] for p in params), [id(g) for g in groups]))
+        outer = [p for p in chunk.parameters() if p.requires_grad and id(p) not in in_layer]
+        root_module = chunk.module
+        groups = groups_of(outer)
+        root_module.register_forward_pre_hook(make_hook(f"c{ci}:outer", groups))
+        mine.append((f"c{ci}:outer", sorted(names[id(p)] for p in outer), [id(g) for g in groups]))
+        chunk._qwen38_scopes = mine
+        scopes += mine
+    return scopes
+
+
 def _refuse_trainable_vision(model_chunks: Sequence[DDP]) -> None:
     names = [n for c in model_chunks for n, p in c.named_parameters() if p.requires_grad and ("vision" in n or "visual" in n)]
     if names:
@@ -1046,6 +1108,7 @@ def train(
     warm = keep_hooks and bool(getattr(model[0], "_qwen38_param_gather_warm", False))  # config-access-exempt: ours
     if keep_hooks and not warm:
         _refuse_trainable_vision(model)
+        install_param_gather_scopes(model)
     if should_disable_forward_pre_hook(args) and not warm:
         disable_forward_pre_hook(model, param_sync=False)
         # Also remove param_sync_func temporarily so that sync calls made in

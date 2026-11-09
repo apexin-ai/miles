@@ -67,6 +67,7 @@ def env(monkeypatch):
     monkeypatch.setattr(mm, "log_train_step", lambda **k: {})
     monkeypatch.setattr(mm, "mpu", SimpleNamespace(is_pipeline_last_stage=lambda **k: True))
     monkeypatch.setattr(mm, "is_first_replica_megatron_main_rank", lambda: False)
+    monkeypatch.setattr(mm, "install_param_gather_scopes", lambda model: [])   # covered by test_..._scopes.py
     return events
 
 
