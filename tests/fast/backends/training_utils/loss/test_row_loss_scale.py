@@ -323,3 +323,36 @@ class TestAfterForwardBackwardHook:
         opt, sched = self._opt(train_one_step_env)
         self._run(train_one_step_env, monkeypatch, lambda: None, num_tokens=5, optimizer=opt, scheduler=sched)
         assert model_module._train_step_context is None
+
+
+class TestBadFieldsReachTheCheck:
+    """A bad row_loss_scale must not raise on one rank before the step's collectives (R3): the loss is computed with
+    scale 1 and the problem goes to the observer, which the after-forward-backward check turns into a stop of every
+    rank together."""
+
+    @pytest.mark.parametrize("scales,match", [([], "0 values for 5 rows"), (["x"] * 5, "not a list of numbers"),
+                                              ([1.0] * 4, "4 values for 5 rows"), (None, "not a list of numbers")])
+    def test_bad_scale_field_is_reported_not_raised(self, cp1, scales, match):
+        lens, lps, masks = _rows(5)
+        seen = []
+        prev = row_loss_scale.set_observer(lambda kind, batch, **kw: seen.append(kw))
+        try:
+            batch = {"loss_masks": masks, "row_loss_scale": scales, row_loss_scale.MB_ID_KEY: (1, 0, 0)}
+            loss, log = row_loss_scale.scaled_sft_loss(_args(), batch, lps, torch.zeros(1, 2))
+        finally:
+            row_loss_scale.set_observer(prev)
+        original = -sum([(x * m).sum() for x, m in zip(lps, masks)])
+        assert torch.equal(loss, original)          # trained with scale 1, not raised
+        (kw,) = seen
+        assert kw["problem"] is not None and match in kw["problem"]
+
+    def test_good_field_reports_no_problem(self, cp1):
+        lens, lps, masks = _rows(6)
+        seen = []
+        prev = row_loss_scale.set_observer(lambda kind, batch, **kw: seen.append(kw))
+        try:
+            row_loss_scale.scaled_sft_loss(_args(), {"loss_masks": masks, "row_loss_scale": [2.0] * 5,
+                                                     row_loss_scale.MB_ID_KEY: (1, 0, 0)}, lps, torch.zeros(1, 2))
+        finally:
+            row_loss_scale.set_observer(prev)
+        assert seen[0]["problem"] is None

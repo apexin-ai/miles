@@ -67,11 +67,12 @@ def scaled_sft_loss(
     assert args.backend.calculate_per_token_loss, "row_loss_scale needs --calculate-per-token-loss"
     assert get_parallel_state().cp.size == 1, "row_loss_scale supports context parallel 1 only"
     loss_masks = batch["loss_masks"]
-    scales = batch["row_loss_scale"]
-    assert len(log_probs) == len(loss_masks) == len(scales), (len(log_probs), len(loss_masks), len(scales))
     row_sums = [-(lp * mask).sum() for lp, mask in zip(log_probs, loss_masks, strict=True)]
     device = logits.device
-    scale_t = torch.as_tensor([float(s) for s in scales], dtype=torch.float32, device=device)
+    # A bad field (wrong length, a non-number) must not raise here, on this rank alone, before the step's collectives:
+    # train with scale 1 so every rank reaches the after-forward-backward check, and report the problem there.
+    scale_values, problem = _scales(batch.get("row_loss_scale"), len(row_sums))
+    scale_t = torch.as_tensor(scale_values, dtype=torch.float32, device=device)
     loss = sum(s * a for s, a in zip(row_sums, scale_t.unbind(0), strict=True)) if row_sums else 0
     unweighted = sum(row_sums) if row_sums else 0
     if not torch.is_tensor(loss):
@@ -85,5 +86,16 @@ def scaled_sft_loss(
     else:
         sums = torch.zeros(0, dtype=torch.float32, device=device)
         counts = torch.zeros(0, dtype=torch.int64, device=device)
-    notify("sft", batch, row_sums=sums, row_counts=counts)
+    notify("sft", batch, row_sums=sums, row_counts=counts, problem=problem)
     return loss, {"loss": unweighted.clone().detach()}
+
+
+def _scales(raw: Any, n: int) -> tuple[list[float], str | None]:
+    """(n float scales, None) or (n ones, the problem) for a row_loss_scale field that is not n numbers."""
+    try:
+        values = [float(x) for x in raw]
+    except (TypeError, ValueError) as e:
+        return [1.0] * n, f"row_loss_scale is not a list of numbers: {e!r}"[:300]
+    if len(values) != n:
+        return [1.0] * n, f"row_loss_scale has {len(values)} values for {n} rows"
+    return values, None
