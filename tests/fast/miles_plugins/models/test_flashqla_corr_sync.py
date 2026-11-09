@@ -39,11 +39,23 @@ def _module(name, file=None, **attrs):
     return m
 
 
+def _real_fla_backend():
+    try:
+        return importlib.import_module(fcs.FLA_FLASHQLA_BACKEND_MODULE)
+    except Exception:
+        return None
+
+
 @pytest.fixture
 def env(monkeypatch):
     monkeypatch.setattr(fcs, "_applied", None)
+    monkeypatch.setattr(fcs, "_fla_hooked", False)
+    monkeypatch.setattr(fcs, "_blackwell_device", lambda: True)
     for var in (fcs.ENV, "FLA_FLASH_QLA", "FLA_DISABLE_BACKEND_DISPATCH"):
         monkeypatch.delenv(var, raising=False)
+    q = _real_fla_backend()
+    if q is not None:  # restore fla's class method after tests that install the hook
+        monkeypatch.setattr(q.FlashQLABackend, "chunk_gated_delta_rule", q.FlashQLABackend.chunk_gated_delta_rule)
     return monkeypatch
 
 
@@ -150,6 +162,18 @@ class TestApplyState:
         env.setenv(fcs.ENV, "torch")
         with pytest.raises(RuntimeError, match="not the original"):
             fcs.maybe_apply()
+
+    def test_non_blackwell_device_checked_before_flashqla_import(self, env, tmp_path):
+        install_fake_flashqla(env, tmp_path)
+        env.setattr(fcs, "_blackwell_device", lambda: False)
+        imported = []
+        real_import = fcs.importlib.import_module
+        env.setattr(fcs.importlib, "import_module", lambda n, *a, **k: imported.append(n) or real_import(n, *a, **k))
+        env.setenv(fcs.ENV, "stages1")
+        with pytest.raises(RuntimeError, match="Blackwell"):
+            fcs.maybe_apply(strict_arch=True)
+        assert fcs.maybe_apply(strict_arch=False) is None
+        assert fcs.CP_CONTEXT_MODULE not in imported and fcs._applied is None
 
     def test_non_blackwell(self, env, tmp_path):
         cpx, _, original, _ = install_fake_flashqla(env, tmp_path, cp_fwd_mod=f"{PKG}.hopper.cp_fwd")
@@ -267,13 +291,100 @@ def _linear_attn():
     return types.SimpleNamespace(gdn_kernel=ns["gdn_kernel"])
 
 
+def _real_dispatch(monkeypatch, disabled_at_import):
+    """fla's real dispatch() and BaseBackend, loaded from the installed source with the given import-time
+    FLA_DISABLE_BACKEND_DISPATCH, plus a registry holding fla's real FlashQLABackend."""
+    q = _real_fla_backend()
+    if q is None:
+        pytest.skip("fla FlashQLA backend not importable")
+    src = Path(importlib.util.find_spec("fla.ops.backends").origin)
+    monkeypatch.setattr(torch.compiler, "disable", lambda fn: fn)
+    if disabled_at_import:
+        monkeypatch.setenv("FLA_DISABLE_BACKEND_DISPATCH", "1")
+    spec = importlib.util.spec_from_file_location("m039_fla_backends_copy", src)
+    b = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(b)
+    monkeypatch.delenv("FLA_DISABLE_BACKEND_DISPATCH", raising=False)
+    op = f"m039_cpu_gdr_{disabled_at_import}"
+    reg = b.BackendRegistry(op)
+    reg.register(q.FlashQLABackend())
+    b.BackendRegistry._initialized.add(op)
+
+    @b.dispatch(op)
+    def chunk_gated_delta_rule(q, k, v, g, beta, **kwargs):
+        return "fla-native"
+
+    return q, chunk_gated_delta_rule
+
+
+def _gdr_args(dtype=torch.bfloat16, K=128):
+    t = lambda *s: torch.zeros(*s, dtype=dtype)
+    return (t(1, 8, 1, K), t(1, 8, 1, K), t(1, 8, 1, 128), torch.zeros(1, 8, 1), torch.zeros(1, 8, 1, dtype=dtype))
+
+
+class TestRealFlaDispatch:
+    def _arm(self, env, tmp_path, disabled_at_import=False, sm100=True, hopper=False):
+        q, fn = _real_dispatch(env, disabled_at_import)
+        env.setattr(q, "IS_NVIDIA_SM100", sm100)
+        env.setattr(q, "IS_NVIDIA_HOPPER", hopper)
+        cpx, _, original, _ = install_fake_flashqla(env, tmp_path)
+        env.setenv(fcs.ENV, "torch")
+        la = _linear_attn()
+        la.gdn_kernel("fla")  # installs the hook; must not import flash_qla code paths beyond the fake
+        return fn, cpx, original
+
+    def test_dispatched_call_applies_patch(self, env, tmp_path):
+        fn, cpx, original = self._arm(env, tmp_path)
+        assert fcs._applied is None and cpx.correct_terminal_states is original  # lazy until dispatched
+        assert fn(*_gdr_args()) == "flashqla-kernel"
+        assert cpx.correct_terminal_states is fcs.correct_terminal_states_torch
+
+    @pytest.mark.parametrize("case", ["inter_card_cp", "k64", "fp32", "fla_flash_qla_0"])
+    def test_verifier_or_switch_rejection_leaves_kernel_untouched(self, env, tmp_path, case):
+        fn, cpx, original = self._arm(env, tmp_path)
+        kwargs = {}
+        args = _gdr_args()
+        if case == "inter_card_cp":
+            kwargs["cp_context"] = object()
+        elif case == "k64":
+            args = _gdr_args(K=64)
+        elif case == "fp32":
+            args = _gdr_args(dtype=torch.float32)
+        else:
+            env.setenv("FLA_FLASH_QLA", "0")
+        assert fn(*args, **kwargs) == "fla-native"
+        assert cpx.correct_terminal_states is original and fcs._applied is None
+
+    def test_sm80_never_touches_flashqla(self, env, tmp_path):
+        fn, cpx, original = self._arm(env, tmp_path, sm100=False, hopper=False)
+        env.setattr(fcs, "_blackwell_device", lambda: False)
+        assert fn(*_gdr_args()) == "fla-native"
+        assert cpx.correct_terminal_states is original and fcs._applied is None
+
+    def test_hopper_flashqla_path_skips_patch(self, env, tmp_path):
+        fn, cpx, original = self._arm(env, tmp_path, sm100=False, hopper=True)
+        env.setattr(fcs, "_blackwell_device", lambda: False)
+        assert fn(*_gdr_args()) == "flashqla-kernel"
+        assert cpx.correct_terminal_states is original and fcs._applied is None
+
+    def test_dispatch_disabled_at_fla_import(self, env, tmp_path):
+        fn, cpx, original = self._arm(env, tmp_path, disabled_at_import=True)
+        assert fn(*_gdr_args()) == "fla-native"
+        assert cpx.correct_terminal_states is original
+
+    def test_disable_env_after_fla_import_does_not_stop_dispatch(self, env, tmp_path):
+        fn, cpx, original = self._arm(env, tmp_path)
+        env.setenv("FLA_DISABLE_BACKEND_DISPATCH", "1")  # fla fixed its state at import, as here
+        assert fn(*_gdr_args()) == "flashqla-kernel"
+        assert cpx.correct_terminal_states is fcs.correct_terminal_states_torch
+
+
 class TestGdnKernelHook:
     def _fake_fla(self, monkeypatch):
         def fla_kernel(*a, **k):
             return "fla-kernel"
 
-        names = ["fla", "fla.ops", "fla.ops.gated_delta_rule"]
-        for n in names:
+        for n in ["fla", "fla.ops", "fla.ops.gated_delta_rule"]:
             monkeypatch.setitem(sys.modules, n, _module(n))
         sys.modules["fla.ops.gated_delta_rule"].chunk_gated_delta_rule = fla_kernel
         return fla_kernel
@@ -288,7 +399,7 @@ class TestGdnKernelHook:
         cpx, _, original, _ = install_fake_flashqla(env, tmp_path)
         for backend in ("fla", "flashqla"):
             la.gdn_kernel(backend)
-        assert cpx.correct_terminal_states is original and fcs._applied is None
+        assert cpx.correct_terminal_states is original and fcs._applied is None and not fcs._fla_hooked
 
     def test_flashqla_backend_patches(self, env, tmp_path):
         la = _linear_attn()
@@ -301,41 +412,24 @@ class TestGdnKernelHook:
         la.gdn_kernel("flashqla")
         assert fcs._applied == "torch"
 
-    def test_fla_without_flashqla_installed_is_not_affected(self, env):
+    def test_fla_hook_does_not_import_flashqla(self, env):
+        if _real_fla_backend() is None:
+            pytest.skip("fla FlashQLA backend not importable")
         la = _linear_attn()
-        fla_kernel = self._fake_fla(env)
-        env.setitem(sys.modules, "flash_qla", None)  # import blocked / not installed
+        env.setitem(sys.modules, "flash_qla", None)  # importing FlashQLA would raise
         env.setenv(fcs.ENV, "stages1")
-        assert la.gdn_kernel("fla") is fla_kernel
-        assert fcs._applied is None
+        la.gdn_kernel("fla")
+        assert fcs._fla_hooked and fcs._applied is None
 
-    @pytest.mark.parametrize("var,value", [("FLA_FLASH_QLA", "0"), ("FLA_DISABLE_BACKEND_DISPATCH", "1")])
-    def test_fla_with_flashqla_dispatch_disabled_is_not_patched(self, env, tmp_path, var, value):
+    def test_mode_change_after_apply_raises_through_gdn_kernel(self, env, tmp_path):
         la = _linear_attn()
-        fla_kernel = self._fake_fla(env)
-        cpx, _, original, _ = install_fake_flashqla(env, tmp_path)
+        install_fake_flashqla(env, tmp_path)
         env.setenv(fcs.ENV, "torch")
-        env.setenv(var, value)
-        assert la.gdn_kernel("fla") is fla_kernel
-        assert cpx.correct_terminal_states is original
-
-    def test_fla_dispatching_to_flashqla_is_patched(self, env, tmp_path):
-        la = _linear_attn()
-        fla_kernel = self._fake_fla(env)
-        cpx, _, original, _ = install_fake_flashqla(env, tmp_path)
-        env.setenv(fcs.ENV, "torch")
-        assert la.gdn_kernel("fla") is fla_kernel
-        assert cpx.correct_terminal_states is fcs.correct_terminal_states_torch
-
-    def test_fla_on_non_blackwell_flashqla_skips(self, env, tmp_path):
-        la = _linear_attn()
-        fla_kernel = self._fake_fla(env)
-        cpx, _, original, _ = install_fake_flashqla(env, tmp_path, cp_fwd_mod=f"{PKG}.hopper.cp_fwd")
-        env.setenv(fcs.ENV, "torch")
-        assert la.gdn_kernel("fla") is fla_kernel
-        assert cpx.correct_terminal_states is original
-        with pytest.raises(RuntimeError, match="Blackwell"):
-            la.gdn_kernel("flashqla")
+        la.gdn_kernel("flashqla")
+        env.delenv(fcs.ENV)
+        for backend in ("fla", "flashqla"):
+            with pytest.raises(RuntimeError):
+                la.gdn_kernel(backend)
 
 
 @pytest.mark.skipif(os.environ.get("MILES_TEST_TILELANG_LOWERING") != "1",
