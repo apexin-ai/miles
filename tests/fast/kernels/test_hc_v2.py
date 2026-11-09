@@ -190,6 +190,7 @@ def _worker():
             assert cos >= (0.9999 if low_precision else 0.9999999), (case_id, name, cos)
             assert err_v <= 1.5 * err_d + 2e-6, (case_id, name, err_v, err_d)
     _check_rna_tf32(torch)
+    _check_nan_propagates(hc, torch)
     _check_tf32_vs_rn_emulation(hc, torch)
     _check_length_invariance(hc, torch)
     _check_strided(hc, torch)
@@ -234,19 +235,49 @@ def _check_rna_tf32(torch):
             assert torch.isfinite(got[i]) and abs(got[i].item() - 3.0e38) <= 3.0e38 * ulp, got[i]
             continue
         assert torch.equal(got[i], want[i]) and (torch.signbit(got[i]) == torch.signbit(want[i])), (i, cases[i], got[i], want[i])
-    assert torch.isnan(run(torch.tensor([float("nan")]))).all()
+    # every non-finite class passes through bit for bit (T1): +-inf, signaling / quiet NaNs, smallest / largest payloads
+    special = [0x7F800000, 0xFF800000, 0x7F800001, 0xFF800001, 0x7F801000, 0x7FBFFFFF, 0xFFBFFFFF, 0x7FC00000,
+               0xFFC00000, 0x7FC00001, 0x7FFFF000, 0x7FFFFFFF, 0xFFFFFFFF, 0xFFFFE000]  # fmt: skip
+    sb = torch.tensor([b - 2**32 if b >= 2**31 else b for b in special], dtype=torch.int64).to(torch.int32)
+    out = run(sb.view(torch.float32)).view(torch.int32)
+    assert torch.equal(out, sb), [hex(int(a) & 0xFFFFFFFF) for a in out]
     bf = torch.randn(4096).bfloat16().float()
     assert torch.equal(run(bf), bf), "bf16 values must be TF32-exact"
     g = torch.Generator().manual_seed(3)
     bits = torch.randint(-(2**31), 2**31 - 1, (65536,), generator=g, dtype=torch.int64).to(torch.int32)
-    x = bits.view(torch.float32)
-    x = x[torch.isfinite(x) & (x.abs() < 3.0e38)]
-    b = x.view(torch.int32).to(torch.int64)
+    bits = torch.cat([bits, sb])  # all classes: finite (normal, subnormal, near-max), inf, nan
+    b = bits.to(torch.int64) & 0xFFFFFFFF
     mag = (b & 0x7FFFFFFF) + 0x1000
-    ref = (((b & ~0x7FFFFFFF) | (mag & 0x7FFFE000)) & 0xFFFFFFFF).to(torch.int64)
-    ref = torch.where(ref >= 2**31, ref - 2**32, ref).to(torch.int32).view(torch.float32)
-    assert torch.equal(run(x), ref), "differs from the sign-magnitude integer reference"
+    ref = (b & 0x80000000) | (mag & 0x7FFFE000)
+    ref = torch.where((b & 0x7F800000) == 0x7F800000, b, ref)  # non-finite: unchanged
+    ref = torch.where(ref >= 2**31, ref - 2**32, ref).to(torch.int32)
+    got = run(bits.view(torch.float32)).view(torch.int32)
+    assert torch.equal(got, ref), "differs from the sign-magnitude integer reference (bit patterns)"
     print("rna-tf32-OK", flush=True)
+
+
+def _check_nan_propagates(hc, torch):
+    """End to end (T1): a NaN anywhere in a GEMM operand (weights or activations, smallest / largest payloads, either
+    sign) gives a non-finite output or gradient in tf32 mode; it must never be rounded into a finite number."""
+    n, C, R, T = 4, 32, 20, 9
+    for which, idx in (("w_down", (3, 7)), ("w_up", (5, 2)), ("x", (2, 11))):
+        for pattern in (0x7F800001, 0x7FFFFFFF, 0xFFFFFFFF, 0xFF800001, 0x7FC00000):
+            g = torch.Generator().manual_seed(4)
+            t = {"x": torch.randn(T, n * C, generator=g), "weight": 0.1 * torch.randn(n * C, generator=g),
+                 "w_down": torch.randn(R, n * C, generator=g) / (n * C) ** 0.5,
+                 "w_up": torch.randn(n * C, R, generator=g) / R**0.5,
+                 "w_inj": torch.randn(n, n * C, generator=g) / (n * C) ** 0.5}  # fmt: skip
+            v = torch.tensor([pattern - 2**32 if pattern >= 2**31 else pattern], dtype=torch.int64).to(torch.int32)
+            t[which][idx] = v.view(torch.float32)[0]
+            assert torch.isnan(t[which][idx])
+            leaves = {k: v.clone().requires_grad_(True) for k, v in t.items()}
+            mixed, h_post = hc.hc_mix_inject(leaves["x"], leaves["weight"], leaves["w_down"], leaves["w_up"],
+                                             leaves["w_inj"], n, EPS, matmul_precision="tf32", v2=True)  # fmt: skip
+            (mixed.sum() + h_post.sum()).backward()
+            outs = [mixed, h_post] + [leaves[k].grad for k in ("x", "weight", "w_down", "w_up", "w_inj")]
+            assert not all(bool(torch.isfinite(o).all()) for o in outs), (which, hex(pattern), "NaN vanished")
+            assert not bool(torch.isfinite(mixed).all()) or which == "x", (which, hex(pattern), "mixed finite")
+    print("nan-propagates-OK", flush=True)
 
 
 def _check_tf32_vs_rn_emulation(hc, torch):

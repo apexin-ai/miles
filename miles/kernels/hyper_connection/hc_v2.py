@@ -94,9 +94,13 @@ def _rna_tf32(x):
     CUTLASS convert fp32 GEMM operands. Triton's tf32 dot hands the fp32 bits to the MMA, which drops the low 13 bits
     (truncation): an operand bias of -2^-11 on average, 3.7x the default path's error with fp32 activations (E1
     2026-11-09, test_fp32_activations[tf32]). Integer ops, so the interpreter runs it too; bf16 values are TF32-exact
-    and pass unchanged; inf / nan keep their class."""
+    and pass unchanged. Non-finite values (exponent all ones: inf and every NaN payload) pass through bit for bit: the
+    rounding bias would turn a small-payload NaN into inf and carry the largest payloads across the sign bit into 0
+    (PERFERECHECK6 T1); a finite value just below the largest rounds up to inf, as round-to-nearest does."""
     bits = x.to(tl.int32, bitcast=True)
-    return ((bits + 0x1000) & -8192).to(tl.float32, bitcast=True)
+    rounded = (bits + 0x1000) & -8192
+    finite = (bits & 0x7F800000) != 0x7F800000
+    return tl.where(finite, rounded, bits).to(tl.float32, bitcast=True)
 
 
 @triton.jit
