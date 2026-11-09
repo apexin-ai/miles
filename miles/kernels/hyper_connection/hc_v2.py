@@ -64,9 +64,9 @@ _DEFAULT_CONFIG = {
     "stats": {"BT": 4, "num_warps": 16},
     "down": {"BM": 128, "BN": 64, "BK": 64, "num_warps": 8, "num_stages": 3},
     "up": {"BM": 64, "BN": 128, "BK": 64, "num_warps": 8, "num_stages": 3},
-    "wgrad": {"BM": 64, "BN": 128, "BK": 64, "num_warps": 8, "num_stages": 3},
-    "dx": {"BM": 64, "BN": 128, "BK": 64, "num_warps": 8, "num_stages": 3},
-    "small": {"BT": 32, "num_warps": 4},
+    "wgrad": {"BM": 64, "BN": 128, "BK": 64, "num_warps": 8, "num_stages": 2},
+    "dx": {"BM": 64, "BN": 128, "BK": 32, "num_warps": 8, "num_stages": 3},
+    "small": {"BT": 8, "num_warps": 4},
 }
 
 
@@ -343,6 +343,7 @@ def _v2_wgrad_kernel(
     BN: tl.constexpr,
     BK: tl.constexpr,
     PREC: tl.constexpr,
+    ONE_STREAM: tl.constexpr,  # C % BN == 0: a column block lies in one stream, rstd is a [BK] vector
 ):
     W: tl.constexpr = N * C
     ms = tl.program_id(0) * BM + tl.arange(0, BM)  # program 0 varies fastest: the M blocks of one column block
@@ -360,7 +361,11 @@ def _v2_wgrad_kernel(
         )
         m2 = tmask[:, None] & kmask[None, :]
         x = tl.load(x_ptr + ts[:, None] * W + ks[None, :], mask=m2, other=0.0).to(tl.float32)
-        rstd = tl.load(rstd_ptr + ts[:, None] * N + stream[None, :], mask=m2, other=0.0)
+        if ONE_STREAM:
+            stream0 = (tl.program_id(1).to(tl.int64) * BN) // C
+            rstd = tl.load(rstd_ptr + ts * N + stream0, mask=tmask, other=0.0)[:, None]
+        else:
+            rstd = tl.load(rstd_ptr + ts[:, None] * N + stream[None, :], mask=m2, other=0.0)
         normed = x * rstd * (1.0 + w[None, :])
         acc = _dot(gt, normed, acc, PREC)
     tl.store(dwc_ptr + ms[:, None] * W + ks[None, :], acc, mask=mmask[:, None] & kmask[None, :])
@@ -535,7 +540,7 @@ class _HCMixInjectV2(torch.autograd.Function):
             cfg, kw = _launch("wgrad")
             _v2_wgrad_kernel[(triton.cdiv(M, cfg["BM"]), triton.cdiv(W, cfg["BN"]))](
                 g, x2d, weight, rstd, dwc, T, N=n, C=C, M=M, BM=cfg["BM"], BN=cfg["BN"], BK=cfg["BK"], PREC=prec,
-                **kw,
+                ONE_STREAM=C % cfg["BN"] == 0, **kw,
             )  # fmt: skip
             _v2_dx_kernel[(triton.cdiv(T, cfg_dx["BM"]), n)](
                 g, wcat, q, x2d, weight, rstd, dx, dwp, T, N=n, C=C, M=M, BM=cfg_dx["BM"], BN=cfg_dx["BN"],

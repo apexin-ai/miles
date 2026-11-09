@@ -235,6 +235,14 @@ def _check_strided(hc, torch):
         for name, g, r in zip(NAMES, got, ref, strict=True):
             assert g.shape == r.shape and g.dtype == r.dtype, (case_id, name)
             assert torch.equal(g, r), (case_id, name, "strided and contiguous weights differ")
+        # clone() makes a 1-D stride-2 view dense, so feed the norm weight as a view of a [W, 2] leaf
+        base = torch.stack([tensors[1], tensors[1]], dim=1).clone().requires_grad_(True)
+        leaves = [t.clone().requires_grad_(True) for t in tensors]
+        mixed, h_post = v2(leaves[0], base[:, 0], *leaves[2:])
+        assert not base[:, 0].is_contiguous()
+        ((mixed.double() * dmixed.double()).sum() + (h_post.double() * dh_post.double()).sum()).backward()
+        assert torch.equal(mixed.detach(), ref[0]) and torch.equal(base.grad[:, 0], ref[3]), (case_id, "stride-2 norm weight")
+        assert not base.grad[:, 1].any()
     print("strided-OK", flush=True)
 
 

@@ -219,6 +219,33 @@ def test_fp32_activations(precision):
     assert check_rows(compare(300, 2560, 4, 320, precision, True, seed=5, dtype=torch.float32), precision) == []
 
 
+def test_stride2_norm_weight():
+    """A 1-D stride-2 norm weight (a view of a [W, 2] leaf; clone() would make it dense) gives the contiguous bits."""
+    tensors, dmixed, dh_post = make_inputs(300, seed=12)
+    ref = run(path(4, "tf32", "v2"), tensors, dmixed, dh_post)
+    base = torch.stack([tensors[1], tensors[1]], dim=1).clone().requires_grad_(True)
+    leaves = [t.detach().clone().requires_grad_(True) for t in tensors]
+    mixed, h_post = path(4, "tf32", "v2")(leaves[0], base[:, 0], *leaves[2:])
+    torch.autograd.backward([mixed, h_post], [dmixed, dh_post])
+    assert torch.equal(mixed.detach(), ref[0]) and torch.equal(base.grad[:, 0], ref[3])
+
+
+def test_long_row_int64_offsets():
+    """T 212992 (T * n*C > 2**31): the last 512 rows' forward bits equal the same rows alone; backward finite."""
+    T = 212992
+    tensors, dmixed, dh_post = make_inputs(T, seed=13)
+    tail = [tensors[0][-512:].clone()] + tensors[1:]
+    with torch.no_grad():
+        m_full, h_full = path(4, "tf32", "v2")(*tensors)
+        m_tail, h_tail = path(4, "tf32", "v2")(*tail)
+    assert torch.equal(m_full[-512:], m_tail) and torch.equal(h_full[-512:], h_tail)
+    del m_full, h_full
+    outs = run(path(4, "tf32", "v2"), tensors, dmixed, dh_post)
+    assert all(torch.isfinite(o).all() for o in outs)
+    del tensors, outs
+    torch.cuda.empty_cache()
+
+
 @pytest.mark.parametrize("precision", ["fp32", "tf32", "bf16"])
 def test_length_invariance(precision):
     for row in length_invariance(precision):
