@@ -211,6 +211,20 @@ class Qwen38VisionMegatronPluginsConfig(BaseConfig):
             )
         ),
     ] = False
+    qwen38_hc_kernel_v2: A[
+        bool,
+        Arg(
+            help=(
+                "Run the hyper-connection mix / inject as Triton GEMM kernels with the rmsnorm, silu, sigmoid gate, "
+                "gated mean and rmsnorm-backward math in their prologues and epilogues (miles/kernels/"
+                "hyper_connection/hc_v2.py, _HCMixInjectV2): no fp32 [T, n*C] normed / up-projection / d-normed "
+                "tensors in memory, 3 forward and 6 backward kernels. Wins over --qwen38-hc-fused. Operand rounding "
+                "follows --qwen38-hc-matmul-precision; fp32 accumulation order and the inject projection (an fp32 "
+                "dot product) differ from the default path. Fixed tiles: a token's forward outputs do not depend on "
+                "the batch's length. No parameter or checkpoint change."
+            )
+        ),
+    ] = False
     qwen38_fla_conv_pinned: A[
         bool,
         Arg(

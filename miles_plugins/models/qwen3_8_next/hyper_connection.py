@@ -31,7 +31,10 @@ def _hc_matmul_precision(config) -> str:
 
 
 def _hc_fused_kwargs(config) -> dict:
-    """--qwen38-hc-fused: hc_mix_inject's fused path, passed only when on (the default call is unchanged)."""
+    """--qwen38-hc-kernel-v2 / --qwen38-hc-fused: hc_mix_inject's v2 or fused path, passed only when on (the default
+    call is unchanged); v2 wins when both are on."""
+    if bool(getattr(config, "qwen3_8_next_hc_kernel_v2", False)):  # config-access-exempt: optional knob
+        return {"v2": True}
     fused = bool(getattr(config, "qwen3_8_next_hc_fused", False))  # config-access-exempt: optional knob
     return {"fused": True} if fused else {}
 

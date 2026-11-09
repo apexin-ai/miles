@@ -115,6 +115,9 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
     config.qwen3_8_next_hc_fused = bool(
         getattr(args, "qwen38_hc_fused", False)
     )  # config-access-exempt: hand-built test args may omit the knob
+    config.qwen3_8_next_hc_kernel_v2 = bool(
+        getattr(args, "qwen38_hc_kernel_v2", False)
+    )  # config-access-exempt: hand-built test args may omit the knob
     if getattr(args, "qwen38_fla_conv_pinned", False):  # config-access-exempt: hand-built test args may omit the knob
         from miles_plugins.models.qwen3_8_next.ops.fla_conv_tuning import pin_fla_autotune
 

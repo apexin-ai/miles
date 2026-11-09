@@ -690,16 +690,32 @@ class _HCCombine(torch.autograd.Function):
 
 
 def hc_mix_inject(
-    x, weight, w_down, w_up, w_inject, n: int, eps: float, matmul_precision: str = "fp32", fused: bool = False
+    x,
+    weight,
+    w_down,
+    w_up,
+    w_inject,
+    n: int,
+    eps: float,
+    matmul_precision: str = "fp32",
+    fused: bool = False,
+    v2: bool = False,
 ):
     """Fused (grouped_gemma_rmsnorm -> hc_mix, hc_inject_gate); ``matmul_precision``: see the module doc.
 
     ``fused`` (``--qwen38-hc-fused``): the elementwise chains in fewer kernels (``_HCMixInjectFused``); same math,
-    different fp32 rounding order; the default path is unchanged."""
+    different fp32 rounding order; the default path is unchanged.
+    ``v2`` (``--qwen38-hc-kernel-v2``, wins over ``fused``): the GEMMs fused with their elementwise chains
+    (``hc_v2._HCMixInjectV2``); same math, different fp32 accumulation order."""
     check_matmul_precision(matmul_precision)
     lead = x.shape[:-1]
     x2d = x.reshape(-1, x.shape[-1]).contiguous()
-    fn = _HCMixInjectFused if fused else _HCMixInject
+    if v2:
+        from miles.kernels.hyper_connection.hc_v2 import _HCMixInjectV2  # hc_v2 imports this module
+
+        fn = _HCMixInjectV2
+    else:
+        fn = _HCMixInjectFused if fused else _HCMixInject
     mixed, h_post = fn.apply(x2d, weight, w_down, w_up, w_inject, n, eps, matmul_precision)
     mixed = mixed.reshape(*lead, -1)
     if w_inject is not None:
