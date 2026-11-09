@@ -190,9 +190,18 @@ class Qwen38NextAttention(SelfAttention):
         """("forward", None): Megatron's checkpoint runs this forward (no grad) and the replay will reuse what it
         keeps; ("replay", entry): the recompute replay of such a forward; (None, None): reuse is off or not
         applicable (no packing, eval, a microbatch without the full recompute)."""
-        if reuse.mode() == "off" or packed is None or not self.training or not is_checkpointing():
+        if reuse.mode() == "off" or not self.training:
             return None, None
+        # refused layouts fail at the first training forward, recomputed or not: fp8 / fp4 recompute runs through
+        # TE's checkpoint, which does not set is_checkpointing, so checking only under it would never refuse them
         reuse.check_config(self.config)
+        if packed is None:
+            raise NotImplementedError(
+                f"QSA recompute reuse (mode {reuse.mode()!r}) needs the packed (thd) layout; layer {self.layer_number} "
+                "got an sbhd forward"
+            )
+        if not is_checkpointing():
+            return None, None
         if not torch.is_grad_enabled():
             return "forward", None
         cu = getattr(packed, "cu_seqlens_q", None)  # config-access-exempt: checked below, as forward does

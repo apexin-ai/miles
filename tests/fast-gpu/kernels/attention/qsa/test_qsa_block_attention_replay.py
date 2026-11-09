@@ -2,9 +2,11 @@
 output and the q / k / v gradients of qsa_block_attention, and the index rebuilt from the same block ids is
 bitwise the kept one (ops/qsa_recompute_reuse.py modes index / output rely on both).
 
-One GPU. Shapes: the production per-rank head layout at TP4 (6 query heads on 1 KV head, head_dim 256) and the
-13 / 2 layout of the kernel tests; packed sequences with rows past the last sequence; the production budget 512
-blocks on a 16K row."""
+One GPU. Shapes: the production per-rank head layout at TP4 (6 query heads on 1 KV head, head_dim 256), an irregular
+13 / 1 group and 12 / 2 (two KV heads); packed sequences with rows past the last sequence; the production budget 512
+blocks on a 16K row. A head layout the index refuses (13 / 2: heads not a multiple of KV heads) is a refusal case,
+not a positive one; tests/fast/.../test_qsa_recompute_reuse.py checks on CPU that every positive case here is a
+layout build_qsa_block_index accepts."""
 
 import pytest
 import torch
@@ -50,9 +52,17 @@ def _select(lens, budget, seed, pad_rows=0):
 CASES = [
     # lens, heads, kv_heads, head_dim, budget, pad_rows
     ((700, 333, 1024), 6, 1, 256, 64, 5),
-    ((517, 2048), 13, 2, 64, 32, 0),
+    ((517, 2048), 13, 1, 64, 32, 0),
+    ((900, 300), 12, 2, 128, 48, 3),
     ((16384,), 6, 1, 256, 512, 0),
 ]
+REFUSED = [((64,), 13, 2)]  # heads not a multiple of KV heads: build_qsa_block_index asserts
+
+
+def supported(heads: int, kv_heads: int, head_dim: int) -> bool:
+    """What build_qsa_block_index / qsa_block_attention accept: heads a multiple of KV heads, a group of at most the
+    64 tile rows, a power-of-two head_dim of at least 16."""
+    return heads % kv_heads == 0 and heads // kv_heads <= 64 and head_dim >= 16 and head_dim & (head_dim - 1) == 0
 
 
 @pytest.mark.parametrize("lens, heads, kv_heads, head_dim, budget, pad_rows", CASES)
@@ -90,6 +100,14 @@ def test_forward_plus_replay_is_bitwise_the_attention(lens, heads, kv_heads, hea
     bad_lse[sum(lens) // 2] += 0.5
     off = grads(lambda a, b, c: qsa_block_attention_replay(a, b, c, kept_index, scale, kept_out, bad_lse))
     assert not bitwise_equal(off[1], reference[1])
+
+
+@pytest.mark.parametrize("lens, heads, kv_heads", REFUSED)
+def test_an_unsupported_head_layout_is_refused_by_the_index(lens, heads, kv_heads):
+    with pytest.raises(AssertionError):
+        build_qsa_block_index(
+            _select(lens, 8, 1), _cu(lens), compress_ratio=RATIO, num_heads=heads, num_kv_heads=kv_heads
+        )
 
 
 def test_replay_refuses_a_kept_output_of_another_shape():

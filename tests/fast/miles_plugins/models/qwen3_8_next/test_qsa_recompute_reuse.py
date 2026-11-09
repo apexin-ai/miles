@@ -535,12 +535,78 @@ def test_forwards_without_a_replay_keep_nothing(env, case):
         ({"virtual_pipeline_model_parallel_size": 2}, "pipeline"),
         ({"context_parallel_size": 2}, "context parallelism"),
         ({"fp8": "hybrid"}, "fp8"),
+        ({"fp4": "nvfp4"}, "fp8 / fp4"),
     ],
 )
-def test_refused_layouts(env, change, match):
+@pytest.mark.parametrize("checkpoint", [True, False])
+def test_refused_layouts(env, change, match, checkpoint):
+    """Refused at the first training forward whether or not Megatron's checkpoint runs it: fp8 / fp4 recompute goes
+    through TE's checkpoint, which leaves is_checkpointing() False (checkpoint=False is that route)."""
     with pytest.raises(NotImplementedError, match=match):
-        _run(env, "blocks", config=_config(**change))
-    _run(env, "off", config=_config(**change))  # off: no check
+        _run(env, "blocks", config=_config(**change), checkpoint=checkpoint)
+    _run(env, "off", config=_config(**change), checkpoint=checkpoint)  # off: no check
+
+
+def test_sbhd_is_refused_in_training_and_passes_in_eval_or_off(env):
+    reuse.configure("output")
+    layer = QSALayer.build(10, 4, _config())
+    with pytest.raises(NotImplementedError, match="packed"):
+        layer._reuse_phase(None)
+    layer.eval()
+    assert layer._reuse_phase(None) == (None, None)
+    layer.train()
+    reuse.configure("off")
+    assert layer._reuse_phase(None) == (None, None)
+
+
+def _seal_one(env, mode="output"):
+    env.setattr(attention, "qsa_selected_blocks", Indexer())
+    reuse.configure(mode)
+    layer = QSALayer.build(10, 4, _config())
+    packed, rope = _packed(), _rope(CU[-1])
+    x = torch.randn(CU[-1], 1, HIDDEN, requires_grad=True)
+    out = mrandom.checkpoint(lambda inp: layer(inp, packed_seq_params=packed, rotary_pos_emb=rope)[0], False, x)
+    return layer, packed, out
+
+
+@pytest.mark.parametrize("how", ["write", "replace_storage"])
+def test_a_changed_cu_after_the_forward_raises(env, how):
+    """The pairing key and the index input are guarded like the kept tensors: an in-place boundary change or a
+    swapped storage of the same cu object raises at the replay."""
+    layer, packed, out = _seal_one(env)
+    cu = packed.cu_seqlens_q
+    if how == "write":
+        cu[1] = 5
+    else:
+        cu.set_(cu.clone().untyped_storage())
+    assert layer._qsa_reuse_stash.entries[0].cu is cu
+    with pytest.raises(RuntimeError, match="was changed after the forward"):
+        out.sum().backward()
+
+
+def test_a_data_write_is_not_detected_without_audit(env):
+    """Documented limit: a write through .data bypasses the version counter; the guard does not see it (audit does)."""
+    layer, _, out = _seal_one(env)
+    layer._qsa_reuse_stash.entries[0].out.data.mul_(1.0)
+    out.sum().backward()
+    assert reuse.stats()["hits"] == 1
+
+
+def test_gpu_replay_cases_are_supported_layouts():
+    """Every positive case of the 1-GPU replay test is a head layout the index accepts; the refused one is not."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[5] / "tests/fast-gpu/kernels/attention/qsa/test_qsa_block_attention_replay.py"
+    )
+    spec = importlib.util.spec_from_file_location("_perfb_gpu_replay_cases", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.CASES and all(mod.supported(h, kv, d) for _, h, kv, d, _, _ in mod.CASES)
+    assert any((h, kv, d) == (6, 1, 256) and b == 512 for _, h, kv, d, b, _ in mod.CASES)  # the production layout
+    assert mod.REFUSED and not any(mod.supported(h, kv, 64) for _, h, kv in mod.REFUSED)
+    assert not mod.supported(13, 2, 64) and not mod.supported(6, 1, 48)
 
 
 def test_configure_validates_and_clears_kept_entries(env):
