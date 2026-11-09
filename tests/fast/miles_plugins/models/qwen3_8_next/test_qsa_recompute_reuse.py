@@ -303,7 +303,7 @@ def _equal(a, b):
 # ── equality and work skipped ────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("mode", ["blocks", "index", "output"])
+@pytest.mark.parametrize("mode", ["blocks", "index", "output", "blocks_output"])
 def test_every_mode_gives_the_gradients_of_reuse_off(env, mode):
     off, _ = _run(env, "off")
     counts_off = dict(COUNTS)
@@ -317,12 +317,13 @@ def test_every_mode_gives_the_gradients_of_reuse_off(env, mode):
         "blocks": {"indexer": 2, "build": 4, "attn_fwd": 4},
         "index": {"indexer": 2, "build": 2, "attn_fwd": 4},
         "output": {"indexer": 2, "build": 2, "attn_fwd": 2},
+        "blocks_output": {"indexer": 2, "build": 4, "attn_fwd": 2},
     }[mode]
     assert COUNTS == expected
     s = reuse.stats()
     assert s["pushes"] == 2 and s["hits"] == 2 and s["skipped_indexer_selections"] == 2
-    assert s.get("skipped_index_builds", 0) == (0 if mode == "blocks" else 2)
-    assert s.get("skipped_attention_forwards", 0) == (2 if mode == "output" else 0)
+    assert s.get("skipped_index_builds", 0) == (2 if mode in ("index", "output") else 0)
+    assert s.get("skipped_attention_forwards", 0) == (2 if mode in ("output", "blocks_output") else 0)
     assert s.get("stale_dropped", 0) == 0 and s.get("markers", 0) == 0
     assert s["held_bytes"] == 0 and s["held_entries"] == 0 and s["peak_held_bytes"] > 0
     assert all(not layer._qsa_reuse_stash.entries for layer in stack)
@@ -331,7 +332,7 @@ def test_every_mode_gives_the_gradients_of_reuse_off(env, mode):
 def test_kept_bytes_per_mode(env):
     """blocks keeps the [T, K] ids; output keeps the index plus out [T, Hq, D] and lse [T, Hq] fp32."""
     peaks = {}
-    for mode in ("blocks", "index", "output"):
+    for mode in ("blocks", "index", "output", "blocks_output"):
         reuse.reset_stats()
         _run(env, mode, layers=1)
         peaks[mode] = reuse.stats()["peak_held_bytes"]
@@ -339,6 +340,7 @@ def test_kept_bytes_per_mode(env):
     assert peaks["blocks"] == total * TOPK * 4
     assert peaks["index"] == total * total  # the reference index: one bool mask
     assert peaks["output"] == peaks["index"] + total * HEADS * HEAD_DIM * 4 + total * HEADS * 4
+    assert peaks["blocks_output"] == peaks["blocks"] + total * HEADS * HEAD_DIM * 4 + total * HEADS * 4
 
 
 def test_reuse_off_keeps_nothing_and_counts_nothing(env):
@@ -371,14 +373,14 @@ def test_drifting_selection_reuse_trains_on_the_forward_selection(env):
     drift_off, _ = _run(env, "off", indexer=Indexer(drift=True))
     consistent, _ = _run(env, "off", indexer=ForwardSelectionTwice())
     assert not _equal(drift_off, consistent)  # the replay's other selection changes the gradients
-    for mode in ("blocks", "index", "output"):
+    for mode in ("blocks", "index", "output", "blocks_output"):
         on, _ = _run(env, mode, indexer=Indexer(drift=True))
         assert _equal(on, consistent), mode
 
 
 def test_audit_counts_no_mismatch_when_deterministic(env):
     off, _ = _run(env, "off")
-    for mode in ("blocks", "index", "output"):
+    for mode in ("blocks", "index", "output", "blocks_output"):
         reuse.reset_stats()
         on, _ = _run(env, mode, audit=True)
         assert _equal(on, off)
@@ -386,8 +388,8 @@ def test_audit_counts_no_mismatch_when_deterministic(env):
         assert s["hits"] == 2 and s["audit_selection_checks"] == 2 and s["audit_selection_mismatches"] == 0
         assert s.get("audit_index_mismatches", 0) == 0 and s.get("audit_output_mismatches", 0) == 0
         assert s.get("audit_lse_mismatches", 0) == 0
-        assert s.get("audit_index_checks", 0) == (0 if mode == "blocks" else 2)
-        assert s.get("audit_output_checks", 0) == (2 if mode == "output" else 0)
+        assert s.get("audit_index_checks", 0) == (2 if mode in ("index", "output") else 0)
+        assert s.get("audit_output_checks", 0) == (2 if mode in ("output", "blocks_output") else 0)
         assert s.get("skipped_indexer_selections", 0) == 0  # the audit recomputes everything
 
 

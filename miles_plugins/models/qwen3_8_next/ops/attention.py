@@ -108,9 +108,9 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                     reuse._count("audit_index_checks")
                     reuse._count("audit_index_mismatches", int(not reuse.bitwise_equal(index, entry.index)))
                     index = entry.index
-                elif phase == "forward" and reuse.mode() in ("index", "output"):
+                elif phase == "forward" and reuse.keeps_index():
                     entry.index = index
-            if phase == "forward" and reuse.mode() == "output":
+            if phase == "forward" and reuse.keeps_output():
                 out, lse = qsa_block_attention_forward(query, key, value, index, self.softmax_scale)
                 entry.out, entry.lse = out, lse
             elif phase == "replay" and entry.out is not None:
@@ -318,7 +318,7 @@ class Qwen38NextAttention(SelfAttention):
         if phase == "forward":
             keep = reuse.wants_entry(seq)
             entry = reuse.Entry(cu=packed.cu_seqlens_q, seq=seq, hs_shape=tuple(hidden_states.shape), keep=keep)
-            if keep and (reuse.mode() == "blocks" or reuse.audit()):
+            if keep and reuse.keeps_blocks():
                 entry.blocks, entry.blocks_cu = self._qsa_blocks
             elif keep:
                 entry.blocks_cu = self._qsa_blocks[1]
@@ -350,7 +350,7 @@ class Qwen38NextAttention(SelfAttention):
         try:
             result = super().forward(hidden_states, *args, **kwargs)
             if phase == "forward":
-                if reuse.mode() != "blocks" and not reuse.audit():
+                if not reuse.keeps_blocks():
                     entry.blocks = None  # index / output: the replay reads the index, not the ids
                 self._qsa_reuse_stash.account(entry)
             return result

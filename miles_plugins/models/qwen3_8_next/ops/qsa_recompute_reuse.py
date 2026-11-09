@@ -28,6 +28,8 @@ heads x 256 per rank):
 * ``output``: the index, the attention output ``[T, Hq, D]`` (bf16, 3 KiB) and its log-sum-exp ``[T, Hq]`` fp32. The
   replay also skips the forward kernel; the backward kernels read the kept output / lse, exactly as they read the
   ones a recomputed forward returns (``qsa_block_attention_replay``).
+* ``blocks_output``: the block ids, the output and the lse (5 KiB): the replay skips the indexer and the forward
+  kernel and builds the index again (for when the index is larger than the block ids).
 
 ``max_tokens``: only microbatches whose QSA sequence (the indexer's rows = the whole microbatch) is at most this many
 tokens keep entries (the kept bytes grow with T); ``None`` = every recomputed microbatch.
@@ -59,7 +61,23 @@ import weakref
 import torch
 from torch import Tensor
 
-MODES = ("off", "blocks", "index", "output")
+MODES = ("off", "blocks", "index", "output", "blocks_output")
+KEEPS_BLOCKS = ("blocks", "blocks_output")  # the replay builds the index from the kept block ids
+KEEPS_INDEX = ("index", "output")
+KEEPS_OUTPUT = ("output", "blocks_output")
+
+
+def keeps_blocks() -> bool:
+    """The forward keeps the block ids: the mode rebuilds the index from them, or the audit compares them."""
+    return _SETTINGS.mode in KEEPS_BLOCKS or _SETTINGS.audit
+
+
+def keeps_index() -> bool:
+    return _SETTINGS.mode in KEEPS_INDEX
+
+
+def keeps_output() -> bool:
+    return _SETTINGS.mode in KEEPS_OUTPUT
 
 
 @dataclasses.dataclass
