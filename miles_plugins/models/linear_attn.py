@@ -55,11 +55,11 @@ _ROW_STRIDE_ALIGN = 8
 
 
 def gdn_kernel(backend: str):
-    if backend in ("fla", "flashqla"):
-        # Opt-in (MILES_FLASHQLA_CORR_SYNC): replace FlashQLA's nondeterministic CP backward correction.
-        from miles_plugins.models.flashqla_corr_sync import maybe_apply as apply_flashqla_corr_sync
+    # Opt-in (MILES_FLASHQLA_CORR_SYNC): replace FlashQLA's nondeterministic CP backward correction on the
+    # paths that actually run FlashQLA. No-op (and no FlashQLA import) when the switch is unset.
+    from miles_plugins.models.flashqla_corr_sync import apply_for_backend as apply_flashqla_corr_sync
 
-        apply_flashqla_corr_sync()
+    apply_flashqla_corr_sync(backend)
     if backend == "fla":
         try:
             from fla.ops.gated_delta_rule import chunk_gated_delta_rule

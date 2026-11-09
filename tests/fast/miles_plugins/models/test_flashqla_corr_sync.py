@@ -1,5 +1,7 @@
-"""CPU tests for miles_plugins.models.flashqla_corr_sync (no GPU, no flash_qla import needed)."""
+"""CPU tests for miles_plugins.models.flashqla_corr_sync and its gdn_kernel hook (no GPU needed)."""
 
+import hashlib
+import importlib.machinery
 import importlib.util
 import os
 import subprocess
@@ -12,22 +14,70 @@ import torch
 
 from miles_plugins.models import flashqla_corr_sync as fcs
 
-BLACKWELL_MOD = "flash_qla.ops.gated_delta_rule.chunk.blackwell.cp_fwd"
+PKG = "flash_qla.ops.gated_delta_rule.chunk"
+BLACKWELL_MOD = f"{PKG}.blackwell.cp_fwd"
 
 
-def _installed_cp_fwd() -> Path | None:
-    spec = importlib.util.find_spec("flash_qla")  # locates the package without executing it
+def _installed(rel: str) -> Path | None:
+    try:
+        spec = importlib.util.find_spec("flash_qla")  # locates the package without executing it
+    except (ImportError, ValueError):
+        return None
     if spec is None or not spec.submodule_search_locations:
         return None
-    path = Path(list(spec.submodule_search_locations)[0]) / "ops/gated_delta_rule/chunk/blackwell/cp_fwd.py"
+    path = Path(list(spec.submodule_search_locations)[0]) / rel
     return path if path.exists() else None
 
 
+def _module(name, file=None, **attrs):
+    m = types.ModuleType(name)
+    m.__spec__ = importlib.machinery.ModuleSpec(name, None)
+    if file is not None:
+        m.__file__ = str(file)
+    for k, v in attrs.items():
+        setattr(m, k, v)
+    return m
+
+
 @pytest.fixture
-def fresh(monkeypatch):
+def env(monkeypatch):
     monkeypatch.setattr(fcs, "_applied", None)
-    monkeypatch.delenv(fcs.ENV, raising=False)
+    for var in (fcs.ENV, "FLA_FLASH_QLA", "FLA_DISABLE_BACKEND_DISPATCH"):
+        monkeypatch.delenv(var, raising=False)
     return monkeypatch
+
+
+def install_fake_flashqla(monkeypatch, tmp_path, cp_fwd_mod=BLACKWELL_MOD, review=True,
+                          cp_fwd_file=None, cp_context_file=None):
+    """Fake flash_qla package whose cp_context/cp_fwd sources are files on disk (optionally reviewed)."""
+    def original_correct_terminal_states(**kw):
+        return "original-backward"
+
+    def original_correct_initial_states(**kw):
+        return "original-forward"
+
+    original_correct_terminal_states.__module__ = cp_fwd_mod
+    if cp_fwd_file is None:
+        cp_fwd_file = tmp_path / "cp_fwd_fake.py"
+        cp_fwd_file.write_text("# fake cp_fwd\n")
+    if cp_context_file is None:
+        cp_context_file = tmp_path / "cp_context_fake.py"
+        cp_context_file.write_text("# fake cp_context\n")
+    if review:
+        monkeypatch.setitem(fcs.REVIEWED_CP_FWD_SHA256, hashlib.sha256(Path(cp_fwd_file).read_bytes()).hexdigest(), "t")
+        monkeypatch.setitem(fcs.REVIEWED_CP_CONTEXT_SHA256,
+                            hashlib.sha256(Path(cp_context_file).read_bytes()).hexdigest(), "t")
+    cp_fwd = _module(cp_fwd_mod, cp_fwd_file, correct_terminal_states=original_correct_terminal_states)
+    cp_context = _module(f"{PKG}.cp_context", cp_context_file,
+                         correct_terminal_states=original_correct_terminal_states,
+                         correct_initial_states=original_correct_initial_states)
+    mods = {"flash_qla": _module("flash_qla", chunk_gated_delta_rule=lambda *a, **k: "flashqla-kernel"),
+            "flash_qla.ops": _module("flash_qla.ops"),
+            "flash_qla.ops.gated_delta_rule": _module("flash_qla.ops.gated_delta_rule"),
+            PKG: _module(PKG), f"{PKG}.cp_context": cp_context, cp_fwd_mod: cp_fwd}
+    for n, m in mods.items():
+        monkeypatch.setitem(sys.modules, n, m)
+    return cp_context, cp_fwd, original_correct_terminal_states, original_correct_initial_states
 
 
 def _reference_fp64(raw_dht, buf, mt, fb, r2c):
@@ -48,20 +98,107 @@ def _reference_fp64(raw_dht, buf, mt, fb, r2c):
 
 
 class TestMode:
-    def test_default_off_does_not_import_flash_qla(self, fresh):
-        before = "flash_qla" in sys.modules
+    def test_default_off_does_not_import_flash_qla(self, env):
+        env.delitem(sys.modules, "flash_qla", raising=False)
         assert fcs.maybe_apply() is None
-        assert ("flash_qla" in sys.modules) == before
+        assert fcs.apply_for_backend("fla") is None
+        assert "flash_qla" not in sys.modules
 
     @pytest.mark.parametrize("value", ["", "0", "off", "OFF", "none"])
-    def test_off_values(self, fresh, value):
-        fresh.setenv(fcs.ENV, value)
+    def test_off_values(self, env, value):
+        env.setenv(fcs.ENV, value)
         assert fcs.requested_mode() is None
 
-    def test_invalid_value_raises(self, fresh):
-        fresh.setenv(fcs.ENV, "stage1")
+    def test_invalid_value_raises(self, env):
+        env.setenv(fcs.ENV, "stage1")
         with pytest.raises(ValueError):
             fcs.requested_mode()
+
+
+class TestApplyState:
+    @pytest.mark.parametrize("after", ["off", None, "stages1"])
+    def test_cannot_change_or_disable_after_torch(self, env, tmp_path, after):
+        cpx, _, original, _ = install_fake_flashqla(env, tmp_path)
+        env.setenv(fcs.ENV, "torch")
+        assert fcs.maybe_apply() == "torch"
+        assert cpx.correct_terminal_states is fcs.correct_terminal_states_torch
+        assert fcs.maybe_apply() == "torch"  # idempotent
+        if after is None:
+            env.delenv(fcs.ENV)
+        else:
+            env.setenv(fcs.ENV, after)
+        with pytest.raises(RuntimeError, match="cannot|not supported"):
+            fcs.maybe_apply()
+        with pytest.raises(RuntimeError):
+            fcs.apply_for_backend("fla")
+        with pytest.raises(RuntimeError):
+            fcs.apply_for_backend("flashqla")
+        assert cpx.correct_terminal_states is fcs.correct_terminal_states_torch
+
+    @pytest.mark.parametrize("mode", ["torch", "stages1"])
+    def test_unreviewed_sources_rejected_in_both_modes(self, env, tmp_path, mode):
+        cpx, _, original, _ = install_fake_flashqla(env, tmp_path, review=False)
+        env.setenv(fcs.ENV, mode)
+        with pytest.raises(RuntimeError, match="not reviewed"):
+            fcs.maybe_apply()
+        assert cpx.correct_terminal_states is original and fcs._applied is None
+
+    def test_rejects_if_already_patched_by_someone_else(self, env, tmp_path):
+        cpx, _, original, _ = install_fake_flashqla(env, tmp_path)
+        cpx.correct_terminal_states = lambda **kw: "other"
+        cpx.correct_terminal_states.__module__ = BLACKWELL_MOD
+        env.setenv(fcs.ENV, "torch")
+        with pytest.raises(RuntimeError, match="not the original"):
+            fcs.maybe_apply()
+
+    def test_non_blackwell(self, env, tmp_path):
+        cpx, _, original, _ = install_fake_flashqla(env, tmp_path, cp_fwd_mod=f"{PKG}.hopper.cp_fwd")
+        env.setenv(fcs.ENV, "torch")
+        with pytest.raises(RuntimeError, match="Blackwell"):
+            fcs.maybe_apply(strict_arch=True)
+        assert fcs.maybe_apply(strict_arch=False) is None
+        assert cpx.correct_terminal_states is original and fcs._applied is None
+
+
+class TestRealLoader:
+    def test_stages1_installs_patched_module_from_real_source(self, env, tmp_path):
+        cp_fwd_file = _installed("ops/gated_delta_rule/chunk/blackwell/cp_fwd.py")
+        cp_context_file = _installed("ops/gated_delta_rule/chunk/cp_context.py")
+        if cp_fwd_file is None or cp_context_file is None or importlib.util.find_spec("tilelang") is None:
+            pytest.skip("flash_qla sources and tilelang required")
+        cpx, cp_fwd, original, original_fwd = install_fake_flashqla(
+            env, tmp_path, review=False, cp_fwd_file=cp_fwd_file, cp_context_file=cp_context_file)
+        env.setenv(fcs.ENV, "stages1")
+        env.setenv("MILES_FLASHQLA_PATCH_DIR", str(tmp_path / "cache"))
+        assert fcs.maybe_apply() == "stages1"
+        new = cpx.correct_terminal_states
+        assert new is not original
+        assert new.__module__.startswith("miles_flashqla_cp_fwd_stages1_")
+        loaded = sys.modules.get(new.__module__) or new.__globals__
+        src_file = Path(new.__globals__["__file__"])
+        assert src_file.parent == tmp_path / "cache" / "miles_flashqla_corr_sync"
+        text = src_file.read_text()
+        assert text.count("T.Pipelined(num_iters - 1, num_stages=1)") == 1
+        assert "num_stages=2)" not in text
+        assert new.__globals__["tilelang_correct_h0"] is not None
+        assert cpx.correct_initial_states is original_fwd  # forward untouched
+        assert fcs.maybe_apply() == "stages1" and cpx.correct_terminal_states is new  # no reinstall
+
+
+class TestLoaderContentCheck:
+    def test_stale_cache_file_is_rejected(self, env, tmp_path):
+        cp_fwd_file = _installed("ops/gated_delta_rule/chunk/blackwell/cp_fwd.py")
+        if cp_fwd_file is None:
+            pytest.skip("flash_qla sources required")
+        patched = fcs.patch_cp_fwd_source(cp_fwd_file.read_text())
+        digest = hashlib.sha256(patched.encode()).hexdigest()[:16]
+        cache = tmp_path / "cache" / "miles_flashqla_corr_sync"
+        cache.mkdir(parents=True)
+        (cache / f"cp_fwd_stages1_{digest}.py").write_text("x = 1\n")   # stale / foreign content
+        env.setenv("MILES_FLASHQLA_PATCH_DIR", str(tmp_path / "cache"))
+        env.setattr(fcs.os, "replace", lambda a, b: None)              # publish step fails silently
+        with pytest.raises(RuntimeError, match="does not hold the patched source"):
+            fcs._load_stages1_module(types.SimpleNamespace(__file__=str(cp_fwd_file)))
 
 
 class TestTorchScan:
@@ -73,15 +210,18 @@ class TestTorchScan:
         buf = torch.randn(S, H, K, K, generator=g)
         mt = torch.randn(S, H, K, K, generator=g) * 0.1
         fb = torch.rand(S, H, generator=g) < 0.5
-        fb[[0, 23, 24]] = False                 # first segment of each raw sequence never corrects
-        mt[~fb] = float("nan")                  # unwritten mt blocks must not leak
+        fb[[0, 23, 24]] = False
+        # unwritten mt blocks hold arbitrary data (NaN or finite garbage) and must not leak
+        nan_block = (torch.rand(S, H, generator=g) < 0.5)[:, :, None, None]   # whole blocks NaN or finite
+        garbage = torch.where(nan_block, torch.full((S, H, K, K), float("nan")),
+                              torch.randn(S, H, K, K, generator=g) * 100)
+        mt = torch.where(fb[:, :, None, None], mt, garbage)
         raw = torch.randn(3, H, K, K, generator=g) if with_raw else None
         out = fcs.correct_terminal_states_torch(raw, buf, mt, fb, r2c)
         ref = _reference_fp64(raw, buf, mt, fb, r2c)
         assert torch.isfinite(out).all()
-        assert (out.double() - ref).abs().max().item() < 1e-3
+        assert (out.double() - ref).abs().max().item() < 1e-4
         if not with_raw:
-            # cp[idx] is a plain copy of buf[idx+1] when no fallback occurs in idx+1 .. end-1
             for h in range(H):
                 clean = True
                 for idx in range(21, -1, -1):
@@ -102,7 +242,7 @@ class TestPatchSource:
             fcs.patch_cp_fwd_source("x = 1\n")
 
     def test_installed_source_patched_once(self):
-        path = _installed_cp_fwd()
+        path = _installed("ops/gated_delta_rule/chunk/blackwell/cp_fwd.py")
         if path is None:
             pytest.skip("flash_qla not installed")
         text = path.read_text()
@@ -112,45 +252,97 @@ class TestPatchSource:
         assert len(patched.splitlines()) == len(text.splitlines())
 
 
-class TestApplyWithFakeModules:
-    def _install_fake(self, monkeypatch, module_name=BLACKWELL_MOD):
-        def original(**kw):
-            return "original"
+def _linear_attn():
+    """The real gdn_kernel source from linear_attn.py, executed on its own.
 
-        original.__module__ = module_name
-        names = ["flash_qla", "flash_qla.ops", "flash_qla.ops.gated_delta_rule",
-                 "flash_qla.ops.gated_delta_rule.chunk", "flash_qla.ops.gated_delta_rule.chunk.cp_context"]
-        mods = {n: types.ModuleType(n) for n in names}
-        mods[names[-1]].correct_terminal_states = original
-        for i in range(len(names) - 1):
-            setattr(mods[names[i]], names[i + 1].rsplit(".", 1)[1], mods[names[i + 1]])
-        for n, m in mods.items():
-            monkeypatch.setitem(sys.modules, n, m)
-        return mods[names[-1]], original
+    Importing linear_attn needs megatron/CUDA libraries; gdn_kernel itself only uses function-local
+    imports, so compiling exactly its AST node tests the shipped code without those dependencies."""
+    import ast
 
-    def test_torch_mode_replaces_backward_correction_once(self, fresh):
-        cpx, original = self._install_fake(fresh)
-        fresh.setenv(fcs.ENV, "torch")
-        assert fcs.maybe_apply() == "torch"
+    path = Path(fcs.__file__).with_name("linear_attn.py")
+    tree = ast.parse(path.read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "gdn_kernel")
+    ns = {"__name__": "linear_attn_gdn_kernel_under_test"}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), ns)
+    return types.SimpleNamespace(gdn_kernel=ns["gdn_kernel"])
+
+
+class TestGdnKernelHook:
+    def _fake_fla(self, monkeypatch):
+        def fla_kernel(*a, **k):
+            return "fla-kernel"
+
+        names = ["fla", "fla.ops", "fla.ops.gated_delta_rule"]
+        for n in names:
+            monkeypatch.setitem(sys.modules, n, _module(n))
+        sys.modules["fla.ops.gated_delta_rule"].chunk_gated_delta_rule = fla_kernel
+        return fla_kernel
+
+    def test_off_changes_nothing_and_imports_no_flashqla(self, env, tmp_path):
+        la = _linear_attn()
+        fla_kernel = self._fake_fla(env)
+        env.delitem(sys.modules, "flash_qla", raising=False)
+        before = set(sys.modules)
+        assert la.gdn_kernel("fla") is fla_kernel
+        assert not any(m.startswith("flash_qla") for m in set(sys.modules) - before)
+        cpx, _, original, _ = install_fake_flashqla(env, tmp_path)
+        for backend in ("fla", "flashqla"):
+            la.gdn_kernel(backend)
+        assert cpx.correct_terminal_states is original and fcs._applied is None
+
+    def test_flashqla_backend_patches(self, env, tmp_path):
+        la = _linear_attn()
+        cpx, _, original, original_fwd = install_fake_flashqla(env, tmp_path)
+        env.setenv(fcs.ENV, "torch")
+        k = la.gdn_kernel("flashqla")
+        assert k() == "flashqla-kernel"
         assert cpx.correct_terminal_states is fcs.correct_terminal_states_torch
-        assert fcs.maybe_apply() == "torch"          # idempotent
-        fresh.setenv(fcs.ENV, "stages1")
-        with pytest.raises(RuntimeError, match="changed"):
-            fcs.maybe_apply()
+        assert cpx.correct_initial_states is original_fwd
+        la.gdn_kernel("flashqla")
+        assert fcs._applied == "torch"
 
-    def test_non_blackwell_path_refused(self, fresh):
-        cpx, original = self._install_fake(fresh, "flash_qla.ops.gated_delta_rule.chunk.hopper.cp_fwd")
-        fresh.setenv(fcs.ENV, "torch")
-        with pytest.raises(RuntimeError, match="Blackwell"):
-            fcs.maybe_apply()
+    def test_fla_without_flashqla_installed_is_not_affected(self, env):
+        la = _linear_attn()
+        fla_kernel = self._fake_fla(env)
+        env.setitem(sys.modules, "flash_qla", None)  # import blocked / not installed
+        env.setenv(fcs.ENV, "stages1")
+        assert la.gdn_kernel("fla") is fla_kernel
+        assert fcs._applied is None
+
+    @pytest.mark.parametrize("var,value", [("FLA_FLASH_QLA", "0"), ("FLA_DISABLE_BACKEND_DISPATCH", "1")])
+    def test_fla_with_flashqla_dispatch_disabled_is_not_patched(self, env, tmp_path, var, value):
+        la = _linear_attn()
+        fla_kernel = self._fake_fla(env)
+        cpx, _, original, _ = install_fake_flashqla(env, tmp_path)
+        env.setenv(fcs.ENV, "torch")
+        env.setenv(var, value)
+        assert la.gdn_kernel("fla") is fla_kernel
         assert cpx.correct_terminal_states is original
+
+    def test_fla_dispatching_to_flashqla_is_patched(self, env, tmp_path):
+        la = _linear_attn()
+        fla_kernel = self._fake_fla(env)
+        cpx, _, original, _ = install_fake_flashqla(env, tmp_path)
+        env.setenv(fcs.ENV, "torch")
+        assert la.gdn_kernel("fla") is fla_kernel
+        assert cpx.correct_terminal_states is fcs.correct_terminal_states_torch
+
+    def test_fla_on_non_blackwell_flashqla_skips(self, env, tmp_path):
+        la = _linear_attn()
+        fla_kernel = self._fake_fla(env)
+        cpx, _, original, _ = install_fake_flashqla(env, tmp_path, cp_fwd_mod=f"{PKG}.hopper.cp_fwd")
+        env.setenv(fcs.ENV, "torch")
+        assert la.gdn_kernel("fla") is fla_kernel
+        assert cpx.correct_terminal_states is original
+        with pytest.raises(RuntimeError, match="Blackwell"):
+            la.gdn_kernel("flashqla")
 
 
 @pytest.mark.skipif(os.environ.get("MILES_TEST_TILELANG_LOWERING") != "1",
                     reason="set MILES_TEST_TILELANG_LOWERING=1 (needs tilelang + flash_qla source, ~1 min CPU)")
 def test_stages1_lowers_without_double_buffering(tmp_path):
     """Lower original and patched tilelang_correct_h0 (backward variant) to CUDA on CPU."""
-    path = _installed_cp_fwd()
+    path = _installed("ops/gated_delta_rule/chunk/blackwell/cp_fwd.py")
     if path is None:
         pytest.skip("flash_qla not installed")
     script = tmp_path / "lower.py"
