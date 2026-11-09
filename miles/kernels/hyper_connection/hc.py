@@ -717,7 +717,7 @@ def hc_mix_inject(
     else:
         fn = _HCMixInjectFused if fused else _HCMixInject
     mixed, h_post = fn.apply(x2d, weight, w_down, w_up, w_inject, n, eps, matmul_precision)
-    mixed = mixed.reshape(*lead, -1)
+    mixed = mixed.reshape(*lead, mixed.shape[-1])  # explicit width: lead may hold 0 tokens (-1 cannot be inferred)
     if w_inject is not None:
         h_post = h_post.reshape(*lead, n)
     return mixed, h_post
@@ -730,4 +730,4 @@ def hc_combine(residual, block_output, h_post, n: int):
     y2d = block_output.reshape(-1, block_output.shape[-1]).contiguous()
     hp2d = h_post.reshape(-1, n)
     out = _HCCombine.apply(r2d, y2d, hp2d, n)
-    return out.reshape(*lead, -1)
+    return out.reshape(*lead, residual.shape[-1])

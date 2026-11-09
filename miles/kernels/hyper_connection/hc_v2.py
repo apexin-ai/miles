@@ -30,8 +30,11 @@ backward (5 Triton kernels + 2 cuBLAS GEMMs, plus a cat, dtype casts and one tor
                          dx), so neither ``p`` nor ``d normed`` is written.
 
 Traffic per token at n = 4, C = 2560: about 70 KB forward and 360 KB backward (fused: 205 / 570). Tile sizes are fixed
-constants (no autotune, no split-K), so a token's forward outputs do not depend on T or on its row position (the
-cuBLAS inject GEMM of the default path did, see the HC root-cause note of 2026-11-08), and two runs are bitwise equal.
+constants (no autotune, no split-K, T not specialized), so a token's forward outputs do not depend on T or on the other
+rows when the token sits at the same place in its tile (e.g. a row moved by a multiple of 128 tokens); whether the MMA's
+per-row accumulation also ignores the row's place inside the tile is not guaranteed and is only reported by the GPU
+test. (The default path's cuBLAS inject GEMM changed with T, see the HC root-cause note of 2026-11-08.) Two runs on
+the same GPU and toolchain are bitwise equal.
 
 Numerics (relative to the default path; none of this changes parameters or checkpoints):
 
@@ -565,8 +568,8 @@ class _HCMixInjectV2(torch.autograd.Function):
 
 
 def hc_mix_inject_v2(x, weight, w_down, w_up, w_inject, n, eps, precision):
-    """``hc.hc_mix_inject(..., v2=True)``: any leading shape and strides (the kernels address x as contiguous rows, so
-    the call goes through the public entry, which flattens x and makes it contiguous)."""
+    """``hc.hc_mix_inject(..., v2=True)``: any leading shape (0 tokens included) and strides (the kernels address x as
+    contiguous rows, so the call goes through the public entry, which flattens x and makes it contiguous)."""
     from miles.kernels.hyper_connection.hc import hc_mix_inject
 
     return hc_mix_inject(x, weight, w_down, w_up, w_inject, n, eps, matmul_precision=precision, v2=True)

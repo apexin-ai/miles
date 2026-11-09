@@ -8,8 +8,10 @@ sums), so the checks are tolerances, plus three exact properties:
 * every output and gradient is close to the default path (relative Frobenius difference, cosine), and its error
   against an fp64 reference is at most a small factor above the default path's;
 * two v2 runs are bitwise equal (no atomics, fixed tiles);
-* a token's forward outputs (mixed, h_post) are bitwise the same whatever the other rows are and whatever T is
-  (fixed tiles, no split-K: the shape dependence of the default path's cuBLAS inject GEMM cannot occur);
+* under the interpreter, a token's forward outputs (mixed, h_post) are bitwise the same whatever the other rows are,
+  whatever T is and wherever the row sits (fixed tiles, no split-K). On the GPU only tile-aligned positions are
+  claimed (the GPU test gates those and reports an unaligned one): the interpreter's numpy matmul cannot show whether
+  the MMA's per-row order depends on the row's place in the tile;
 * strided weights give the same bits as their contiguous copies.
 
 The Triton kernels run under ``TRITON_INTERPRET=1`` in a subprocess, with small tiles (``MILES_HCV2_CONFIG``) so the
@@ -276,6 +278,21 @@ def _check_empty(hc, torch):
                 continue
             assert a.shape == b.shape and a.dtype == b.dtype, (precision, i, a.shape, b.shape)
             assert not b.any(), (precision, i)
+    # the public entry and the direct helper (PERFERECHECK1 R5): T = 0 with a leading shape, inject on / off, every path
+    from miles.kernels.hyper_connection import hc_v2 as v2mod
+
+    tensors, _, _ = _inputs(0, 16, 4, 4, torch.bfloat16, seed=98)
+    x0 = tensors[0].reshape(0, 1, 64)
+    for inject in (True, False):
+        w_inj = tensors[4] if inject else None
+        for kw in ({}, {"fused": True}, {"v2": True}):
+            mixed, h_post = hc.hc_mix_inject(x0, tensors[1], tensors[2], tensors[3], w_inj, 4, EPS, matmul_precision="fp32", **kw)
+            assert mixed.shape == (0, 1, 16), (inject, kw, mixed.shape)
+            assert h_post.shape == ((0, 1, 4) if inject else (0,)), (inject, kw, h_post.shape)
+        mixed, h_post = v2mod.hc_mix_inject_v2(x0, tensors[1], tensors[2], tensors[3], w_inj, 4, EPS, "bf16")
+        assert mixed.shape == (0, 1, 16) and h_post.shape == ((0, 1, 4) if inject else (0,)), (inject, mixed.shape)
+    y = hc.hc_combine(torch.zeros(0, 1, 64), torch.zeros(0, 1, 16), torch.zeros(0, 1, 4), 4)
+    assert y.shape == (0, 1, 64), y.shape
     print("empty-OK", flush=True)
 
 
