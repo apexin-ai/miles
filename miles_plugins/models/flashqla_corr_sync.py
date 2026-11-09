@@ -274,6 +274,10 @@ def _install_fla_backend_hook() -> bool:
 
 def apply_for_backend(backend: str) -> str | None:
     """Hook for ``gdn_kernel``. Returns the applied mode (None when nothing is applied yet)."""
+    if os.environ.get("MILES_CORR_DET_PROBE", "").strip() == "1":  # test-only determinism probe (corr_det_probe)
+        from miles_plugins.models import corr_det_probe
+
+        corr_det_probe.install_for_backend(backend, importlib.import_module(__name__))
     mode = requested_mode()
     with _lock:
         if _applied is not None and mode != _applied:
