@@ -31,6 +31,9 @@ LAUNCHES = {
     "key-rows-128": {"dkdv": {"ROWS": 128}},
     "dsplit-2": {"dkdv": {"DSPLIT": 2}},
     "busiest": {"key_order": "busiest"},
+    "heavy-1": {"heavy_split": 1},
+    "heavy-1-dsplit-busiest": {"heavy_split": 1, "dkdv": {"DSPLIT": 2}, "key_order": "busiest"},
+    "heavy-3-key-tile-1": {"heavy_split": 3, "key_tile": 1},
     "all": {
         "fwd": {"NU": 4},
         "dq": {"NU": 4},
@@ -38,6 +41,7 @@ LAUNCHES = {
         "key_tile": 8,
         "dkdv": {"ROWS": 32, "DSPLIT": 2},
         "key_order": "busiest",
+        "heavy_split": 2,
     },
 }
 # lens (one packed batch), query heads, kv heads, blocks per query
@@ -45,6 +49,7 @@ SHAPES = {
     "tp4-packed": ([37, 0, 50, 9], 6, 1, 6),  # Qwen3.8-Flash-Next at TP4: G = 6
     "two-kv-heads": ([70], 4, 2, 5),
     "dense": ([45], 3, 1, 64),  # budget above the blocks: every row selects every whole block
+    "sink": ([160], 6, 1, 3),  # every query with a whole block selects block 0: one key tile far above the mean
 }
 RATIO = 4
 HEAD_DIM = 32
@@ -72,16 +77,18 @@ def _cases():
 
             return run
 
-    for name in ("_fwd_kernel", "_dq_kernel", "_dkdv_kernel"):
+    for name in ("_fwd_kernel", "_dq_kernel", "_dkdv_kernel", "_dkdv_reduce_kernel"):
         setattr(block_attention, name, Recorder(name, getattr(block_attention, name)))
 
-    def select(lens, budget, g):
+    def select(lens, budget, g, sink=False):
         rows, first = [], 0
         for length in lens:
             n_blocks = -(-length // RATIO)
             for pos in range(length):
                 whole = (pos + 1) // RATIO
                 chosen = (torch.randperm(whole, generator=g)[:budget] + first).tolist() if whole else []
+                if sink and whole and first not in chosen:
+                    chosen[-1] = first
                 rows.append(chosen + [-1] * (budget - len(chosen)))
             first += n_blocks
         rows += [[0] * budget] * 3  # rows past the last sequence: garbage the index must ignore
@@ -111,10 +118,31 @@ def _cases():
             rows.append(torch.einsum("hn,hnd->hd", torch.softmax(s, -1), vv))
         return torch.stack(rows)
 
+    def _programs_cover_each_list_once(index):
+        """heavy_split programs: per tile, consecutive [lo, hi) ranges covering its list; slots of cut tiles
+        numbered in chunk order from the tile's r_slot0, -1 for whole tiles."""
+        ok = True
+        tiles = index.k_prog_tile.tolist()
+        lo, hi, slot = index.k_prog_lo.tolist(), index.k_prog_hi.tolist(), index.k_prog_slot.tolist()
+        offs = index.k_offsets.tolist()
+        firsts = zip(index.r_slot0.tolist(), index.r_count.tolist(), strict=True)
+        cut = dict(zip(index.r_tile.tolist(), firsts, strict=True))
+        for t in range(len(offs) - 1):
+            mine = [i for i, x in enumerate(tiles) if x == t]
+            ranges = [(lo[i], hi[i]) for i in mine]
+            ok &= ranges[0][0] == offs[t] and ranges[-1][1] == offs[t + 1]
+            ok &= all(a[1] == b[0] for a, b in zip(ranges, ranges[1:]))
+            if t in cut:
+                s0, n = cut[t]
+                ok &= len(mine) == n > 1 and [slot[i] for i in mine] == list(range(s0, s0 + n))
+            else:
+                ok &= len(mine) == 1 and slot[mine[0]] == -1
+        return ok
+
     results = {}
     for shape_name, (lens, hq, hkv, budget) in SHAPES.items():
         g = torch.Generator().manual_seed(len(lens) * 100 + hq)
-        blocks = select(lens, budget, g)
+        blocks = select(lens, budget, g, sink=shape_name == "sink")
         n = blocks.shape[0]
         cu = torch.tensor([0, *lens]).cumsum(0).to(torch.int32)
         q, k, v, gout = (torch.randn(n, h, HEAD_DIM, generator=g) for h in (hq, hkv, hkv, hq))
@@ -127,8 +155,13 @@ def _cases():
             launched.clear()
             with qsa_launch_override(**fields):
                 index = build_qsa_block_index(blocks, cu, compress_ratio=RATIO, num_heads=hq, num_kv_heads=hkv)
-                counts = (index.k_offsets[1:] - index.k_offsets[:-1])[index.k_order.long()]
-                order_ok = sorted(index.k_order.tolist()) == list(range(index.k_offsets.numel() - 1))
+                if index.k_prog_tile is None:
+                    counts = (index.k_offsets[1:] - index.k_offsets[:-1])[index.k_order.long()]
+                    order_ok = sorted(index.k_order.tolist()) == list(range(index.k_offsets.numel() - 1))
+                else:
+                    counts = (index.k_prog_hi - index.k_prog_lo)[index.k_order.long()]
+                    order_ok = sorted(index.k_order.tolist()) == list(range(index.k_prog_tile.numel()))
+                    order_ok &= _programs_cover_each_list_once(index)
                 if fields.get("key_order") == "busiest":
                     order_ok &= bool((counts[:-1] >= counts[1:]).all())
                 ins = [t.clone().requires_grad_(True) for t in (q, k, v)]
@@ -148,6 +181,7 @@ def _cases():
                 "query_tile": index.query_tile,
                 "key_tile": index.key_tile,
                 "launched": dict(launched),
+                "cut_tiles": 0 if index.r_tile is None else index.r_tile.numel(),
             }
     return results
 
@@ -191,6 +225,17 @@ def test_every_knob_reaches_its_kernel(results, launch):
         dkdv["DSPLIT"],
     )
     assert (k["BLOCK_M"], k["TB"], k["NUK"]) == (dkdv["ROWS"], dkdv["ROWS"] // 6, fields.get("key_tile", 4))
+
+
+@pytest.mark.parametrize("launch", [name for name, f in LAUNCHES.items() if f.get("heavy_split")])
+def test_heavy_split_cuts_tiles_and_reduces_them(results, launch):
+    """Positive control: the sink shape does cut tiles, the reduce kernel ran on them, and without heavy_split
+    nothing is cut."""
+    r = results[f"sink/{launch}"]
+    assert r["cut_tiles"] > 0
+    assert r["launched"]["_dkdv_reduce_kernel"]["grid"][0] == r["cut_tiles"]
+    assert results["sink/table"]["cut_tiles"] == 0
+    assert "_dkdv_reduce_kernel" not in results["sink/table"]["launched"]
 
 
 def test_the_knobs_reach_the_index(results):

@@ -11,7 +11,9 @@ choice. These kernels compute only those keys:
 * dK / dV: a program owns ``NUK`` consecutive blocks of one KV head (and, with ``DSPLIT > 1``, one
   ``D / DSPLIT`` slice of their dK / dV columns) and walks the queries that selected any of them,
   ``ROWS / G`` queries per step. Every dK / dV element is written by one program, so the backward
-  needs no atomics and is deterministic.
+  needs no atomics and is deterministic. With the index's ``heavy_split`` programs, a key tile with too many
+  queries is cut into chunks of its query list; each chunk program writes fp32 partial sums to its own scratch
+  slot and :func:`_dkdv_reduce_kernel` adds a tile's slots in chunk order, still without atomics.
 
 The tile lists come from :func:`~miles.kernels.attention.qsa.block_index.build_qsa_block_index`; the launch
 parameters, per arch, from :mod:`~miles.kernels.attention.qsa.launch`.
@@ -234,6 +236,12 @@ def _dkdv_kernel(
     BLOCK_START,
     BLOCK_LEN,
     LAST_KEY,
+    PROG_TILE,
+    PROG_LO,
+    PROG_HI,
+    PROG_SLOT,
+    PART_DK,
+    PART_DV,
     stride_qs,
     stride_qh,
     stride_ks,
@@ -257,8 +265,13 @@ def _dkdv_kernel(
     NUK: tl.constexpr,
     RATIO: tl.constexpr,
     DSPLIT: tl.constexpr,
+    SPLIT: tl.constexpr,
 ):
-    key_tile = tl.load(K_ORDER + tl.program_id(0))
+    if SPLIT:
+        prog = tl.load(K_ORDER + tl.program_id(0))
+        key_tile = tl.load(PROG_TILE + prog)
+    else:
+        key_tile = tl.load(K_ORDER + tl.program_id(0))
     kv_head = tl.program_id(1)
     BLOCK_N: tl.constexpr = NUK * RATIO
     offs_n = tl.arange(0, BLOCK_N)
@@ -280,8 +293,12 @@ def _dkdv_kernel(
         offs_s = tl.program_id(2) * DS + tl.arange(0, DS)
     dk = tl.zeros([BLOCK_N, DS], dtype=tl.float32)
     dv = tl.zeros([BLOCK_N, DS], dtype=tl.float32)
-    lo = tl.load(K_OFFSETS + key_tile)
-    hi = tl.load(K_OFFSETS + key_tile + 1)
+    if SPLIT:
+        lo = tl.load(PROG_LO + prog)
+        hi = tl.load(PROG_HI + prog)
+    else:
+        lo = tl.load(K_OFFSETS + key_tile)
+        hi = tl.load(K_OFFSETS + key_tile + 1)
     offs_m = tl.arange(0, BLOCK_M)
     slot = offs_m // G
     head = kv_head * G + offs_m % G
@@ -317,6 +334,69 @@ def _dkdv_kernel(
         dk += tl.dot(tl.trans(ds.to(q.dtype)), q_s)
     dk_ptrs = DK + kv_head * stride_dkh + key64 * stride_dks + offs_s[None, :]
     dv_ptrs = DV + kv_head * stride_dvh + key64 * stride_dvs + offs_s[None, :]
+    if SPLIT:
+        part = tl.load(PROG_SLOT + prog)
+        if part < 0:
+            tl.store(dk_ptrs, (dk * sm_scale).to(DK.dtype.element_ty), mask=key_mask[:, None])
+            tl.store(dv_ptrs, dv.to(DV.dtype.element_ty), mask=key_mask[:, None])
+        else:
+            # fp32 partial sums, unscaled; [slot, kv head, BLOCK_N, D]
+            row = (part.to(tl.int64) * (HQ // G) + kv_head) * BLOCK_N + offs_n
+            part_off = row[:, None] * D + offs_s[None, :]
+            tl.store(PART_DK + part_off, dk, mask=key_mask[:, None])
+            tl.store(PART_DV + part_off, dv, mask=key_mask[:, None])
+    else:
+        tl.store(dk_ptrs, (dk * sm_scale).to(DK.dtype.element_ty), mask=key_mask[:, None])
+        tl.store(dv_ptrs, dv.to(DV.dtype.element_ty), mask=key_mask[:, None])
+
+
+@triton.jit
+def _dkdv_reduce_kernel(
+    PART_DK,
+    PART_DV,
+    DK,
+    DV,
+    R_TILE,
+    R_SLOT0,
+    R_COUNT,
+    BLOCK_START,
+    BLOCK_LEN,
+    stride_dks,
+    stride_dkh,
+    stride_dvs,
+    stride_dvh,
+    n_blocks,
+    sm_scale,
+    HKV: tl.constexpr,
+    D: tl.constexpr,
+    NUK: tl.constexpr,
+    RATIO: tl.constexpr,
+):
+    """dK / dV of one cut key tile and KV head: its chunks' fp32 partial sums added in chunk order."""
+    cut = tl.program_id(0)
+    kv_head = tl.program_id(1)
+    key_tile = tl.load(R_TILE + cut)
+    first = tl.load(R_SLOT0 + cut)
+    n_chunks = tl.load(R_COUNT + cut)
+    BLOCK_N: tl.constexpr = NUK * RATIO
+    offs_n = tl.arange(0, BLOCK_N)
+    block_of_n = offs_n // RATIO
+    key_in_block = offs_n % RATIO
+    block = key_tile * NUK + block_of_n
+    block_mask = block < n_blocks
+    key = tl.load(BLOCK_START + block, mask=block_mask, other=0) + key_in_block
+    key_mask = block_mask & (key_in_block < tl.load(BLOCK_LEN + block, mask=block_mask, other=0))
+    offs_d = tl.arange(0, D)
+    dk = tl.zeros([BLOCK_N, D], dtype=tl.float32)
+    dv = tl.zeros([BLOCK_N, D], dtype=tl.float32)
+    for j in range(0, n_chunks):
+        row = ((first + j).to(tl.int64) * HKV + kv_head) * BLOCK_N + offs_n
+        part_off = row[:, None] * D + offs_d[None, :]
+        dk += tl.load(PART_DK + part_off, mask=key_mask[:, None], other=0.0)
+        dv += tl.load(PART_DV + part_off, mask=key_mask[:, None], other=0.0)
+    key64 = key[:, None].to(tl.int64)
+    dk_ptrs = DK + kv_head * stride_dkh + key64 * stride_dks + offs_d[None, :]
+    dv_ptrs = DV + kv_head * stride_dvh + key64 * stride_dvs + offs_d[None, :]
     tl.store(dk_ptrs, (dk * sm_scale).to(DK.dtype.element_ty), mask=key_mask[:, None])
     tl.store(dv_ptrs, dv.to(DV.dtype.element_ty), mask=key_mask[:, None])
 
@@ -432,6 +512,15 @@ def _backward_dkdv(
     # keys outside every block (rows past the last sequence) get no gradient
     grad_k = torch.zeros_like(k)
     grad_v = torch.zeros_like(v)
+    split = index.k_prog_tile is not None
+    block_n = index.key_tile * index.ratio
+    if split:
+        programs = (index.k_prog_tile, index.k_prog_lo, index.k_prog_hi, index.k_prog_slot)
+        part_size = max(1, index.n_slots * num_kv_heads * block_n * head_dim)
+        parts = tuple(torch.empty(part_size, device=q.device, dtype=torch.float32) for _ in range(2))
+    else:
+        programs = (index.k_order,) * 4  # unread
+        parts = (grad_k, grad_v)  # unread
     _dkdv_kernel[(index.k_order.numel(), num_kv_heads, dsplit)](
         q,
         k,
@@ -448,6 +537,8 @@ def _backward_dkdv(
         index.block_start,
         index.block_len,
         index.last_key,
+        *programs,
+        *parts,
         *q.stride()[:2],
         *k.stride()[:2],
         *v.stride()[:2],
@@ -464,8 +555,29 @@ def _backward_dkdv(
         BLOCK_M=rows,
         NUK=index.key_tile,
         RATIO=index.ratio,
+        SPLIT=split,
         **launch.kernel_dkdv(),
     )
+    if split and index.r_tile.numel():
+        _dkdv_reduce_kernel[(index.r_tile.numel(), num_kv_heads)](
+            *parts,
+            grad_k,
+            grad_v,
+            index.r_tile,
+            index.r_slot0,
+            index.r_count,
+            index.block_start,
+            index.block_len,
+            *grad_k.stride()[:2],
+            *grad_v.stride()[:2],
+            index.block_start.numel(),
+            scale,
+            HKV=num_kv_heads,
+            D=head_dim,
+            NUK=index.key_tile,
+            RATIO=index.ratio,
+            num_warps=8,
+        )
     return grad_k, grad_v
 
 

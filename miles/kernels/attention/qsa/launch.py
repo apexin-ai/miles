@@ -9,12 +9,16 @@ One row per arch holds everything that changes how the kernels are cut, not what
 * ``key_tile``: blocks per dK / dV program (the index's key tiles);
 * ``query_rows``: rows of a forward / dQ tile (``min(32, query_rows // G)`` queries x ``G`` heads);
 * ``key_order``: launch order of the dK / dV programs, ``"position"`` or ``"busiest"`` (most queries first).
+* ``heavy_split``: 0, or cut every key tile with more than ``heavy_split`` x the mean queries per key tile into
+  chunks of that many queries, one dK / dV program each; the chunks' fp32 partial sums go to a scratch buffer
+  and a second kernel adds them in chunk order. A sink block that every query selects otherwise makes one
+  program walk the whole sequence while the others are long done.
 
 ``key_order`` and ``num_stages`` only reorder or pipeline the same arithmetic. ``DSPLIT`` splits the output
-columns of dK / dV; the sum behind each element is the same. ``NU``, ``query_rows``, ``key_tile`` and ``ROWS``
-regroup the fp32 sums (forward: where the online softmax rescales; dQ / dK / dV: which terms one tensor-core
-product adds before the fp32 accumulator), so they change results by rounding only. Every row is
-deterministic: no autotuning at run time (ranks could pick differently), no atomics.
+columns of dK / dV; the sum behind each element is the same. ``NU``, ``query_rows``, ``key_tile``, ``ROWS`` and
+``heavy_split`` (on the tiles it cuts) regroup the fp32 sums (forward: where the online softmax rescales;
+dQ / dK / dV: which terms one tensor-core product adds before the fp32 accumulator), so they change results by
+rounding only. Every row is deterministic: no autotuning at run time (ranks could pick differently), no atomics.
 
 ``qsa_launch_override`` is for benchmarks and tests. Training reads the table.
 """
@@ -37,6 +41,7 @@ class QSALaunch:
     key_tile: int
     query_rows: int = 64
     key_order: str = "position"
+    heavy_split: int = 0
 
     def __post_init__(self):
         for name, allowed in (("fwd", _STEP_KEYS), ("dq", _STEP_KEYS), ("dkdv", _DKDV_KEYS)):
@@ -49,6 +54,8 @@ class QSALaunch:
         _check_pow2("dkdv.ROWS", self.dkdv.get("ROWS", 64), 16, 256)
         _check_pow2("key_tile", self.key_tile, 1, 32)  # one int32 bit per block of a key tile
         _check_pow2("query_rows", self.query_rows, 16, 256)
+        if not isinstance(self.heavy_split, int) or not 0 <= self.heavy_split <= 64:
+            raise ValueError(f"QSA launch heavy_split = {self.heavy_split!r}: an int in [0, 64]")
         if self.key_order not in _KEY_ORDERS:
             raise ValueError(f"QSA launch key_order {self.key_order!r}, allowed {_KEY_ORDERS}")
 
@@ -124,10 +131,10 @@ def qsa_launch(device: torch.device) -> QSALaunch:
 @contextlib.contextmanager
 def qsa_launch_override(**fields):
     """Within the block, kernels launch with ``fields`` on top of the table row: ``fwd`` / ``dq`` / ``dkdv`` dicts
-    are merged key by key, ``key_tile`` / ``query_rows`` / ``key_order`` replace. An index built inside the
-    block keeps its tiles, and an attention whose forward ran inside it runs its backward with the same launch,
-    also after the block."""
-    unknown = set(fields) - {"fwd", "dq", "dkdv", "key_tile", "query_rows", "key_order"}
+    are merged key by key, ``key_tile`` / ``query_rows`` / ``key_order`` / ``heavy_split`` replace. An index built
+    inside the block keeps its tiles, and an attention whose forward ran inside it runs its backward with the same
+    launch, also after the block."""
+    unknown = set(fields) - {"fwd", "dq", "dkdv", "key_tile", "query_rows", "key_order", "heavy_split"}
     if unknown:
         raise ValueError(f"qsa_launch_override: unknown fields {sorted(unknown)}")
     previous = _OVERRIDE.fields

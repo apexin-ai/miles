@@ -33,6 +33,11 @@ class QSABlockIndex:
     kernels' summation order. ``*_order`` is the launch order: forward / dQ tiles busiest first, dK / dV
     tiles by position (neighbouring tiles, which mostly read the same queries, run together) or, with the
     launch's ``key_order = "busiest"``, most queries first. The order of the programs does not change any sum.
+
+    With the launch's ``heavy_split``, ``k_prog_*`` list the dK / dV programs instead of one per key tile: its
+    tile and its range ``[lo, hi)`` of the tile's query list, and the scratch slot of its partial sums, ``-1``
+    for a tile left whole (it writes dK / dV itself). ``r_*`` list the cut tiles: first slot and chunk count, for
+    the kernel that adds the chunks in order. ``k_order`` then orders the programs.
     """
 
     query_tile: int
@@ -49,6 +54,14 @@ class QSABlockIndex:
     block_start: Tensor
     block_len: Tensor
     last_key: Tensor
+    k_prog_tile: Tensor | None = None
+    k_prog_lo: Tensor | None = None
+    k_prog_hi: Tensor | None = None
+    k_prog_slot: Tensor | None = None
+    n_slots: int = 0
+    r_tile: Tensor | None = None
+    r_slot0: Tensor | None = None
+    r_count: Tensor | None = None
 
 
 @triton.jit
@@ -400,17 +413,26 @@ def build_qsa_block_index(
     counts, before = _rank(maps, shape)
     q_order = torch.argsort(counts[:n_q_tiles], descending=True, stable=True).to(torch.int32)
     offsets, sizes = _list_offsets(counts, grid["first_block"], shape)
-    n_q, n_k, n_blocks = sizes.tolist()
+    heavy = _heavy_chunks(counts[n_q_tiles:], sizes, key_tile, launch.heavy_split) if launch.heavy_split else None
+    # the one host sync: list sizes, and the program / slot / cut-tile counts of heavy_split
+    host = (torch.cat([sizes, heavy["sizes"]]) if heavy else sizes).tolist()
+    n_q, n_k, n_blocks = host[:3]
     if n_blocks > block_cap:
         raise ValueError(f"cu_seqlens {cu_seqlens.tolist()} reaches past the {n_queries} rows of blocks")
     lists = _fill(blocks, grid, shape, maps, before, offsets, n_q, n_k)
     n_k_tiles = -(-n_blocks // key_tile)
+    k_offsets = offsets[n_q_tiles + 1 : n_q_tiles + 2 + n_k_tiles]
+    programs = _heavy_programs(heavy, host[3:], k_offsets, n_k_tiles) if heavy else {}
     if launch.key_order == "busiest":
         # most queries first: the longest dK / dV programs start in the first wave
-        k_counts = counts[shape.n_q_tiles : shape.n_q_tiles + n_k_tiles]
+        if programs:
+            k_counts = programs["k_prog_hi"] - programs["k_prog_lo"]
+        else:
+            k_counts = counts[shape.n_q_tiles : shape.n_q_tiles + n_k_tiles]
         k_order = torch.argsort(k_counts, descending=True, stable=True).to(torch.int32)
     else:
-        k_order = torch.arange(n_k_tiles, dtype=torch.int32, device=blocks.device)
+        n_programs = programs["k_prog_tile"].numel() if programs else n_k_tiles
+        k_order = torch.arange(n_programs, dtype=torch.int32, device=blocks.device)
     return QSABlockIndex(
         query_tile=query_tile,
         key_tile=key_tile,
@@ -419,14 +441,55 @@ def build_qsa_block_index(
         q_key_start=lists["q_key_start"],
         q_bits=lists["q_bits"],
         q_order=q_order,
-        k_offsets=offsets[n_q_tiles + 1 : n_q_tiles + 2 + n_k_tiles],
+        k_offsets=k_offsets,
         k_query=lists["k_query"],
         k_bits=lists["k_bits"],
         k_order=k_order,
         block_start=grid["block_start"][:n_blocks],
         block_len=grid["block_len"][:n_blocks],
         last_key=grid["last_key"],
+        **programs,
     )
+
+
+def _heavy_chunks(k_counts: Tensor, sizes: Tensor, key_tile: int, heavy: int) -> dict:
+    """On device, before the sync: the chunk length (``heavy`` x the mean queries per real key tile, rounded up)
+    and each key tile's chunk count (1 for a tile within it, 0 past the real tiles)."""
+    real_tiles = (sizes[2].to(torch.int64) + key_tile - 1) // key_tile
+    chunk = ((sizes[1].to(torch.int64) * heavy + real_tiles - 1) // real_tiles.clamp_min(1)).clamp_min(1)
+    counts = k_counts.to(torch.int64)
+    real = torch.arange(counts.numel(), device=counts.device) < real_tiles
+    n_chunks = torch.where(real, torch.where(counts > chunk, (counts + chunk - 1) // chunk, 1), 0)
+    cut = n_chunks > 1
+    totals = torch.stack([n_chunks.sum(), torch.where(cut, n_chunks, 0).sum(), cut.sum()]).to(sizes.dtype)
+    return {"n_chunks": n_chunks, "chunk": chunk, "sizes": totals}
+
+
+def _heavy_programs(heavy: dict, host: list, k_offsets: Tensor, n_k_tiles: int) -> dict:
+    """The dK / dV programs of heavy_split: chunk ``j`` of tile ``t`` takes queries ``[lo, hi)`` of its list."""
+    n_programs, n_slots, n_cut = host
+    n_chunks = heavy["n_chunks"][:n_k_tiles]
+    dev = n_chunks.device
+    tile = torch.repeat_interleave(torch.arange(n_k_tiles, device=dev), n_chunks, output_size=n_programs)
+    j = torch.arange(n_programs, device=dev) - (torch.cumsum(n_chunks, 0) - n_chunks)[tile]
+    lo = k_offsets[:-1].to(torch.int64)[tile] + j * heavy["chunk"]
+    hi = torch.minimum(lo + heavy["chunk"], k_offsets[1:].to(torch.int64)[tile])
+    slots = torch.where(n_chunks > 1, n_chunks, 0)
+    first_slot = torch.cumsum(slots, 0) - slots
+    slot = torch.where(n_chunks[tile] > 1, first_slot[tile] + j, -1)
+    # cut tiles first, in tile order
+    r_tile = torch.argsort((n_chunks <= 1).to(torch.int32), stable=True)[:n_cut]
+    i32 = torch.int32
+    return {
+        "k_prog_tile": tile.to(i32),
+        "k_prog_lo": lo.to(i32),
+        "k_prog_hi": hi.to(i32),
+        "k_prog_slot": slot.to(i32),
+        "n_slots": n_slots,
+        "r_tile": r_tile.to(i32),
+        "r_slot0": first_slot[r_tile].to(i32),
+        "r_count": n_chunks[r_tile].to(i32),
+    }
 
 
 @dataclass(frozen=True)

@@ -162,6 +162,8 @@ LAUNCH_VARIANTS = {
     "dsplit-2": {"dkdv": {"DSPLIT": 2}},
     "dsplit-4-w4": {"dkdv": {"DSPLIT": 4, "num_warps": 4, "num_stages": 2}},
     "busiest": {"key_order": "busiest"},
+    "heavy-2": {"heavy_split": 2},
+    "heavy-1-dsplit-2-busiest": {"heavy_split": 1, "dkdv": {"DSPLIT": 2}, "key_order": "busiest"},
 }
 LAUNCH_CASES = [([1500, 301, 211], 6, 1, 256, 512), ([384], 12, 1, 256, 16), ([61, 128], 3, 1, 256, 8)]
 

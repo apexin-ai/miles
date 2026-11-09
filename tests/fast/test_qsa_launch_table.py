@@ -32,7 +32,7 @@ def test_rows_training_ran_with_are_unchanged():
         key_tile=16,
     )
     for row in (TUNED[9], TUNED[10]):
-        assert (row.query_rows, row.key_rows, row.dsplit, row.key_order) == (64, 64, 1, "position")
+        assert (row.query_rows, row.key_rows, row.dsplit, row.key_order, row.heavy_split) == (64, 64, 1, "position", 0)
 
 
 @pytest.mark.parametrize(
@@ -94,6 +94,9 @@ def test_override_restores_after_an_exception():
         {"key_tile": 6},
         {"query_rows": 48},
         {"key_order": "random"},
+        {"heavy_split": -1},
+        {"heavy_split": 65},
+        {"heavy_split": 1.5},
         {"fwd": {"NU": 0}},
         {"block_m": 64},
     ],
