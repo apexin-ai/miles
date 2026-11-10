@@ -158,16 +158,19 @@ def test_deterministic():
         assert _same_bits(a, b)
 
 
-# launch shapes a B300 sweep may pick; each must stay within TOL of fp64 and be deterministic
+# launch shapes a B300 sweep may pick; each must stay within TOL of fp64 and be deterministic. Every entry must fit
+# B300's shared memory (tests/fast/test_qsa_block_resources.py checks them on CPU): NU 32 needs num_stages 1 (at the
+# sm_100 row's 3 it needs 296992 / 394800 bytes in fwd / dQ, GT 115 2026-11-09), the dQ of query_rows 128 too
+# (295728 at 3), and DSPLIT 4 at num_warps 4 num_stages 1 (246848 at 2).
 LAUNCH_VARIANTS = {
     "nu4-w4-s2": {"fwd": {"NU": 4, "num_warps": 4, "num_stages": 2}, "dq": {"NU": 4, "num_warps": 4, "num_stages": 2}},
-    "nu32": {"fwd": {"NU": 32}, "dq": {"NU": 32}},
-    "query-rows-128": {"query_rows": 128},
+    "nu32-s1": {"fwd": {"NU": 32, "num_stages": 1}, "dq": {"NU": 32, "num_stages": 1}},
+    "query-rows-128": {"query_rows": 128, "dq": {"num_stages": 1}},
     "key-tile-4": {"key_tile": 4},
     "key-tile-8-rows-32": {"key_tile": 8, "dkdv": {"ROWS": 32}},
     "key-rows-128": {"dkdv": {"ROWS": 128, "num_warps": 8}},
     "dsplit-2": {"dkdv": {"DSPLIT": 2}},
-    "dsplit-4-w4": {"dkdv": {"DSPLIT": 4, "num_warps": 4, "num_stages": 2}},
+    "dsplit-4-w4": {"dkdv": {"DSPLIT": 4, "num_warps": 4, "num_stages": 1}},
     "busiest": {"key_order": "busiest"},
     "heavy-2": {"heavy_split": 2},
     "heavy-1-dsplit-2-busiest": {"heavy_split": 1, "dkdv": {"DSPLIT": 2}, "key_order": "busiest"},
