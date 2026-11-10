@@ -4,8 +4,9 @@ hardware's shared memory (232448 bytes per block) and tensor memory (512 columns
 GT's 115 run (2026-11-09) stopped at ``test_launch_variant_matches_reference_and_is_deterministic[g6-nu32]``:
 ``OutOfResources: shared memory, Required: 296992, Hardware limit: 232448`` in ``_fwd_kernel`` (NU 32 with the sm_100
 row's num_stages 3). This compile-only check reproduces that number on a CPU machine (Triton's NVIDIA backend and
-ptxas; no GPU, no driver) when it specializes the arguments as the launch does (16-divisible pointers and ints; the
-unspecialized compile gives 231448 and would miss it), so a launch that cannot run is caught before GPU time.
+ptxas; no GPU, no driver) when it marks the pointers and int arguments 16-divisible, the most specialized class a
+launch can get (lengths such as n_queries do not change the numbers; the unspecialized compile gives 231448 and would
+miss it), so a launch that cannot run is caught before GPU time.
 
 Covered: the table row sm_103 takes (sm_100's) at every GPU-test shape, every ``LAUNCH_VARIANTS`` entry of the GPU
 test at its ``LAUNCH_CASES`` shapes (fwd, dq, dK / dV, and the reduce kernel when heavy_split is on), and the
@@ -51,7 +52,7 @@ def _compile(kernel, consts, num_warps, num_stages):
             sig[a] = "fp32"
         else:
             sig[a] = ("*bf16" if a in BF16 else "*fp32" if a in FP32 else "*i32") if a[0].isupper() else "i32"
-            attrs[(i,)] = [["tt.divisibility", 16]]  # as the launch specializes 16-divisible pointers / strides
+            attrs[(i,)] = [["tt.divisibility", 16]]  # the most specialized class (aligned pointers, 16-multiple ints)
     options = {"num_warps": num_warps} | ({} if num_stages is None else {"num_stages": num_stages})
     k = triton.compile(ASTSource(fn=fn, signature=sig, constexprs=consts, attrs=attrs),
                        target=GPUTarget("cuda", 103, 32), options=options)  # fmt: skip
