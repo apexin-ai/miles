@@ -24,10 +24,17 @@ def monkey_patch_torch_dist():
     old_new_group_dict[pid] = old_new_group
     dist.old_new_group = old_new_group
 
+    skip_wrap = os.environ.get("MILES_SKIP_PG_WRAP", "0") == "1"
+
     def new_group(*args, **kwargs):
         group = old_new_group(*args, **kwargs)
         # skip none nccl group.
         if len(args) >= 3 and args[2] == "gloo" or "backend" in kwargs and kwargs["backend"] == "gloo":
+            return group
+        if skip_wrap:
+            # TE's userbuffer helper reads ProcessGroup::getBackendType(); the wrapper below
+            # is built with super().__init__() and therefore has no backend, so it cannot be
+            # handed to that path. Only used to validate --tp-comm-overlap.
             return group
 
         # Get ranks from arguments

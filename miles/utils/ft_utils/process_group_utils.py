@@ -53,7 +53,10 @@ class GroupsInfo:
             rank=info.rank,
             size=info.size,
             groups_inner_to_outer=[info.group],
-            gloo_groups_inner_to_outer=[info.gloo_group],
+            # A missing Gloo group means the process groups were created NCCL-only
+            # (--disable-gloo-process-groups); the object gather then has to use the
+            # regular group, otherwise it passes None to dist.get_global_rank.
+            gloo_groups_inner_to_outer=[info.gloo_group or info.group],
         )
 
     @classmethod
@@ -62,7 +65,10 @@ class GroupsInfo:
             rank=outer.rank * inner.size + inner.rank,
             size=outer.size * inner.size,
             groups_inner_to_outer=[inner.group, outer.group],
-            gloo_groups_inner_to_outer=[inner.gloo_group, outer.gloo_group],
+            gloo_groups_inner_to_outer=[
+                inner.gloo_group or inner.group,
+                outer.gloo_group or outer.group,
+            ],
         )
 
 

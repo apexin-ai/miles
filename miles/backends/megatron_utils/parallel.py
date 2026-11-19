@@ -30,7 +30,15 @@ def create_megatron_parallel_state(
             rank=mpu.get_data_parallel_rank(with_context_parallel=with_context_parallel),
             size=mpu.get_data_parallel_world_size(with_context_parallel=with_context_parallel),
             group=mpu.get_data_parallel_group(with_context_parallel=with_context_parallel),
-            gloo_group=mpu.get_data_parallel_group_gloo(with_context_parallel=with_context_parallel),
+            # Megatron only creates the Gloo data-parallel groups when
+            # use_gloo_process_groups is on, and its getter asserts otherwise. TE's
+            # userbuffer overlap needs every group on one backend, so the Gloo groups have
+            # to go; GroupInfo types gloo_group as Optional and skips verification on None.
+            gloo_group=(
+                mpu.get_data_parallel_group_gloo(with_context_parallel=with_context_parallel)
+                if args.use_gloo_process_groups
+                else None
+            ),
         )
 
     return ParallelState(
