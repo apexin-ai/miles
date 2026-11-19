@@ -216,7 +216,6 @@ def test_index_lists_the_attended_pairs_once_in_order(lens, heads, kv_heads):
     _assert_lists(*_pair_case(lens, budget=5, heads=heads, kv_heads=kv_heads, pad_rows=7))
 
 
-
 def _dense_case(lens, k, seed):
     """Production-budget selections: per query ``min(k, whole)`` distinct whole blocks of its own sequence, so the
     rows before ``k`` whole blocks select all of them (dense rows, whole query tiles of them) and later rows a
@@ -250,6 +249,7 @@ def test_index_at_the_production_budget(heads, kv_heads):
     blocks, pairs = _dense_case(lens, k=512, seed=heads)
     index = build_qsa_block_index(blocks, _cu(lens), compress_ratio=RATIO, num_heads=heads, num_kv_heads=kv_heads)
     _assert_lists(index, pairs)
+
 
 def test_index_of_a_long_sequence():
     """Long enough that the prefix scans over the query tiles and over a key tile's bitmap take several chunks."""
@@ -286,3 +286,44 @@ def test_index_cuts_blocks_from_each_sequence_start():
     assert index.block_start.tolist() == [0, 4, 6, 9, 13, 17]
     assert index.block_len.tolist() == [4, 2, 3, 4, 4, 1]
     assert index.last_key.tolist() == list(range(sum(lens))) + [-1, -1]
+
+
+@pytest.mark.parametrize(
+    "lens,heads,budget,pad", [([301, 211], 6, 16, 7), ([67, 0, 29], 3, 0, 9), ([4096], 12, 512, 0)]
+)
+def test_key_tile_schedule_is_bitwise_identical(lens, heads, budget, pad):
+    from miles.kernels.attention.qsa.key_schedule import reorder_qsa_key_tiles
+
+    n = sum(lens) + pad
+    q, k, v, gout = _inputs(n, heads, 1, 256, seed=137)
+    blocks = _select(lens, budget, seed=139, pad_rows=pad)
+    index = build_qsa_block_index(blocks, _cu(lens), compress_ratio=RATIO, num_heads=heads, num_kv_heads=1)
+    candidate = reorder_qsa_key_tiles(index, order="workload")
+    for _ in range(2):
+        baseline = _run(lambda a, b, c: qsa_block_attention(a, b, c, index, 256**-0.5), q, k, v, gout)
+        got = _run(lambda a, b, c: qsa_block_attention(a, b, c, candidate, 256**-0.5), q, k, v, gout)
+        for name, want, actual in zip(("out", "dq", "dk", "dv"), baseline, got, strict=True):
+            assert torch.equal(want.contiguous().view(torch.uint8), actual.contiguous().view(torch.uint8)), name
+
+
+def test_dkdv_loop_keeps_its_pipeline():
+    """Pin the dK/dV per-loop pipeline contract.
+
+    Measured on this device: kernel-level num_stages>=2 needs 279,616 B of SMEM and cannot
+    compile (limit 232,448 B); the per-loop form with disallow_acc_multi_buffer needs
+    214,584 B and runs the loop with 98 cp.async prefetches, 23% faster with bitwise
+    identical dK/dV. Numerics are covered by test_matches_reference, which exercises
+    _backward_dkdv through autograd; this test only guards the two parameters that make
+    the pipeline legal, because losing disallow_acc_multi_buffer fails as an OOM rather
+    than a slowdown.
+    """
+    import inspect
+
+    from miles.kernels.attention.qsa import block_attention as BA
+
+    body = inspect.getsource(BA._dkdv_kernel.fn)
+    assert "tl.range(" in body and "num_stages=" in body, "the dK/dV loop lost its tl.range pipeline"
+    assert "disallow_acc_multi_buffer=True" in body, (
+        "dK/dV accumulators would be multi-buffered again: SMEM exceeds the per-block limit"
+    )
+    assert "for start in range(lo, hi, TB)" not in body, "the unpipelined loop is back"

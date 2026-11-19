@@ -127,8 +127,12 @@ def score_blocks_bf16_triton(
         D=dim,
         BM=bm,
         BN=bn,
-        num_warps=4,
-        num_stages=1,
+        # num_warps=4 / num_stages=1 left the two tl.dot pairs un-overlapped. Measured on
+        # the production width (4 heads, head_dim 128, 512 blocks):
+        #   w4 st1  0.03040 ms   w8 st1  0.02726   w8 st3  0.02704  (-11.1%)
+        # The output is bitwise identical (max abs diff 0.0) across every configuration.
+        num_warps=8,
+        num_stages=3,
     )
     return out
 

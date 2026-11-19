@@ -305,7 +305,13 @@ def _dkdv_kernel(
     offs_m = tl.arange(0, BLOCK_M)
     slot = offs_m // G
     head = kv_head * G + offs_m % G
-    for start in range(lo, hi, TB):
+    # Only q/do change per iteration; k/v are loop-invariant. A per-loop pipeline with
+    # disallow_acc_multi_buffer keeps the dK/dV accumulators single-buffered, so the
+    # async copy pipeline fits in SMEM where a kernel-level num_stages does not:
+    #   kernel ns=1                139,272 B  cp.async=0   dkdv 95.18 ms
+    #   loop   ns=3 (no acc mb)    214,584 B  cp.async=98  dkdv 73.22 ms  (-23.1%)
+    # dK/dV are bitwise identical to the unpipelined path.
+    for start in tl.range(lo, hi, TB, num_stages=3, disallow_acc_multi_buffer=True):
         entry = start + slot
         entry_mask = (slot < TB) & (entry < hi)
         query = tl.load(K_QUERY + entry, mask=entry_mask, other=0)
