@@ -13,6 +13,13 @@ import torch.distributed.checkpoint as dist_cp
 from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 
 
+def _run_converter(monkeypatch: pytest.MonkeyPatch, input_dir: Path, output_dir: Path, *options: str):
+    argv = ["convert_torch_dist_to_hf.py", "--input-dir", str(input_dir), "--output-dir", str(output_dir), *options]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(pickle, "Unpickler", pickle.Unpickler)
+    return runpy.run_module("tools.convert_torch_dist_to_hf", run_name="__main__")
+
+
 class TestSerialCheckpointExport:
     @pytest.mark.parametrize("namespace_type", [argparse.Namespace, MegatronArgsNamespace])
     @pytest.mark.parametrize("override_origin", [False, True])
@@ -38,21 +45,10 @@ class TestSerialCheckpointExport:
         )
         torch.save({"args": backend}, input_dir / "common.pt")
         output_dir = tmp_path / "output"
-        argv = [
-            "convert_torch_dist_to_hf.py",
-            "--input-dir",
-            str(input_dir),
-            "--output-dir",
-            str(output_dir),
-            "--model-name",
-            "inkling",
-        ]
+        options = ["--model-name", "inkling"]
         if override_origin:
-            argv += ["--origin-hf-dir", str(hf_dir)]
-        monkeypatch.setattr(sys, "argv", argv)
-        monkeypatch.setattr(pickle, "Unpickler", pickle.Unpickler)
-
-        namespace = runpy.run_module("tools.convert_torch_dist_to_hf", run_name="__main__")
+            options += ["--origin-hf-dir", str(hf_dir)]
+        namespace = _run_converter(monkeypatch, input_dir, output_dir, *options)
 
         assert vars(namespace["megatron_args"]) == vars(backend) | {"hf_checkpoint": str(hf_dir)}
         if namespace_type is MegatronArgsNamespace:
@@ -62,3 +58,34 @@ class TestSerialCheckpointExport:
         tensors = safetensors.torch.load_file(shard)
         torch.testing.assert_close(tensors["model.llm.layers.0.mlp.experts.0.gate_proj.weight"], tensor[:2])
         torch.testing.assert_close(tensors["model.llm.layers.0.mlp.experts.0.up_proj.weight"], tensor[2:])
+
+    @pytest.mark.parametrize("model_name", [None, "qwen3_8_next"], ids=["from-config", "explicit"])
+    def test_qwen38_head_contraction_export(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model_name: str | None
+    ) -> None:
+        input_dir = tmp_path / "checkpoint"
+        weight = torch.tensor([0.25, -1.5, 2.0])
+        dist_cp.save({"decoder.hc_head_contraction.hc_norm_weight": weight}, checkpoint_id=str(input_dir))
+        torch.save({"args": argparse.Namespace(vocab_size=None)}, input_dir / "common.pt")
+
+        hf_dir = tmp_path / "hf"
+        hf_dir.mkdir()
+        # Keep AutoConfig loading local even on Transformers versions without the native Qwen4ExpConfig.
+        (hf_dir / "configuration_qwen4_exp.py").write_text(
+            "from transformers import PretrainedConfig\n\n"
+            "class Qwen4ExpConfig(PretrainedConfig):\n"
+            "    model_type = 'qwen4_exp'\n"
+        )
+        config = {"model_type": "qwen4_exp", "auto_map": {"AutoConfig": "configuration_qwen4_exp.Qwen4ExpConfig"}}
+        (hf_dir / "config.json").write_text(json.dumps(config))
+        output_dir = tmp_path / "output"
+        options = ["--origin-hf-dir", str(hf_dir)]
+        if model_name is not None:
+            options += ["--model-name", model_name]
+        _run_converter(monkeypatch, input_dir, output_dir, *options)
+
+        hf_key = "model.language_model.hyper_connection_mixer.hc_norm.weight"
+        weight_map = json.loads((output_dir / "model.safetensors.index.json").read_text())["weight_map"]
+        assert set(weight_map) == {hf_key}
+        tensors = safetensors.torch.load_file(output_dir / weight_map[hf_key])
+        torch.testing.assert_close(tensors[hf_key], weight, rtol=0, atol=0)
