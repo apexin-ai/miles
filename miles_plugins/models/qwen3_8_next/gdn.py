@@ -208,6 +208,13 @@ class ReplicatedGDNAttention(HuggingfaceAttention):
 
             self.input_layernorm = RMSNorm(self.hf_config.hidden_size, eps=self.hf_config.rms_norm_eps)
 
+        # This layer is not TP-sharded: every TP rank runs all of it on the same input (the whole sequence,
+        # all-gathered under SP) with the same output grad, so each rank's grad is already the full grad.
+        # Average it across TP, as Megatron's HuggingFaceModule does: unreduced, any difference between the
+        # copies' grads lets each rank's weights and optimizer state diverge.
+        for param in self.parameters():
+            param.average_gradients_across_tp_domain = True
+
     def hf_forward(self, hidden_states, packed_seq_params):
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states = self.linear_attn(
