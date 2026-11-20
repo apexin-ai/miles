@@ -192,6 +192,21 @@ class TrainConfig(BaseConfig):
             help="Launch each DP replica as an independent Megatron instance instead of using Megatron-internal data parallelism."
         ),
     ] = False
+    skip_empty_supervision_steps: A[
+        bool,
+        Arg(
+            help=(
+                "Skip the optimizer step, the LR scheduler step and the weight-version bump of a training step in "
+                "which no response token of any rank is supervised (every loss mask is zero), so that weight decay "
+                "and momentum do not move the weights and the schedule does not advance. The step's forward, "
+                "backward and gradient reductions still run on every rank. Megatron backend with --loss-type "
+                "sft_loss, --calculate-per-token-loss and --optimizer adam only; not with a custom model provider, "
+                "MTP, MoE, a DSA indexer loss, LoRA, --fp16, --indep-dp, context parallelism, a virtual pipeline "
+                "or --overlap-param-gather. A checkpoint with optimizer state is refused until the optimizer has "
+                "made its first update."
+            )
+        ),
+    ] = False
     delay_split_train_data_by_dp: A[
         bool,
         Arg(

@@ -10,6 +10,7 @@ from functools import partial
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 from megatron.core import mpu
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
@@ -463,8 +464,12 @@ def run_forward_backward_pass(
     num_rollouts,
     forward_only=False,
     adapter_slots: BridgeAdapterSlots | None = None,
+    supervision: list[torch.Tensor] | None = None,
 ):
-    """One pipeline forward/backward pass over the microbatches; no optimizer interaction."""
+    """One pipeline forward/backward pass over the microbatches; no optimizer interaction.
+
+    With ``supervision``, each loss call appends whether its micro-batch has a supervised response token.
+    """
 
     sampling_mask_keys = (
         ("rollout_sampling_mask_ids", "rollout_sampling_mask_offsets")
@@ -572,7 +577,7 @@ def run_forward_backward_pass(
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
 
-        return output_tensor, partial(
+        compute_loss = partial(
             loss_function,
             args,
             batch,
@@ -580,6 +585,9 @@ def run_forward_backward_pass(
             apply_megatron_loss_scaling=True,
             num_rollouts=num_rollouts,
         )
+        if supervision is not None:
+            compute_loss = _record_supervision(compute_loss, batch["loss_masks"], supervision)
+        return output_tensor, compute_loss
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
@@ -594,6 +602,38 @@ def run_forward_backward_pass(
             decoder_seq_length=args.backend.decoder_seq_length,
             forward_only=forward_only,
         )
+
+
+def _record_supervision(compute_loss, loss_masks, supervision: list[torch.Tensor]):
+    """Wrap a loss call so that it records whether its micro-batch has a supervised response token."""
+
+    def compute_and_record(*args, **kwargs):
+        found = torch.stack([mask.any() for mask in loss_masks]).any() if loss_masks else torch.tensor(False)
+        supervision.append(found)
+        return compute_loss(*args, **kwargs)
+
+    return compute_and_record
+
+
+def _step_has_supervision(supervision: list[torch.Tensor]) -> bool:
+    """Whether any micro-batch of the whole step, on any DP / CP rank, has a supervised response token.
+
+    Only the last pipeline stage runs the loss calls; it broadcasts its answer to the other stages, and each
+    stage then takes the maximum over its DP x CP group, so that every rank takes the same decision.
+    """
+    parallel_state = get_parallel_state()
+    device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
+    found = torch.zeros((), dtype=torch.int32, device=device)
+    if parallel_state.is_pp_last_stage:
+        assert supervision, "the last pipeline stage ran no loss call in this step"
+        found = torch.stack([s.to(device) for s in supervision]).any().to(torch.int32)
+    pp = parallel_state.pp
+    if pp.size > 1:
+        dist.broadcast(found, src=dist.get_global_rank(pp.group, pp.size - 1), group=pp.group)
+    dp_cp = parallel_state.intra_dp_cp
+    if dp_cp.size > 1:
+        dist.all_reduce(found, op=dist.ReduceOp.MAX, group=dp_cp.group)
+    return bool(found.item())
 
 
 def train_one_step(
@@ -625,9 +665,12 @@ def train_one_step(
         fn_args = compute_custom_function_config(args, x)
         custom_before_train_step_hook(fn_args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
 
+    supervision = [] if args.skip_empty_supervision_steps else None
     losses_reduced = run_forward_backward_pass(
-        args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts
+        args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts, supervision=supervision
     )
+    # Decided after every rank has run the whole forward / backward and the gradient reductions
+    no_supervision = supervision is not None and not _step_has_supervision(supervision)
     if args.enable_sample_ownership_checker:
         local_consumed_identities = SampleIdentityExtractor.get_consumed_sample_identities(
             start_offset=sample_consumption_start,
@@ -697,7 +740,11 @@ def train_one_step(
     if outcome == TrainStepOutcome.NORMAL:
         dumper_phase_util.finalize(model)
 
-    if not disable_optimizer and valid_step:
+    # a step skipped for want of supervision: one that would otherwise have updated
+    skipped_no_supervision = no_supervision and valid_step and not disable_optimizer
+    if skipped_no_supervision:
+        logger.info(f"rollout {rollout_id} step {step_id} has no supervised token; skipping its update")
+    if not disable_optimizer and valid_step and not no_supervision:
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
         assert update_successful
         ModelCompanionWeightVersionUtils.bump_weight_version(model)
@@ -708,7 +755,7 @@ def train_one_step(
             consumed_identities = SampleIdentityExtractor.gather_sample_identities(local_consumed_identities)
         if outcome == TrainStepOutcome.NORMAL:
             ModelCompanionSampleConsumptionUtils.record(
-                model=model, samples=consumed_identities, is_skipped=not valid_step
+                model=model, samples=consumed_identities, is_skipped=not valid_step or no_supervision
             )
 
     _zero_grads(model, optimizer, disable_optimizer)
@@ -722,6 +769,7 @@ def train_one_step(
         attempt=attempt,
         outcome=outcome.name,
         valid_step=valid_step,
+        **({"skipped_no_supervision": skipped_no_supervision} if supervision is not None else {}),
     )
 
     if outcome == TrainStepOutcome.NORMAL:
@@ -948,6 +996,37 @@ def train(
     return train_step_outcome
 
 
+def check_optimizer_stepped_before_save(optimizer: MegatronOptimizer, iteration: int) -> None:
+    """Refuse to save an optimizer that has never stepped, which --skip-empty-supervision-steps makes possible.
+
+    Megatron writes no moments for such a distributed optimizer and leaves them uninitialized on load, and its
+    precision-aware optimizer fails with KeyError 'master_param'. The flag allows only Adam, whose step always creates
+    state, so a rank holding parameters but no optimizer state has never stepped. A rank without a local optimizer
+    (a stub, or an empty chain) votes neutral; the ranks agree on the answer, so all of them raise or none does.
+    """
+    stepped = True
+    chained = vars(optimizer).get("chained_optimizers")
+    for chunk_optimizer in chained if chained is not None else [optimizer]:
+        inner = vars(chunk_optimizer).get("optimizer")
+        if inner is None:  # a stub DistributedOptimizer holds no parameters here
+            continue
+        has_params = any(group["params"] for group in inner.param_groups)
+        stepped &= not has_params or any(len(state) > 0 for state in inner.state.values())
+    if dist.is_available() and dist.is_initialized():
+        device = torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
+        flag = torch.tensor(int(stepped), dtype=torch.int32, device=device)
+        dist.all_reduce(flag, op=dist.ReduceOp.MIN)
+        stepped = bool(flag.item())
+    if not stepped:
+        raise RuntimeError(
+            f"--skip-empty-supervision-steps: not saving iteration {iteration}, because the optimizer has not made "
+            "an update yet (every step so far had no supervised token). Megatron cannot save and restore an "
+            "optimizer that has never stepped: the distributed optimizer writes no Adam moments and loading leaves "
+            "them uninitialized, and the precision-aware optimizer fails with KeyError 'master_param'. Save after "
+            "the first supervised step (a later --save-interval), or pass --no-save-optim."
+        )
+
+
 def save(
     args: TrainerConfig,
     iteration: int,
@@ -971,6 +1050,8 @@ def save(
             (e.g. ``{'local_checkpoint_manager': manager}`` for in-memory checkpoints).
         non_persistent_ckpt (bool): If True, save a non-persistent (in-memory) checkpoint.
     """
+    if args.skip_empty_supervision_steps and optimizer is not None and not args.backend.no_save_optim:
+        check_optimizer_stepped_before_save(optimizer, iteration)
     hashes = None
     if args.ci_test and args.ci_save_model_hash:
         hashes = compute_model_hashes_by_layer(model)

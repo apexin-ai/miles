@@ -15,6 +15,7 @@ import yaml
 from miles.utils.args.custom_function import resolve_custom_function_overrides
 from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace, SerializableConfigDict
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.lora.utils import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_trainer_num_cells
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.argv_utils import coerce_dict_to_args, declared_arg_dests
@@ -342,6 +343,51 @@ def _assert_no_declared_critic(raw: "_RawMegatronConfig") -> None:
     )
 
 
+def validate_skip_empty_supervision_args(args) -> None:
+    """The update gate reads only the SFT response masks, so no other training signal may be in the step.
+
+    Runs on the global arguments and again on each trainer's final arguments (overrides and derived critic applied).
+    """
+    if not args.skip_empty_supervision_steps:
+        return
+    flag = "--skip-empty-supervision-steps"
+    if args.train_backend != "megatron":
+        raise ValueError(f"{flag} needs --train-backend megatron, got {args.train_backend}")
+    if args.loss_type != "sft_loss" or not args.calculate_per_token_loss:
+        raise ValueError(f"{flag} needs --loss-type sft_loss with --calculate-per-token-loss")
+    if args.custom_model_provider_path is not None:
+        raise ValueError(
+            f"{flag} does not support --custom-model-provider-path: a custom model can add losses that do not read "
+            "the response masks"
+        )
+    if (args.optimizer or "adam") != "adam":
+        raise ValueError(f"{flag} is validated with --optimizer adam only, got {args.optimizer}")
+    if args.enable_mtp_training or args.mtp_num_layers:
+        raise ValueError(
+            f"{flag} does not support MTP: the multi-token prediction loss does not read the response masks"
+        )
+    if args.num_experts:
+        raise ValueError(
+            f"{flag} supports dense models only: MoE aux losses and expert-bias updates do not read the response masks"
+        )
+    if args.indep_dp:
+        raise ValueError(
+            f"{flag} does not support --indep-dp: the independent DP replicas would have to agree on the skip"
+        )
+    if is_lora_enabled(args):
+        raise ValueError(f"{flag} does not support LoRA")
+    if (args.dsa_indexer_loss_coeff or 0) > 0:
+        raise ValueError(
+            f"{flag} does not support --dsa-indexer-loss-coeff > 0: the DSA indexer loss ignores the response masks"
+        )
+    if args.context_parallel_size > 1 or args.virtual_pipeline_model_parallel_size or args.overlap_param_gather:
+        raise ValueError(
+            f"{flag} is not validated with context parallelism, a virtual pipeline or --overlap-param-gather yet"
+        )
+    if args.fp16:
+        raise ValueError(f"{flag} does not support --fp16: its dynamic loss scaler counts the skipped steps")
+
+
 # ---------------------------- per policy args -----------------------------
 
 
@@ -396,6 +442,8 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
     # TODO: a --use-critic critic keeps the actor's requested_load, so a hot restart reads the actor's checkpoint.
 
     ans.trainer_init_expected_num_cells = _resolve_trainer_init_expected_num_cells(ans, base=args, trainer=trainer)
+    # the overrides and the critic role can change what the global check saw
+    validate_skip_empty_supervision_args(ans)
 
     return ans
 

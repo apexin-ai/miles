@@ -17,6 +17,7 @@ from miles.backends.megatron_utils.megatron_config import (
     has_megatron_checkpoint,
     resolve_megatron_config,
     resolve_mtp_num_layers,
+    validate_skip_empty_supervision_args,
 )
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
@@ -379,6 +380,8 @@ def parse_args_and_get_parser(
 
         validate_hybrid_shard_args(args)
         validate_kernel_backend_args(args)
+
+    validate_skip_empty_supervision_args(args)
 
     if backend != "megatron":
         training_backend_arg_names.update(
