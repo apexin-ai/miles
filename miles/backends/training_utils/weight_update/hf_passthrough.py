@@ -9,7 +9,7 @@ A model registers which key groups of its base checkpoint an export may take fro
 (``register_hf_export_passthrough``). ``complete_hf_export`` then, on the writer rank and before the
 export is marked complete:
 
-- checks the key set: every exported key exists in the base with the same dtype and shape, every base
+- checks the key set: every exported key exists in the base with a compatible dtype and the same shape, every base
   key is exported or passed through, and a group is either exported completely or passed through
   completely;
 - checks that every shard read or written holds exactly the bytes its header declares;
@@ -44,6 +44,11 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+
+import torch
+from safetensors import safe_open
+
+from miles.backends.training_utils.weight_update.hf_base_dtype import checkpoint_model_type, native_export_dtype
 
 INDEX = "model.safetensors.index.json"
 SINGLE_FILE = "model.safetensors"
@@ -201,24 +206,32 @@ def check_payloads(directory: Path, files) -> None:
         raise ExportIncomplete(f"{len(problems)} safetensors payload problems in {directory}: {problems[:5]}")
 
 
-def _check_dtype_and_shape(base_dir, base_map, export_dir, export_map) -> None:
+def _check_dtype_and_shape(base_dir, base_map, export_dir, export_map) -> set[str]:
+    model_type = checkpoint_model_type(base_dir)
+    widened = set()
     base_headers = _headers(base_dir, base_map.values())
     export_headers = _headers(export_dir, export_map.values())
     wrong = []
     for key, filename in export_map.items():
         got = export_headers[filename][1][key]
         want = base_headers[base_map[key]][1][key]
-        if (got["dtype"], got["shape"]) != (want["dtype"], want["shape"]):
-            wrong.append(f"{key}: {got['dtype']}{got['shape']} vs base {want['dtype']}{want['shape']}")
+        if got["shape"] == want["shape"]:
+            if got["dtype"] == want["dtype"]:
+                continue
+            if got["dtype"] == native_export_dtype(model_type, key, want["dtype"]):
+                widened.add(key)
+                continue
+        wrong.append(f"{key}: {got['dtype']}{got['shape']} vs base {want['dtype']}{want['shape']}")
     if wrong:
         raise ExportIncomplete(f"{len(wrong)} exported tensors differ from the base in dtype or shape: {wrong[:5]}")
+    return widened
 
 
 def _check_base_config(base_dir: Path, model_type: str) -> None:
     config = base_dir / "config.json"
     if not config.is_file():
         raise ExportIncomplete(f"base checkpoint {base_dir} has no config.json")
-    found = json.loads(config.read_text()).get("model_type")
+    found = checkpoint_model_type(base_dir)
     if found != model_type:
         raise ExportIncomplete(
             f"base checkpoint {base_dir} is now model_type {found!r}, the run trains {model_type!r}"
@@ -374,9 +387,7 @@ def normalize_shard_names(export_dir, receipt: dict | None = None) -> dict[str, 
 
 def _report_groups(base_dir: Path) -> Mapping[str, PassthroughGroup]:
     """The registered groups of the base's model_type, for reporting only (as a run without MTP training)."""
-    config = base_dir / "config.json"
-    model_type = json.loads(config.read_text()).get("model_type") if config.is_file() else None
-    passthrough = hf_export_passthrough(model_type, Namespace(enable_mtp_training=False))
+    passthrough = hf_export_passthrough(checkpoint_model_type(base_dir), Namespace(enable_mtp_training=False))
     return {} if passthrough is None else passthrough.groups
 
 
@@ -384,7 +395,7 @@ def verify_export(export_dir, base_dir, *, expect_unchanged=()) -> dict:
     """Key-by-key comparison of a completed export with its base; raises ExportIncomplete on a violation.
 
     The keys that must equal the base are the receipt's passthrough keys plus ``expect_unchanged`` (regexes,
-    searched); the export must hold every base key, with the base dtype and shape, and change at least one.
+    searched); the export must hold every base key, with a compatible dtype and the base shape, and change at least one.
     """
     export_dir, base_dir = Path(export_dir), Path(base_dir)
     base_map, export_map = weight_map(base_dir), weight_map(export_dir)
@@ -393,13 +404,22 @@ def verify_export(export_dir, base_dir, *, expect_unchanged=()) -> dict:
             f"keys differ: missing {sorted(set(base_map) - set(export_map))[:5]}, "
             f"extra {sorted(set(export_map) - set(base_map))[:5]}"
         )
-    _check_dtype_and_shape(base_dir, base_map, export_dir, export_map)
+    widened = _check_dtype_and_shape(base_dir, base_map, export_dir, export_map)
     check_payloads(base_dir, base_map.values())
     check_payloads(export_dir, export_map.values())
     passthrough = set(json.loads((export_dir / RECEIPT).read_text())["passthrough_sha256"])
     exported_hashes = tensor_hashes(export_dir, export_map, export_map)
     base_hashes = tensor_hashes(base_dir, base_map, base_map)
-    changed = {k for k in base_map if exported_hashes[k] != base_hashes[k]}
+    byte_changes = {k for k in base_map if exported_hashes[k] != base_hashes[k]}
+    changed = byte_changes.copy()
+    # Widening an unchanged decay is not a training update. Frozen keys still require identical bytes.
+    for key in widened:
+        with safe_open(base_dir / base_map[key], framework="pt") as src, safe_open(
+            export_dir / export_map[key], framework="pt"
+        ) as dst:
+            original = src.get_tensor(key).float()
+            if torch.equal(original.view(torch.uint8), dst.get_tensor(key).view(torch.uint8)):
+                changed.discard(key)
     must_match = passthrough | {k for k in base_map for p in expect_unchanged if re.search(p, k)}
     report = {
         "keys": len(base_map),
@@ -414,7 +434,7 @@ def verify_export(export_dir, base_dir, *, expect_unchanged=()) -> dict:
         counts = report["changed_by_group"].setdefault(group, [0, 0])
         counts[0] += key in changed
         counts[1] += 1
-    bad = sorted(changed & must_match)
+    bad = sorted(byte_changes & must_match)
     if bad:
         raise ExportIncomplete(f"{len(bad)} keys that must equal the base changed: {bad[:5]}")
     if not changed - passthrough:

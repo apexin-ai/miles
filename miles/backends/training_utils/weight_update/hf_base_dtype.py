@@ -1,9 +1,7 @@
-"""Restore the base checkpoint's floating dtype for tensors that training holds wider.
+"""Select the storage dtype for raw HF exports.
 
-Some parameters are deliberately trained in a wider dtype than the base HF checkpoint stores
-(e.g. gated delta net ``linear_attn.A_log`` is kept in fp32 while the base stores bf16). A raw
-HF export should keep the base layout, so tensors on an explicit allow-list are cast back to
-the dtype the base safetensors header declares. Everything else is written as is.
+Legacy exports cast allow-listed tensors back to their base storage dtype. Qwen3.8
+GDN decays keep the FP32 values used for training and offline DCP exports.
 """
 
 import json
@@ -18,6 +16,22 @@ import torch
 DEFAULT_RESTORE_BASE_DTYPE = (re.compile(r".+\.linear_attn\.A_log"),)
 
 _SAFETENSORS_FLOAT_DTYPES = {"BF16": torch.bfloat16, "F16": torch.float16, "F32": torch.float32, "F64": torch.float64}
+
+
+def checkpoint_model_type(directory: Path) -> str | None:
+    config = directory / "config.json"
+    return json.loads(config.read_text()).get("model_type") if config.is_file() else None
+
+
+def native_export_dtype(model_type: str | None, name: str, base_dtype: str) -> str | None:
+    """Wider native storage explicitly supported by both the HF writer and the verifier."""
+    if (
+        model_type == "qwen4_exp"
+        and base_dtype in {"BF16", "F16", "F32"}
+        and re.fullmatch(r"model\.language_model\.layers\.\d+\.linear_attn\.A_log", name)
+    ):
+        return "F32"
+    return None
 
 
 def read_safetensors_dtypes(path: str | Path) -> dict[str, str]:
@@ -47,10 +61,16 @@ class BaseDtypeCaster:
     def from_checkpoint(
         cls, base_dir: str | Path, patterns: Sequence[re.Pattern] = DEFAULT_RESTORE_BASE_DTYPE
     ) -> "BaseDtypeCaster":
+        base_dir = Path(base_dir)
+        model_type = checkpoint_model_type(base_dir)
         dtypes = {}
-        for shard in _base_shards(Path(base_dir)):
+        for shard in _base_shards(base_dir):
             for name, dtype in read_safetensors_dtypes(shard).items():
-                if dtype in _SAFETENSORS_FLOAT_DTYPES and any(p.fullmatch(name) for p in patterns):
+                if (
+                    dtype in _SAFETENSORS_FLOAT_DTYPES
+                    and any(p.fullmatch(name) for p in patterns)
+                    and native_export_dtype(model_type, name, dtype) is None
+                ):
                     dtypes[name] = _SAFETENSORS_FLOAT_DTYPES[dtype]
         return cls(dtypes)
 
