@@ -216,6 +216,16 @@ class TestQwen38Passthrough:
             )
         assert not target.exists()
 
+    @pytest.mark.parametrize("mtp_keys", [[], MTP[:1]])
+    def test_missing_trained_mtp_weights_fail_without_fallback(self, tmp_path, mtp_keys) -> None:
+        base = _qwen38_base(tmp_path / "base")
+        args, target = _args(base, mtp=True), tmp_path / "export"
+        with pytest.raises(hf_passthrough.ExportIncomplete, match="neither exported nor passed through"):
+            hf_export.save_hf_model(
+                args, 0, [], publisher=_publisher(args, [_trained(*mtp_keys)]), path=target, raise_on_error=True
+            )
+        assert not target.exists()
+
     def test_a_trained_mtp_head_is_kept_from_the_export(self, tmp_path) -> None:
         base = _qwen38_base(tmp_path / "base")
         args, target = _args(base, mtp=True), tmp_path / "export"
