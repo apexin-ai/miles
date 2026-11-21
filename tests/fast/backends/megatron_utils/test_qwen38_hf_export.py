@@ -3,7 +3,7 @@
 The single fixes have their own tests (test_hf_export_base_dtype, test_hf_export_fused_experts,
 test_hf_export_complete). These tests cover what only the combination decides on a qwen4_exp base: the
 Qwen3.8 converter's per-expert output, packed into the fused base layout, passes the completion check; a
-dtype difference off the A_log allow-list is still refused by it; the Qwen3.8 passthrough registration
+dtype difference outside the native A_log exception is still refused by it; the Qwen3.8 passthrough registration
 (PLE table, MTP and vision tower from the base; an exported untrained MTP head is refused); and the PLE
 bytes of a completed export are checked against the run's PLE provenance.
 """
@@ -101,7 +101,7 @@ def _write_base(directory: Path, extra: dict[str, torch.Tensor] | None = None) -
 
 
 def _trained_a_log() -> torch.Tensor:
-    # values that bf16 cannot hold exactly, so a missing cast or a wrong rounding shows
+    # Any cast to the base dtype loses precision on these values.
     return torch.linspace(-3.0, 1.0, 48, dtype=torch.float32) + 1e-4
 
 
@@ -122,7 +122,7 @@ def _export(tmp_path: Path, bucket) -> Path:
 
 
 class TestBaseDtypeWithCompletion:
-    def test_the_restored_a_log_passes_the_completion_check(self, tmp_path) -> None:
+    def test_the_native_fp32_a_log_passes_completion_and_verification(self, tmp_path) -> None:
         a_log = _trained_a_log()
         target = _export(tmp_path, [(A_LOG, a_log), (EMBED, torch.ones(2, dtype=torch.bfloat16))])
 
@@ -130,7 +130,25 @@ class TestBaseDtypeWithCompletion:
         assert (target / hf_passthrough.RECEIPT).is_file()
         weight_map = json.loads((target / INDEX).read_text())["weight_map"]
         with safe_open(str(target / weight_map[A_LOG]), framework="pt") as f:
-            assert torch.equal(f.get_tensor(A_LOG), a_log.to(torch.bfloat16))
+            actual = f.get_tensor(A_LOG)
+            assert actual.dtype == torch.float32
+            assert torch.equal(actual, a_log)
+        assert hf_passthrough.verify_export(target, tmp_path / "base")["keys"] == 2
+
+    @pytest.mark.parametrize("bad", [torch.zeros(48, dtype=torch.float16), torch.zeros(24, dtype=torch.float32)])
+    def test_an_unexpected_a_log_dtype_or_shape_is_rejected(self, tmp_path, bad) -> None:
+        with pytest.raises(hf_passthrough.ExportIncomplete, match="differ from the base in dtype or shape"):
+            _export(tmp_path, [(A_LOG, bad), (EMBED, torch.ones(2, dtype=torch.bfloat16))])
+        assert not (tmp_path / "export").exists()
+
+    def test_widening_a_log_alone_does_not_count_as_a_training_update(self, tmp_path) -> None:
+        target = _export(tmp_path, [(A_LOG, torch.zeros(48)), (EMBED, torch.zeros(2, dtype=torch.bfloat16))])
+        with pytest.raises(hf_passthrough.ExportIncomplete, match="no exported key differs"):
+            hf_passthrough.verify_export(target, tmp_path / "base")
+
+    def test_verify_accepts_legacy_bf16_exports(self, tmp_path) -> None:
+        target = _export(tmp_path, [(A_LOG, _trained_a_log().bfloat16()), (EMBED, torch.ones(2).bfloat16())])
+        assert hf_passthrough.verify_export(target, tmp_path / "base")["changed"] == 2
 
     def test_a_dtype_difference_outside_the_allow_list_still_fails(self, tmp_path) -> None:
         """The caster leaves EMBED in fp32 (base bf16); the completion check refuses it."""
