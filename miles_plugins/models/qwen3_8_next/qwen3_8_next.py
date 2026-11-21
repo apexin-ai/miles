@@ -23,6 +23,7 @@ from miles_plugins.models.qwen3_8_next.hyper_connection import (
     Qwen38NextHyperConnection,
     Qwen38NextPLEHyperConnection,
 )
+from miles_plugins.models.qwen3_8_next.mtp_config import validate_qwen38_mtp_config
 from miles_plugins.models.qwen3_8_next.ops.attention import Qwen38NextAttention
 
 
@@ -45,6 +46,21 @@ def _strip_block_layernorms(layer_spec):
         attn.submodules.linear_qkv = TEColumnParallelLinear
     submodules.input_layernorm = IdentityOp
     submodules.pre_mlp_layernorm = IdentityOp
+
+
+def make_qwen38_full_attention_spec(base_layer_spec, *, with_ple):
+    """Independent full-attention MoE block for the decoder or its native draft."""
+    layer = copy.deepcopy(base_layer_spec)
+    modules = layer.submodules
+    modules.self_attention_hyper_connection = _hc_spec(with_ple=with_ple)
+    modules.mlp_hyper_connection = _hc_spec()
+    modules.self_attention = ModuleSpec(
+        module=Qwen38NextAttention,
+        params=dict(modules.self_attention.params or {}),
+        submodules=modules.self_attention.submodules,
+    )
+    _strip_block_layernorms(layer)
+    return layer
 
 
 class Qwen38NextLinearAttention(Qwen35LinearAttention):
@@ -89,6 +105,9 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
     """Transformer block spec for Qwen3.8-Next."""
     hf_config = load_hf_config(args.hf_checkpoint)
     text_config = _get_text_config(hf_config)
+
+    if getattr(config, "mtp_num_layers", None):  # Small trunk-only spec fixtures omit the optional MTP fields.
+        validate_qwen38_mtp_config(text_config)
 
     _apply_qwen3_8_next_config(config, text_config)
     config.qwen3_8_next_hf_checkpoint = args.hf_checkpoint
@@ -175,25 +194,19 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
 
     for layer_id in range(num_layers_to_build):
         global_layer_id = layer_id + offset
-        layer_spec = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
-
+        base_spec = transformer_layer_spec.layer_specs[layer_id]
         with_ple = global_layer_id in config.qwen3_8_next_ple_layer_ids
-        layer_spec.submodules.self_attention_hyper_connection = _hc_spec(with_ple=with_ple)
-        layer_spec.submodules.mlp_hyper_connection = _hc_spec()
-
         if layer_types[global_layer_id] == "linear_attention":
+            layer_spec = copy.deepcopy(base_spec)
+            layer_spec.submodules.self_attention_hyper_connection = _hc_spec(with_ple=with_ple)
+            layer_spec.submodules.mlp_hyper_connection = _hc_spec()
             layer_spec.submodules.self_attention = ModuleSpec(
                 module=HeadShardedGDNAttention if args.qwen38_gdn_head_sharded else Qwen38NextLinearAttention,
                 params={"args": args},
             )
+            _strip_block_layernorms(layer_spec)
         else:
-            layer_spec.submodules.self_attention = ModuleSpec(
-                module=Qwen38NextAttention,
-                params=dict(layer_spec.submodules.self_attention.params or {}),
-                submodules=layer_spec.submodules.self_attention.submodules,
-            )
-
-        _strip_block_layernorms(layer_spec)
+            layer_spec = make_qwen38_full_attention_spec(base_spec, with_ple=with_ple)
         transformer_layer_spec.layer_specs[layer_id] = layer_spec
 
     transformer_layer_spec.hc_head_contraction = ModuleSpec(module=Qwen38NextHCHeadContraction)

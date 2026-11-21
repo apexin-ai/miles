@@ -23,6 +23,7 @@ from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
 from miles.utils.megatron_bridge_utils import load_auto_bridge
 from miles.utils.replay_base import routing_replay_manager
+from miles_plugins.models.qwen3_8_next.mtp_config import is_qwen38_spec
 
 logger = logging.getLogger(__name__)
 
@@ -328,27 +329,24 @@ def get_model_provider_func(
             kwargs["vp_stage"] = vp_stage
 
         if args.backend.mtp_num_layers:
-            from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
+            if is_qwen38_spec(args.backend.spec):
+                # The four-stream native head has a different normalization and contraction.
+                from miles_plugins.models.qwen3_8_next.mtp import get_qwen38_mtp_block_spec as build_mtp_spec
+            else:
+                from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec as build_mtp_spec
 
-            mtp_kwargs = {
-                "use_transformer_engine": use_te,
-            }
+            mtp_kwargs = {"use_transformer_engine": use_te}
             if vp_stage is not None:
                 mtp_kwargs["vp_stage"] = vp_stage
 
-            # hard code here to skip r3 registration for mtp layers
-            # getattr is required to avoid ckpt conversion errors
             if args.use_rollout_routing_replay:
                 prev_routing_replay_enabled = routing_replay_manager.enabled
                 routing_replay_manager.enabled = False
-                logger.warning(
-                    "Rollout routing replay is not applicable for MTP modules, so skipped replay registration"
-                )
-            mtp_block_spec = get_gpt_mtp_block_spec(config, transformer_layer_spec, **mtp_kwargs)
-            kwargs["mtp_block_spec"] = mtp_block_spec
-            if args.use_rollout_routing_replay:
-                # restore instead of forcing True: the critic role keeps the manager disabled
-                routing_replay_manager.enabled = prev_routing_replay_enabled
+            try:
+                kwargs["mtp_block_spec"] = build_mtp_spec(config, transformer_layer_spec, **mtp_kwargs)
+            finally:
+                if args.use_rollout_routing_replay:
+                    routing_replay_manager.enabled = prev_routing_replay_enabled
 
         with build_model_context(**build_model_context_args):
             model = GPTModel(**kwargs)
