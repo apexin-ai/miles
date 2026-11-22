@@ -19,6 +19,7 @@ from miles.ray.rollout.train_data_conversion import (
     convert_samples_to_train_data,
     split_train_data_by_dp,
 )
+from miles.ray.rollout.train_pixels import pack_train_pixels
 from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -254,6 +255,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                     self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
                 )
                 store = object_store.get_instance()
+                if isinstance(store, object_store.RayObjectStore) and self.args.compact_ray_train_pixels:
+                    shards = map(pack_train_pixels, shards)
                 data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
             return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 

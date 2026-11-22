@@ -105,6 +105,9 @@ class RolloutRelatedConfig(BaseConfig):
             help="Backend of the object store used to pass data (e.g. rollout data) between processes.",
         ),
     ] = "ray"
+    compact_ray_train_pixels: A[
+        bool, Arg(help="Pack immutable CPU image patch tensors out of band when publishing Ray training shards.")
+    ] = False
     mooncake_store_init_kwargs: A[
         Any,
         Arg(
