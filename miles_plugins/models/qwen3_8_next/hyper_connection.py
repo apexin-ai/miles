@@ -30,6 +30,12 @@ def _hc_matmul_precision(config) -> str:
     )  # config-access-exempt: optional knob, absent from older configs
 
 
+def _hc_fused_kwargs(config) -> dict:
+    """--qwen38-hc-fused: hc_mix_inject's fused path, passed only when on (the default call is unchanged)."""
+    fused = bool(getattr(config, "qwen3_8_next_hc_fused", False))  # config-access-exempt: optional knob
+    return {"fused": True} if fused else {}
+
+
 class Qwen38NextHyperConnection(MegatronModule):
     """Per-layer HC filling the attention/MLP spec slots. Params replicated across TP
     (sequence_parallel attr set); kept bf16 to match sglang."""
@@ -48,6 +54,7 @@ class Qwen38NextHyperConnection(MegatronModule):
         self.norm_eps = config.layernorm_epsilon
         self.use_combine = use_combine
         self.matmul_precision = _hc_matmul_precision(config)
+        self.hc_fused_kwargs = _hc_fused_kwargs(config)
 
         lowrank = config.qwen3_8_next_hc_lowrank
         wide = self.n * self.hidden_size
@@ -95,6 +102,7 @@ class Qwen38NextHyperConnection(MegatronModule):
             self.n,
             self.norm_eps,
             matmul_precision=self.matmul_precision,
+            **self.hc_fused_kwargs,
         )
         return aggregated, None, h_post, hidden_states
 
@@ -136,6 +144,7 @@ class Qwen38NextHCHeadContraction(MegatronModule):
         self.hidden_size = config.hidden_size
         self.norm_eps = config.layernorm_epsilon
         self.matmul_precision = _hc_matmul_precision(config)
+        self.hc_fused_kwargs = _hc_fused_kwargs(config)
 
         lowrank = config.qwen3_8_next_hc_lowrank
         wide = self.n * self.hidden_size
@@ -161,6 +170,7 @@ class Qwen38NextHCHeadContraction(MegatronModule):
             self.n,
             self.norm_eps,
             matmul_precision=self.matmul_precision,
+            **self.hc_fused_kwargs,
         )
         return mixed
 

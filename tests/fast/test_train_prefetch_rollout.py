@@ -2,6 +2,7 @@
 the run does or saves changes."""
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -213,6 +214,169 @@ class TestFailures:
         assert events.index("generate_cancelled:1") < events.index("executor_dispose")
         assert not [e for e in events if e.startswith("generate_done:") and e != "generate_done:0"]
         assert not [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+
+
+_PREFETCHER_LOGGER = "miles.ray.rollout.rollout_prefetcher"
+
+
+def _read_row(row: int) -> None:
+    """Stands in for the data code that raised in the image_pad incident: its frame must appear in the log."""
+    raise ValueError(f"image_pad without an image at row {row}")
+
+
+def _prefetcher_errors(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == _PREFETCHER_LOGGER and r.levelno >= logging.ERROR]
+
+
+class _ErrorsAsEvents(logging.Handler):
+    """Puts the prefetcher's error logs into the driver's event list, to check they come before the teardown."""
+
+    def __init__(self, events: list[str]) -> None:
+        super().__init__(logging.ERROR)
+        self._events = events
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self._events.append(f"log_error:{record.getMessage().splitlines()[0]}")
+
+
+class TestFailureTracebacks:
+    """A failed get is logged with its full traceback while the run is still up. The driver prints the loop's own
+    error only after every teardown has finished, and a get that dispose drops was never printed at all (the image_pad
+    incident: the traceback was lost)."""
+
+    @staticmethod
+    async def _settle(prefetcher: RolloutPrefetcher) -> None:
+        await asyncio.wait(list(prefetcher._pending.values()))
+
+    async def test_dispose_logs_a_failed_prefetched_get_with_its_traceback(self, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO, logger=_PREFETCHER_LOGGER)
+
+        async def fetch(rollout_id: int) -> RolloutDataPack:
+            if rollout_id == 2:
+                _read_row(23434)
+            return RolloutDataPack(sample_indices=[rollout_id])
+
+        prefetcher = RolloutPrefetcher(fetch=fetch, depth=2, last_rollout_id=9, save_due=lambda i: False)
+        assert (await prefetcher.get(0)).sample_indices == [0]
+        await self._settle(prefetcher)  # rollout 1 fetched, rollout 2 failed, neither trained yet
+        await prefetcher.dispose()  # does not raise
+
+        [message] = _prefetcher_errors(caplog)
+        assert message.startswith("rollout 2: prefetched data fetch failed and is dropped untrained")
+        assert "Traceback (most recent call last):" in message
+        assert "in _read_row" in message and 'raise ValueError(f"image_pad without an image at row {row}")' in message
+        assert message.endswith("ValueError: image_pad without an image at row 23434")
+        assert "Dropped the prefetched rollouts [1, 2]" in caplog.text
+
+    async def test_dispose_logs_no_error_for_cancelled_or_fetched_gets(self, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO, logger=_PREFETCHER_LOGGER)
+        gate = asyncio.Event()
+        cancelled: list[int] = []
+
+        async def fetch(rollout_id: int) -> RolloutDataPack:
+            if rollout_id == 2:
+                try:
+                    await gate.wait()
+                except asyncio.CancelledError:
+                    cancelled.append(rollout_id)
+                    raise
+            return RolloutDataPack(sample_indices=[rollout_id])
+
+        prefetcher = RolloutPrefetcher(fetch=fetch, depth=3, last_rollout_id=9, save_due=lambda i: False)
+        await prefetcher.get(0)
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await prefetcher.dispose()
+
+        assert cancelled == [2]
+        assert _prefetcher_errors(caplog) == []
+        assert "Dropped the prefetched rollouts [1, 2, 3]" in caplog.text
+
+    async def test_a_failed_get_is_logged_before_the_loop_re_raises_it(self, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO, logger=_PREFETCHER_LOGGER)
+
+        async def fetch(rollout_id: int) -> RolloutDataPack:
+            if rollout_id == 1:
+                _read_row(77)
+            return RolloutDataPack(sample_indices=[rollout_id])
+
+        prefetcher = RolloutPrefetcher(fetch=fetch, depth=1, last_rollout_id=1, save_due=lambda i: False)
+        await prefetcher.get(0)
+        with pytest.raises(ValueError, match="image_pad without an image at row 77"):
+            await prefetcher.get(1)
+        await prefetcher.dispose()
+
+        [message] = _prefetcher_errors(caplog)
+        assert message.startswith(
+            "rollout 1: data fetch failed (prefetched, --prefetch-rollout 1); the loop re-raises"
+        )
+        assert "in _read_row" in message and message.endswith("ValueError: image_pad without an image at row 77")
+
+    @pytest.mark.parametrize("depth", [1, 2])
+    async def test_driver_logs_a_dropped_failed_get_before_teardown(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, depth: int
+    ):
+        """Rollout 0's train fails while the get of rollout 1 has already failed: the train error propagates as
+        before, and the dropped get's traceback is logged before the executor is disposed."""
+        caplog.set_level(logging.INFO, logger=_PREFETCHER_LOGGER)
+        events: list[str] = []
+        args = _make_args(prefetch_rollout=depth, num_rollout=6)
+        _install(
+            monkeypatch,
+            args,
+            events,
+            get_errors={1: OSError("data read failed")},
+            train_errors={0: RuntimeError("train failed")},
+        )
+        handler = _ErrorsAsEvents(events)
+        logging.getLogger(_PREFETCHER_LOGGER).addHandler(handler)
+        try:
+            with pytest.raises(RuntimeError, match="train failed"):
+                await with_disposer(train_driver.train, _startup_info(args))
+        finally:
+            logging.getLogger(_PREFETCHER_LOGGER).removeHandler(handler)
+
+        dropped = [m for m in _prefetcher_errors(caplog) if m.startswith("rollout 1: prefetched data fetch failed")]
+        assert len(dropped) == 1
+        assert "Traceback (most recent call last):" in dropped[0]
+        assert dropped[0].endswith("OSError: data read failed")
+        log_event = "log_error:rollout 1: prefetched data fetch failed and is dropped untrained " + (
+            f"(--prefetch-rollout {depth}):"
+        )
+        assert events.index(log_event) < events.index("executor_dispose")
+        assert not [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+
+    @pytest.mark.parametrize("depth", [1, 2])
+    async def test_driver_logs_the_failed_get_of_the_current_step_before_teardown(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, depth: int
+    ):
+        caplog.set_level(logging.INFO, logger=_PREFETCHER_LOGGER)
+        events: list[str] = []
+        args = _make_args(prefetch_rollout=depth, num_rollout=8)
+        _install(monkeypatch, args, events, get_errors={3: OSError("data read failed")})
+        handler = _ErrorsAsEvents(events)
+        logging.getLogger(_PREFETCHER_LOGGER).addHandler(handler)
+        try:
+            with pytest.raises(OSError, match="data read failed"):
+                await with_disposer(train_driver.train, _startup_info(args))
+        finally:
+            logging.getLogger(_PREFETCHER_LOGGER).removeHandler(handler)
+
+        [current] = [m for m in _prefetcher_errors(caplog) if m.startswith("rollout 3: ")]
+        assert current.startswith(f"rollout 3: data fetch failed (prefetched, --prefetch-rollout {depth})")
+        assert current.endswith("OSError: data read failed")
+        first_log = next(e for e in events if e.startswith("log_error:rollout 3: "))
+        assert events.index(first_log) < events.index("executor_dispose")
+
+    @pytest.mark.parametrize("depth", [0, 1, 2])
+    async def test_a_run_without_errors_logs_no_error(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, depth: int
+    ):
+        caplog.set_level(logging.INFO, logger=_PREFETCHER_LOGGER)
+        await _run(monkeypatch, depth, num_rollout=9, save_interval=4, eval_interval=3, skip_eval_before_train=True)
+
+        assert _prefetcher_errors(caplog) == []
+        assert "Dropped the prefetched rollouts" not in caplog.text
 
 
 class TestResume:

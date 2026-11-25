@@ -79,7 +79,7 @@ class SnapshotPublisher:
         total_size = 0
         shard_index = 0
         write_error = None
-        # tensors that training holds wider than the base checkpoint are written in the base dtype
+        # Apply the model's export dtype policy on the writer, after conversion and expert packing.
         caster = None
         if is_writer and Path(hf_checkpoint).is_dir():
             try:

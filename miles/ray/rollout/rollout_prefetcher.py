@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+import traceback
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -82,7 +83,16 @@ class RolloutPrefetcher:
                 break
             if next_id not in self._pending:
                 self._pending[next_id] = self._start(next_id)
-        pack, fetch_seconds = await task
+        try:
+            pack, fetch_seconds = await task
+        except Exception as error:
+            # The loop re-raises this, but the driver prints it only after every teardown has finished (or never,
+            # if the job is stopped during teardown): log it now, while the run is still up.
+            logger.error(
+                f"rollout {rollout_id}: data fetch failed ({'prefetched' if prefetched else 'not prefetched'}, "
+                f"--prefetch-rollout {self._depth}); the loop re-raises it:\n{_format_exception(error)}"
+            )
+            raise
         if prefetched:
             logger.info(
                 f"rollout {rollout_id}: data prefetched (fetch {fetch_seconds:.2f} s, waited "
@@ -115,10 +125,25 @@ class RolloutPrefetcher:
         return pack, time.monotonic() - start
 
     async def dispose(self) -> None:
-        """Cancel the gets of rollouts the loop will not train (it raised); the executor is disposed after this."""
+        """Cancel the gets of rollouts the loop will not train (it raised); the executor is disposed after this.
+
+        A get that had already failed is logged with its full traceback before it is dropped."""
         pending, self._pending = self._pending, {}
         for task in pending.values():
             task.cancel()
-        await asyncio.gather(*pending.values(), return_exceptions=True)
+        outcomes = await asyncio.gather(*pending.values(), return_exceptions=True)
+        # A get that had already failed is dropped with its error; log it rather than lose it (do not raise:
+        # disposal continues, and the loop's own error, if any, is what propagates).
+        for rollout_id, outcome in zip(pending, outcomes, strict=True):
+            if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+                logger.error(
+                    f"rollout {rollout_id}: prefetched data fetch failed and is dropped untrained "
+                    f"(--prefetch-rollout {self._depth}):\n{_format_exception(outcome)}"
+                )
         if pending:
             logger.warning(f"Dropped the prefetched rollouts {sorted(pending)}: the loop ended before training them")
+
+
+def _format_exception(error: BaseException) -> str:
+    """The full traceback, with chained causes, as ``traceback.print_exception`` writes it."""
+    return "".join(traceback.format_exception(type(error), error, error.__traceback__)).rstrip("\n")

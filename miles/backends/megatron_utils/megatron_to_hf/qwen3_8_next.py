@@ -49,7 +49,45 @@ _HF_LAYOUT_GDN = ("self_attention.linear_attn.in_proj_qkv.weight", "self_attenti
 _LAYER_PATTERN = re.compile(r"module\.module\.decoder\.layers\.(\d+)\.(.+)")
 
 
+_MTP_DIRECT = {
+    "enorm.weight": "mtp.pre_fc_norm_embedding.weight",
+    "hnorm.weight": "mtp.pre_fc_norm_hidden.weight",
+    "e_proj.weight": "mtp.fc_embedding.weight",
+    "h_proj.weight": "mtp.fc_hidden.weight",
+    "hc_head_contraction.hc_norm_weight": "mtp.hyper_connection_mixer.hc_norm.weight",
+    "hc_head_contraction.input_mix_weight_down": "mtp.hyper_connection_mixer.input_mix_weight_down.weight",
+    "hc_head_contraction.input_mix_weight_up": "mtp.hyper_connection_mixer.input_mix_weight_up.weight",
+}
+
+
+def qwen38_mtp_weight(name: str) -> str:
+    """Return either the direct HF name or the equivalent decoder parameter for the single draft layer."""
+    prefix = "mtp.layers.0."
+    if name.startswith(prefix):
+        suffix = name.removeprefix(prefix)
+        if suffix in _MTP_DIRECT:
+            return _MTP_DIRECT[suffix]
+        # Megatron saves the runtime mtp_model_layer under the older transformer_layer spelling.
+        inner, _, block_suffix = suffix.partition(".")
+        if inner in ("mtp_model_layer", "transformer_layer") and block_suffix:
+            return f"decoder.layers.0.{block_suffix}"
+    raise ValueError(f"Unexpected Qwen3.8 MTP weight: {name}")
+
+
+def qwen38_mtp_hf_name(decoder_name: str) -> str:
+    prefix = "model.language_model.layers.0."
+    if not decoder_name.startswith(prefix):
+        raise ValueError(f"Expected a Qwen3.8 decoder layer parameter, received {decoder_name}")
+    return "mtp.layers.0." + decoder_name.removeprefix(prefix)
+
+
 def convert_qwen3_8_next_to_hf(args: TrainerConfig, name: str, param: torch.Tensor) -> list[tuple[str, torch.Tensor]]:
+    if name.startswith("module.module.mtp."):
+        target = qwen38_mtp_weight(name.removeprefix("module.module."))
+        if target.startswith("mtp."):
+            return [(target, param)]
+        pairs = convert_qwen3_8_next_to_hf(args, "module.module." + target, param)
+        return [(qwen38_mtp_hf_name(key), value) for key, value in pairs]
     if name.startswith("module.module.vision_model."):
         return [("model.visual." + name.removeprefix("module.module.vision_model."), param)]
     if name in _HEAD_CONTRACTION_MAPPING:

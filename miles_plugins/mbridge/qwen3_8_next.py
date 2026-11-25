@@ -11,6 +11,7 @@ import torch
 from mbridge.core import register_model
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LINEAR_ATTN_LAYOUT_KEY
+from miles.backends.megatron_utils.megatron_to_hf.qwen3_8_next import qwen38_mtp_hf_name, qwen38_mtp_weight
 from miles_plugins.mbridge.qwen3_5 import Qwen3_5Bridge
 
 
@@ -188,6 +189,15 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         raise NotImplementedError(f"Unsupported parameter name: {mcore_weights_name}")
 
     def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
+        if mcore_weights_name.startswith("mtp."):
+            target = qwen38_mtp_weight(mcore_weights_name)
+            if target.startswith("mtp."):
+                return [target]
+            if ".mlp.experts.linear_fc" in target:
+                # Qwen3.8 packs all draft experts even when another export stored main experts split.
+                kind = "gate_up_proj" if ".linear_fc1." in target else "down_proj"
+                return [f"mtp.layers.0.mlp.experts.{kind}"]
+            return [qwen38_mtp_hf_name(key) for key in self._weight_name_mapping_mcore_to_hf(target)]
         if mcore_weights_name.startswith("vision_model."):
             return self._weight_name_mapping_vision(mcore_weights_name)
         try:

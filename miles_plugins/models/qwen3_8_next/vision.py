@@ -1,6 +1,7 @@
 """Attach Qwen's complete native ViT before Megatron DDP/optimizer construction."""
 
 import json
+from copy import copy
 from pathlib import Path
 
 import torch
@@ -14,6 +15,7 @@ from miles_plugins.models.qwen3_8_next.vision_inputs import (
     packed_rope_positions,
     scatter_image_embeddings,
 )
+from miles_plugins.models.qwen3_8_next.vision_mtp import MTPImageEmbedding, mask_image_targets, validate_vision_mtp
 
 # What the training data holds: "image" = every microbatch has images; "text" = none does (the tower is held but
 # frozen and never run); "mixed" = a microbatch (one row, or several rows packed by THD) may have either.
@@ -62,7 +64,7 @@ def set_visual_scope(visual, scope, *, sequence_parallel=False):
         parameter.sequence_parallel = sequence_parallel
 
 
-def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="image"):
+def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="image", enable_mtp_training=False):
     if data not in VISION_DATA_MODES:
         raise ValueError(f"Unknown Qwen vision data mode: {data}")
     if data == "text" and scope != "none":
@@ -119,6 +121,17 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
             raise ValueError("Image inputs reached a model configured with --qwen38-vision-data text")
         if has_images != (pixel_values is not None):
             raise ValueError("Image tokens and image patches must come together in a microbatch")
+        if enable_mtp_training and has_images:
+            if packed is None:
+                raise ValueError("Qwen3.8 image MTP requires packed sequence metadata")
+            # Miles passes labels=None and an input-aligned response mask. Explicit Megatron labels
+            # are already next-token aligned, so use the corresponding IDs when masking their targets.
+            targets = kwargs.get("labels")
+            kwargs["loss_mask"] = mask_image_targets(
+                kwargs.get("loss_mask"),
+                ids if targets is None else targets,
+                image_token_id=hf_config["image_token_id"],
+            )
         total = whole_ids.shape[1]
         boundaries, rows = ((0, total), 1) if packed is None else _host_boundaries(packed, total, cp=cp)
         # One row, or THD rows back to back: each row restarts at 0 (text) or has its native image mRoPE.
@@ -164,14 +177,29 @@ def wire_visual(model, hf_config, *, scope, recompute, freeze_language, data="im
             # images in row order, rows in pack order: the tower's outputs line up with the pad tokens
             image_positions = _to_device((ids_host == hf_config["image_token_id"]).nonzero().flatten(), ids.device)
             # under CP each rank keeps the image tokens of its own slice (positions are global)
+            tp_rank = parallel_state.get_tensor_model_parallel_rank()
+            window_start = local_rows(total)[0] if cp else None
             kwargs["decoder_input"] = scatter_image_embeddings(
                 decoder,
                 image_positions,
                 result.pooler_output,
-                tp_rank=parallel_state.get_tensor_model_parallel_rank(),
+                tp_rank=tp_rank,
                 sequence_parallel=model.config.sequence_parallel,
-                **({"window_start": local_rows(total)[0]} if cp else {}),
+                window_start=window_start,
             )
+            if enable_mtp_training:
+                # Keep visual state per forward. Activation recompute and other in-flight microbatches
+                # retain their own PackedSeqParams, without placing autograd tensors on a shared model.
+                packed = copy(packed)
+                packed.qwen38_mtp_embedding = MTPImageEmbedding(
+                    model.embedding,
+                    image_positions,
+                    result.pooler_output,
+                    tp_rank,
+                    model.config.sequence_parallel,
+                    window_start=window_start,
+                )
+                kwargs["packed_seq_params"] = packed
         return original_forward(*args, **kwargs)
 
     model.forward = forward
@@ -243,8 +271,10 @@ def get_qwen38_vision_model_provider(pre_process=True, post_process=True, vp_sta
         )
     if args.tensor_model_parallel_size > 1 and not args.sequence_parallel:
         raise ValueError("Qwen image SFT requires sequence parallelism at TP>1")
-    if args.use_rollout_routing_replay or args.enable_mtp_training or args.virtual_pipeline_model_parallel_size:
-        raise ValueError("Qwen image SFT does not support routing replay, MTP or interleaved pipelines")
+    if args.use_rollout_routing_replay or args.virtual_pipeline_model_parallel_size:
+        raise ValueError("Qwen image SFT does not support routing replay or interleaved pipelines")
+    if args.enable_mtp_training:
+        validate_vision_mtp(args)
     if args.position_embedding_type != "mrope":
         # rope fusion is fine: attention takes MCore's raw mRoPE freqs, the QSA indexer a materialized table
         raise ValueError("Qwen image SFT needs mRoPE positions (--position-embedding-type mrope)")
@@ -262,6 +292,7 @@ def get_qwen38_vision_model_provider(pre_process=True, post_process=True, vp_sta
         recompute=args.qwen38_vision_recompute,
         freeze_language=args.qwen38_freeze_language,
         data=args.qwen38_vision_data,
+        enable_mtp_training=args.enable_mtp_training,
     )
     _install_ple_context_hooks(model)
     return model
